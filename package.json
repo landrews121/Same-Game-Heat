@@ -1,0 +1,14 @@
+{
+  "name": "same-game-heat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Same Game Heat parlay board builder",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "PORT=4000 node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

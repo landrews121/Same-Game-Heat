@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: same-game-heat
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: ODDS_API_KEY
+        sync: false
+      - key: BALL_DONT_LIE_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false

@@ -1,0 +1,118 @@
+{
+  "version": "0.1.0",
+  "created": "2026-04-29",
+  "disclaimer": "Synthetic starter rules for product design. Not legal, clinical, billing, or payer-specific advice.",
+  "rules": [
+    {
+      "id": "AUTH-001",
+      "category": "authorization",
+      "severity": "fail",
+      "description": "Date of service must fall within the authorization period.",
+      "applies_to": ["97151", "97153", "97155", "97156", "97158"],
+      "inputs": ["date_of_service", "authorization_start", "authorization_end"],
+      "logic": "date_of_service >= authorization_start && date_of_service <= authorization_end",
+      "failure_message": "Authorization is not active on the date of service."
+    },
+    {
+      "id": "AUTH-002",
+      "category": "authorization",
+      "severity": "fail",
+      "description": "Billed CPT code must be included on the authorization.",
+      "applies_to": ["97151", "97153", "97155", "97156", "97158"],
+      "inputs": ["cpt_code", "authorized_cpt_codes"],
+      "logic": "authorized_cpt_codes includes cpt_code",
+      "failure_message": "CPT code is not listed on the authorization."
+    },
+    {
+      "id": "AUTH-003",
+      "category": "authorization",
+      "severity": "fail",
+      "description": "Billed units must not exceed remaining authorized units.",
+      "applies_to": ["97151", "97153", "97155", "97156", "97158"],
+      "inputs": ["units_billed", "remaining_authorized_units"],
+      "logic": "units_billed <= remaining_authorized_units",
+      "failure_message": "Billed units exceed remaining authorization."
+    },
+    {
+      "id": "TIME-001",
+      "category": "time",
+      "severity": "fail",
+      "description": "Documented session time must support billed 15-minute units.",
+      "applies_to": ["97151", "97153", "97155", "97156", "97158"],
+      "inputs": ["start_time", "end_time", "units_billed"],
+      "logic": "minutes_between(start_time, end_time) >= units_billed * 15",
+      "failure_message": "Documented time does not support billed units."
+    },
+    {
+      "id": "DOC-001",
+      "category": "documentation",
+      "severity": "fail",
+      "description": "Session note must include provider signature.",
+      "applies_to": ["97151", "97153", "97155", "97156", "97158"],
+      "inputs": ["signature_present"],
+      "logic": "signature_present == true",
+      "failure_message": "Provider signature is missing."
+    },
+    {
+      "id": "DOC-002",
+      "category": "documentation",
+      "severity": "warning",
+      "description": "Session note should reference active treatment plan goals.",
+      "applies_to": ["97153", "97155", "97156", "97158"],
+      "inputs": ["goals_referenced", "active_treatment_plan_goals"],
+      "logic": "intersection(goals_referenced, active_treatment_plan_goals).length > 0",
+      "failure_message": "Session note does not clearly connect to active treatment plan goals."
+    },
+    {
+      "id": "CPT-97153-001",
+      "category": "cpt_support",
+      "severity": "fail",
+      "description": "CPT 97153 requires documentation of direct adaptive behavior treatment.",
+      "applies_to": ["97153"],
+      "inputs": ["client_present", "interventions_documented", "goals_referenced", "objective_data_present"],
+      "logic": "client_present && interventions_documented && goals_referenced.length > 0 && objective_data_present",
+      "failure_message": "Documentation does not clearly support direct adaptive behavior treatment."
+    },
+    {
+      "id": "CPT-97155-001",
+      "category": "cpt_support",
+      "severity": "fail",
+      "description": "CPT 97155 requires protocol modification or treatment protocol assessment documentation.",
+      "applies_to": ["97155"],
+      "inputs": ["protocol_reviewed", "protocol_modified", "treatment_protocol_assessed"],
+      "logic": "protocol_reviewed || protocol_modified || treatment_protocol_assessed",
+      "failure_message": "Documentation does not identify protocol modification or protocol assessment."
+    },
+    {
+      "id": "CPT-97155-002",
+      "category": "cpt_support",
+      "severity": "fail",
+      "description": "CPT 97155 note should include clinical rationale and data supporting the modification.",
+      "applies_to": ["97155"],
+      "inputs": ["clinical_rationale_present", "supporting_data_present"],
+      "logic": "clinical_rationale_present && supporting_data_present",
+      "failure_message": "Clinical rationale or supporting data for protocol modification is missing."
+    },
+    {
+      "id": "CPT-97155-003",
+      "category": "cpt_support",
+      "severity": "warning",
+      "description": "Direct therapy activities should be clearly separated from BCBA protocol modification work.",
+      "applies_to": ["97155"],
+      "inputs": ["direct_treatment_narrative_only", "provider_level_work_documented"],
+      "logic": "!direct_treatment_narrative_only || provider_level_work_documented",
+      "failure_message": "Note reads like direct treatment only and may not support 97155."
+    },
+    {
+      "id": "CPT-97156-001",
+      "category": "cpt_support",
+      "severity": "fail",
+      "description": "CPT 97156 requires caregiver training documentation.",
+      "applies_to": ["97156"],
+      "inputs": ["caregiver_present", "training_topic_present", "caregiver_response_documented"],
+      "logic": "caregiver_present && training_topic_present && caregiver_response_documented",
+      "failure_message": "Caregiver training documentation is incomplete."
+    }
+  ]
+}
+

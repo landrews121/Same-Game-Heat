@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Batch Run Tracker</title>
+    <link rel="stylesheet" href="batch-scheduler.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">PepsiCo Bottling Co.</p>
+          <h1>Batch Run Tracker</h1>
+        </div>
+        <div class="topbar-actions">
+          <button id="exportCsv" type="button" class="icon-button" title="Export schedule CSV" aria-label="Export schedule CSV">CSV</button>
+          <button id="clearWeek" type="button" class="danger-button">Clear Week</button>
+        </div>
+      </header>
+
+      <section class="summary-strip" aria-label="Production summary">
+        <article>
+          <span>Planned</span>
+          <strong id="plannedTotal">0</strong>
+        </article>
+        <article>
+          <span>Made</span>
+          <strong id="madeTotal">0</strong>
+        </article>
+        <article>
+          <span>Remaining</span>
+          <strong id="remainingTotal">0</strong>
+        </article>
+        <article>
+          <span>Short Lines</span>
+          <strong id="shortLines">0</strong>
+        </article>
+      </section>
+
+      <section class="workspace">
+        <aside class="side-panel">
+          <section class="tool-section">
+            <div class="section-heading">
+              <h2>Import Rows</h2>
+              <span id="weekLabel">CSV or pasted table</span>
+            </div>
+            <label class="file-drop compact-drop">
+              <input id="scheduleCsv" type="file" accept=".csv,text/csv" />
+              <span>Upload schedule CSV</span>
+            </label>
+            <textarea id="importText" placeholder="Line,Product,Planned Units&#10;1,Pepsi 20oz,120&#10;2,Diet Pepsi 20oz,84"></textarea>
+            <button id="importRows" type="button" class="primary-button">Import / Update Schedule</button>
+          </section>
+
+          <section class="tool-section">
+            <div class="section-heading">
+              <h2>Add Item</h2>
+              <span>Manual entry</span>
+            </div>
+            <form id="scheduleForm" class="stacked-form">
+              <label>
+                Line
+                <input id="lineInput" type="text" placeholder="Line 1" />
+              </label>
+              <label>
+                Product
+                <input id="productInput" type="text" placeholder="Product / package" required />
+              </label>
+              <label>
+                Planned Units
+                <input id="plannedInput" type="number" min="1" step="1" placeholder="0" required />
+              </label>
+              <button type="submit" class="primary-button">Add to Schedule</button>
+            </form>
+          </section>
+        </aside>
+
+        <section class="main-panel">
+          <section class="entry-panel">
+            <div class="section-heading">
+              <h2>Record Made Units</h2>
+              <span>Every entry is logged</span>
+            </div>
+            <form id="productionForm" class="production-form">
+              <label>
+                Batcher
+                <input id="batcherInput" type="text" placeholder="Name" required />
+              </label>
+              <label>
+                Schedule Item
+                <select id="itemSelect" required></select>
+              </label>
+              <label>
+                Units Made
+                <input id="madeInput" type="number" min="1" step="1" placeholder="0" required />
+              </label>
+              <label>
+                Notes
+                <input id="noteInput" type="text" placeholder="Optional" />
+              </label>
+              <button type="submit" class="primary-button">Record Units</button>
+            </form>
+          </section>
+
+          <section class="schedule-panel">
+            <div class="section-heading">
+              <h2>Live Schedule</h2>
+              <div class="schedule-controls">
+                <label class="line-filter">
+                  Line
+                  <select id="lineFilter">
+                    <option value="BIB" selected>BIB</option>
+                    <option value="CAN">CAN</option>
+                    <option value="BOT">BOT</option>
+                  </select>
+                </label>
+                <div class="filters">
+                  <button type="button" class="filter-button active" data-filter="all">All</button>
+                  <button type="button" class="filter-button" data-filter="open">Open</button>
+                  <button type="button" class="filter-button" data-filter="done">Done</button>
+                  <button type="button" class="filter-button" data-filter="over">Over</button>
+                  <button type="button" class="filter-button" data-filter="removed">Removed</button>
+                </div>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Line</th>
+                    <th>Product</th>
+                    <th>Planned</th>
+                    <th>Made</th>
+                    <th>Remaining</th>
+                    <th>Status</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="scheduleBody"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="log-panel">
+            <div class="section-heading">
+              <h2>Audit Log</h2>
+              <button id="clearLog" type="button" class="secondary-button">Clear Log</button>
+            </div>
+            <div id="auditLog" class="audit-log"></div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="batch-scheduler.js"></script>
+  </body>
+</html>

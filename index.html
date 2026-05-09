@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Same Game Heat</title>
+    <link rel="stylesheet" href="styles.css?v=v47-mobile-games-news-tabs" />
+  </head>
+  <body>
+    <main id="appShell" class="app-shell" data-mobile-tab="games">
+      <section class="app-header">
+        <div>
+          <p class="eyebrow">Same Game Heat</p>
+          <h1>Same Game Heat</h1>
+        </div>
+        <div class="league-tabs">
+          <button type="button" class="active" data-sport-target="basketball_nba">NBA</button>
+          <button type="button" data-sport-target="baseball_mlb">MLB</button>
+        </div>
+      </section>
+
+      <section class="setup-panel panel">
+        <label>
+          Sport
+          <select id="sportKey">
+            <option value="basketball_nba">NBA</option>
+            <option value="basketball_wnba">WNBA</option>
+            <option value="baseball_mlb">MLB</option>
+            <option value="icehockey_nhl">NHL</option>
+            <option value="americanfootball_nfl">NFL</option>
+          </select>
+        </label>
+        <label>
+          Slate Date
+          <input id="slateDate" type="date" />
+        </label>
+        <label>
+          Region
+          <select id="region">
+            <option value="us">US</option>
+            <option value="us2">US 2</option>
+            <option value="uk">UK</option>
+            <option value="eu">EU</option>
+          </select>
+        </label>
+        <label>
+          Sportsbook
+          <select id="bookFilter">
+            <option value="fanatics">Fanatics</option>
+            <option value="draftkings">DraftKings</option>
+            <option value="fanduel">FanDuel</option>
+            <option value="betmgm">BetMGM</option>
+            <option value="caesars">Caesars</option>
+          </select>
+        </label>
+      </section>
+
+      <p id="sportReadiness" class="sport-readiness">NBA mode is live. MLB is scaffolded for sportsbook-line testing.</p>
+      <p id="status" class="status">Loading today’s slate and building boards...</p>
+
+      <nav class="mobile-tabs" aria-label="Mobile sections">
+        <button type="button" class="active" data-tab="games" aria-selected="true">Games</button>
+        <button type="button" data-tab="news" aria-selected="false">LineUp/News</button>
+        <button type="button" data-tab="logs" aria-selected="false">Player Logs</button>
+        <button type="button" data-tab="saved" aria-selected="false">Saved</button>
+      </nav>
+
+      <section class="workspace">
+        <aside class="panel slate-panel">
+          <div class="section-heading">
+            <h2>Games</h2>
+            <span id="gameCount" class="pill">0 games</span>
+          </div>
+          <div id="gameList" class="game-list"></div>
+          <div class="saved-board-section">
+            <div class="section-heading compact-heading">
+              <h2>Saved Boards</h2>
+              <span class="pill">Results</span>
+            </div>
+            <label class="saved-date-picker">
+              Saved Date
+              <input id="savedBoardDate" type="date" />
+            </label>
+            <div id="boardSuccess" class="board-success-panel">Board success will appear after saved results are graded.</div>
+            <div id="savedBoards" class="saved-board-list">Previous boards will appear here after games are graded.</div>
+          </div>
+        </aside>
+
+        <section class="results-column">
+          <section class="top-strip">
+            <div>
+              <p class="eyebrow">Selected Game</p>
+              <h2 id="selectedGameTitle">No game selected</h2>
+            </div>
+            <div class="grade-meter" aria-label="Parlay grade">
+              <span id="parlayScore">--</span>
+              <small>/100</small>
+            </div>
+          </section>
+
+          <section class="panel game-news-panel">
+            <div class="section-heading">
+              <h2>Game News</h2>
+              <div class="heading-actions">
+                <span id="gameNewsLabel" class="pill">Selected game</span>
+                <button id="toggleGameNews" class="collapse-toggle" type="button" aria-expanded="true" aria-controls="gameNews">Hide</button>
+              </div>
+            </div>
+            <div id="gameNews" class="news-empty">Select a game to view relevant injuries, starting lineups, and updates.</div>
+          </section>
+
+          <section id="parlayCard" class="panel parlay-card">
+            <div class="section-heading">
+              <h2>Game Parlays</h2>
+              <span id="riskLabel" class="pill">Awaiting slate</span>
+            </div>
+            <nav id="parlayTabs" class="parlay-tabs" aria-label="Parlay boards">
+              <button type="button" class="active" data-parlay-view="single" aria-selected="true">Bet of the Day</button>
+              <button type="button" data-parlay-view="safe" aria-selected="false">Safe Ladder</button>
+              <button type="button" data-parlay-view="two" aria-selected="false">Low Risk</button>
+              <button type="button" data-parlay-view="three" aria-selected="false">Value</button>
+              <button type="button" data-parlay-view="glory" aria-selected="false">Shot of Glory</button>
+            </nav>
+            <div id="parlays" class="legs-empty">Fetch or load a slate to generate parlays.</div>
+          </section>
+
+          <section class="panel context-panel">
+            <div class="section-heading">
+              <h2>Player Series Game Logs</h2>
+              <div class="heading-actions">
+                <span class="muted">Web search, sportsbook lines, logs</span>
+                <button id="togglePlayerLogs" class="collapse-toggle" type="button" aria-expanded="true" aria-controls="playerLogsBody">Hide</button>
+              </div>
+            </div>
+            <div id="playerLogsBody">
+              <div class="player-lookup">
+                <label>
+                  Player Name
+                  <input id="playerSearch" type="search" list="playerOptions" placeholder="Type a player name" autocomplete="off" />
+                  <datalist id="playerOptions"></datalist>
+                </label>
+                <button id="searchPlayer" class="secondary-button lookup-button" type="button">Web Search</button>
+              </div>
+              <div id="playerContext" class="adjustments-empty">Select a game, then type a player name to inspect context.</div>
+              <div id="candidateGuide" class="candidate-guide"></div>
+            </div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="app.js?v=v47-mobile-games-news-tabs"></script>
+  </body>
+</html>

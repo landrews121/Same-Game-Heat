@@ -1,0 +1,773 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ABA Claim Readiness Audit</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f7f4;
+        --ink: #172026;
+        --muted: #68737d;
+        --panel: #ffffff;
+        --line: #d8ded8;
+        --teal: #0f766e;
+        --teal-soft: #dff5f1;
+        --green: #2f7d32;
+        --green-soft: #e8f5e9;
+        --red: #b4232d;
+        --red-soft: #fff0f1;
+        --amber: #9a6200;
+        --amber-soft: #fff6dd;
+        --navy: #1f3655;
+        --blue-soft: #edf4ff;
+        --shadow: 0 12px 36px rgba(23, 32, 38, 0.09);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      button,
+      select {
+        font: inherit;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      .shell {
+        max-width: 1440px;
+        margin: 0 auto;
+        padding: 22px;
+      }
+
+      .masthead {
+        min-height: 150px;
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 24px;
+        padding: 24px;
+        border-radius: 8px;
+        background:
+          linear-gradient(90deg, rgba(23, 32, 38, 0.92), rgba(31, 54, 85, 0.9)),
+          url("https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?auto=format&fit=crop&w=1800&q=80");
+        background-size: cover;
+        background-position: center;
+        color: white;
+        box-shadow: var(--shadow);
+      }
+
+      .eyebrow {
+        margin: 0 0 5px;
+        color: #bfeee7;
+        font-size: 0.76rem;
+        font-weight: 850;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        max-width: 760px;
+        margin-bottom: 0;
+        font-size: clamp(2rem, 4vw, 3.4rem);
+        line-height: 1;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        margin-bottom: 0;
+        font-size: 1.05rem;
+        letter-spacing: 0;
+      }
+
+      h3 {
+        margin-bottom: 8px;
+        font-size: 0.95rem;
+      }
+
+      .control-bar {
+        display: grid;
+        grid-template-columns: minmax(260px, 1fr) auto auto;
+        gap: 12px;
+        margin: 16px 0;
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: 0 1px 0 rgba(23, 32, 38, 0.04);
+      }
+
+      label {
+        display: grid;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 0.78rem;
+        font-weight: 800;
+      }
+
+      select {
+        width: 100%;
+        min-height: 42px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: #fbfcfb;
+        color: var(--ink);
+        padding: 0 10px;
+      }
+
+      .button {
+        min-height: 42px;
+        align-self: end;
+        border-radius: 7px;
+        padding: 0 14px;
+        border: 1px solid #0e625c;
+        background: var(--teal);
+        color: white;
+        font-weight: 850;
+      }
+
+      .button.secondary {
+        border-color: var(--line);
+        background: white;
+        color: var(--ink);
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(290px, 360px) minmax(0, 1fr);
+        gap: 16px;
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        box-shadow: 0 1px 0 rgba(23, 32, 38, 0.04);
+      }
+
+      .sidebar {
+        align-self: start;
+        position: sticky;
+        top: 18px;
+        padding: 16px;
+      }
+
+      .packet-list {
+        display: grid;
+        gap: 10px;
+        margin-top: 12px;
+      }
+
+      .packet-button {
+        width: 100%;
+        min-height: 70px;
+        text-align: left;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: white;
+        padding: 12px;
+      }
+
+      .packet-button[aria-pressed="true"] {
+        border-color: var(--teal);
+        background: var(--teal-soft);
+      }
+
+      .packet-button strong,
+      .packet-button span {
+        display: block;
+      }
+
+      .packet-button span {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 0.84rem;
+        line-height: 1.3;
+      }
+
+      .main {
+        display: grid;
+        gap: 16px;
+      }
+
+      .scoreboard {
+        display: grid;
+        grid-template-columns: 190px repeat(3, minmax(120px, 1fr));
+        gap: 12px;
+      }
+
+      .metric {
+        min-height: 112px;
+        padding: 16px;
+      }
+
+      .score {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        min-height: 112px;
+        padding: 16px;
+        color: white;
+      }
+
+      .score.pass {
+        background: linear-gradient(145deg, #256d3a, #0f766e);
+      }
+
+      .score.fail {
+        background: linear-gradient(145deg, #95202a, #672639);
+      }
+
+      .score.warning {
+        background: linear-gradient(145deg, #9a6200, #6d5016);
+      }
+
+      .score b {
+        font-size: 2.6rem;
+        line-height: 1;
+      }
+
+      .metric span,
+      .score span {
+        display: block;
+        color: var(--muted);
+        font-size: 0.75rem;
+        font-weight: 850;
+        text-transform: uppercase;
+      }
+
+      .score span {
+        color: rgba(255, 255, 255, 0.78);
+      }
+
+      .metric b {
+        display: block;
+        margin-top: 8px;
+        font-size: 1.3rem;
+      }
+
+      .content-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(320px, 0.8fr);
+        gap: 16px;
+      }
+
+      .section {
+        padding: 16px;
+      }
+
+      .table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+      }
+
+      .table th,
+      .table td {
+        border-bottom: 1px solid var(--line);
+        padding: 10px 8px;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      .table th {
+        width: 38%;
+        color: var(--muted);
+        font-size: 0.76rem;
+        text-transform: uppercase;
+      }
+
+      .findings {
+        display: grid;
+        gap: 10px;
+        margin-top: 12px;
+      }
+
+      .finding {
+        border: 1px solid var(--line);
+        border-left-width: 5px;
+        border-radius: 8px;
+        padding: 12px;
+        background: white;
+      }
+
+      .finding.fail {
+        border-left-color: var(--red);
+        background: var(--red-soft);
+      }
+
+      .finding.warning {
+        border-left-color: var(--amber);
+        background: var(--amber-soft);
+      }
+
+      .finding.pass {
+        border-left-color: var(--green);
+        background: var(--green-soft);
+      }
+
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        border-radius: 999px;
+        padding: 0 9px;
+        background: var(--blue-soft);
+        color: var(--navy);
+        font-size: 0.75rem;
+        font-weight: 850;
+      }
+
+      .note {
+        margin: 10px 0 0;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .text-block {
+        margin: 12px 0 0;
+        color: #34414b;
+        line-height: 1.55;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+      }
+
+      @media (max-width: 980px) {
+        .control-bar,
+        .layout,
+        .scoreboard,
+        .content-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .sidebar {
+          position: static;
+        }
+
+        .masthead {
+          align-items: start;
+          flex-direction: column;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="masthead">
+        <div>
+          <p class="eyebrow">Thrive Advanced Care Concept</p>
+          <h1>ABA Claim Readiness Audit</h1>
+        </div>
+      </header>
+
+      <section class="control-bar">
+        <label>
+          Packet
+          <select id="packetSelect"></select>
+        </label>
+        <button class="button" id="runAudit" type="button">Run Audit</button>
+        <button class="button secondary" id="copyReport" type="button">Copy Report</button>
+      </section>
+
+      <section class="layout">
+        <aside class="panel sidebar">
+          <h2>Reference Packets</h2>
+          <p class="note">Synthetic examples for designing the first audit rules. No real patient data.</p>
+          <div class="packet-list" id="packetList"></div>
+        </aside>
+
+        <section class="main">
+          <section class="scoreboard">
+            <div class="panel score" id="scoreCard">
+              <span>Audit Status</span>
+              <b id="statusText">--</b>
+            </div>
+            <div class="panel metric">
+              <span>CPT</span>
+              <b id="metricCpt">--</b>
+            </div>
+            <div class="panel metric">
+              <span>Units</span>
+              <b id="metricUnits">--</b>
+            </div>
+            <div class="panel metric">
+              <span>Payer</span>
+              <b id="metricPayer">--</b>
+            </div>
+          </section>
+
+          <section class="content-grid">
+            <section class="panel section">
+              <h2>Claim Snapshot</h2>
+              <table class="table" id="claimTable"></table>
+            </section>
+
+            <section class="panel section">
+              <h2>Audit Findings</h2>
+              <div class="findings" id="findings"></div>
+            </section>
+          </section>
+
+          <section class="panel section">
+            <h2>Session Documentation</h2>
+            <p class="text-block" id="sessionNote"></p>
+            <div class="actions" id="documentationTags"></div>
+          </section>
+
+          <section class="panel section">
+            <h2>Recommended Next Step</h2>
+            <p class="text-block" id="nextStep"></p>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script>
+      const packets = [
+        {
+          id: "denied-97155",
+          title: "Denied 97155",
+          subtitle: "Missing protocol modification support",
+          expectedStatus: "fail",
+          payer: "Northstar Health",
+          clientId: "CLIENT-001",
+          dateOfService: "2026-03-12",
+          cpt: "97155",
+          modifier: "HN",
+          placeOfService: "11",
+          provider: "PROV-BCBA-014",
+          credential: "BCBA",
+          units: 8,
+          minutes: 120,
+          diagnosis: "F84.0",
+          authorization: {
+            number: "AUTH-NS-778201",
+            start: "2026-02-01",
+            end: "2026-05-01",
+            cpts: ["97155"],
+            remainingUnits: 56
+          },
+          note: "Client arrived at clinic and transitioned to the therapy room with minimal prompting. Provider worked on matching, manding, listener responding, and tolerating denied access. Client completed table work activities and earned breaks. Provider redirected client and used differential reinforcement.",
+          facts: {
+            signaturePresent: true,
+            clientPresent: true,
+            goalsReferenced: true,
+            interventionsDocumented: true,
+            objectiveDataPresent: true,
+            protocolReviewed: false,
+            protocolModified: false,
+            treatmentProtocolAssessed: false,
+            clinicalRationalePresent: false,
+            supportingDataPresent: false,
+            directTreatmentNarrativeOnly: true,
+            providerLevelWorkDocumented: false
+          },
+          nextStep: "Do not send as-is. If the service really was 97155, revise the note from the clinical record to identify the protocol reviewed, data prompting the change, modification made, provider direction, and future implementation instructions."
+        },
+        {
+          id: "corrected-97155",
+          title: "Corrected 97155",
+          subtitle: "Protocol modification documented",
+          expectedStatus: "pass",
+          payer: "Northstar Health",
+          clientId: "CLIENT-001",
+          dateOfService: "2026-03-12",
+          cpt: "97155",
+          modifier: "HN",
+          placeOfService: "11",
+          provider: "PROV-BCBA-014",
+          credential: "BCBA",
+          units: 8,
+          minutes: 120,
+          diagnosis: "F84.0",
+          authorization: {
+            number: "AUTH-NS-778201",
+            start: "2026-02-01",
+            end: "2026-05-01",
+            cpts: ["97155"],
+            remainingUnits: 56
+          },
+          note: "BCBA provided adaptive behavior treatment with protocol modification after reviewing reduced independence on functional communication and increased elopement during denied-access routines. BCBA modified the denied-access protocol by adding a visual delay cue, adjusted reinforcement from FR3 to FR2, modeled the revised sequence for the RBT, and documented future review criteria.",
+          facts: {
+            signaturePresent: true,
+            clientPresent: true,
+            goalsReferenced: true,
+            interventionsDocumented: true,
+            objectiveDataPresent: true,
+            protocolReviewed: true,
+            protocolModified: true,
+            treatmentProtocolAssessed: true,
+            clinicalRationalePresent: true,
+            supportingDataPresent: true,
+            directTreatmentNarrativeOnly: false,
+            providerLevelWorkDocumented: true
+          },
+          nextStep: "Ready for corrected claim or appeal packet assembly. Attach the corrected note, authorization snapshot, treatment plan excerpt, and concise cover note explaining what documentation now supports 97155."
+        },
+        {
+          id: "paid-97153",
+          title: "Clean 97153",
+          subtitle: "Direct treatment packet expected to pass",
+          expectedStatus: "pass",
+          payer: "Northstar Health",
+          clientId: "CLIENT-002",
+          dateOfService: "2026-03-18",
+          cpt: "97153",
+          modifier: "HM",
+          placeOfService: "11",
+          provider: "PROV-RBT-219",
+          credential: "RBT",
+          units: 12,
+          minutes: 180,
+          diagnosis: "F84.0",
+          authorization: {
+            number: "AUTH-NS-779912",
+            start: "2026-02-15",
+            end: "2026-05-15",
+            cpts: ["97153"],
+            remainingUnits: 244
+          },
+          note: "RBT provided direct adaptive behavior treatment according to the active treatment plan. Session targeted functional communication, listener responding, transition tolerance, and tantrum reduction. RBT used differential reinforcement, visual schedule, token economy, least-to-most prompting, and functional communication training. Data and client response were documented.",
+          facts: {
+            signaturePresent: true,
+            clientPresent: true,
+            goalsReferenced: true,
+            interventionsDocumented: true,
+            objectiveDataPresent: true,
+            protocolReviewed: false,
+            protocolModified: false,
+            treatmentProtocolAssessed: false,
+            clinicalRationalePresent: true,
+            supportingDataPresent: true,
+            directTreatmentNarrativeOnly: true,
+            providerLevelWorkDocumented: false
+          },
+          nextStep: "Ready to submit. Keep the session note, treatment plan, active authorization, eligibility check, and supervision record available in case of payer audit."
+        }
+      ];
+
+      const rules = [
+        {
+          id: "AUTH-001",
+          label: "Authorization active on date of service",
+          applies: () => true,
+          test: (p) => p.dateOfService >= p.authorization.start && p.dateOfService <= p.authorization.end,
+          fail: "Authorization is not active on the date of service."
+        },
+        {
+          id: "AUTH-002",
+          label: "CPT code is authorized",
+          applies: () => true,
+          test: (p) => p.authorization.cpts.includes(p.cpt),
+          fail: "Billed CPT code is not listed on the authorization."
+        },
+        {
+          id: "AUTH-003",
+          label: "Units available",
+          applies: () => true,
+          test: (p) => p.units <= p.authorization.remainingUnits,
+          fail: "Billed units exceed remaining authorized units."
+        },
+        {
+          id: "TIME-001",
+          label: "Time supports billed units",
+          applies: () => true,
+          test: (p) => p.minutes >= p.units * 15,
+          fail: "Documented time does not support billed 15-minute units."
+        },
+        {
+          id: "DOC-001",
+          label: "Signature present",
+          applies: () => true,
+          test: (p) => p.facts.signaturePresent,
+          fail: "Provider signature is missing."
+        },
+        {
+          id: "CPT-97153-001",
+          label: "97153 direct treatment support",
+          applies: (p) => p.cpt === "97153",
+          test: (p) => p.facts.clientPresent && p.facts.interventionsDocumented && p.facts.goalsReferenced && p.facts.objectiveDataPresent,
+          fail: "Documentation does not clearly support direct adaptive behavior treatment."
+        },
+        {
+          id: "CPT-97155-001",
+          label: "97155 protocol modification documented",
+          applies: (p) => p.cpt === "97155",
+          test: (p) => p.facts.protocolReviewed || p.facts.protocolModified || p.facts.treatmentProtocolAssessed,
+          fail: "Documentation does not identify protocol modification or protocol assessment."
+        },
+        {
+          id: "CPT-97155-002",
+          label: "97155 rationale and data present",
+          applies: (p) => p.cpt === "97155",
+          test: (p) => p.facts.clinicalRationalePresent && p.facts.supportingDataPresent,
+          fail: "Clinical rationale or supporting data for protocol modification is missing."
+        },
+        {
+          id: "CPT-97155-003",
+          label: "97155 is not direct-treatment-only",
+          severity: "warning",
+          applies: (p) => p.cpt === "97155",
+          test: (p) => !p.facts.directTreatmentNarrativeOnly || p.facts.providerLevelWorkDocumented,
+          fail: "Note reads like direct treatment only and may not support 97155."
+        }
+      ];
+
+      const elements = {
+        packetSelect: document.querySelector("#packetSelect"),
+        packetList: document.querySelector("#packetList"),
+        runAudit: document.querySelector("#runAudit"),
+        copyReport: document.querySelector("#copyReport"),
+        scoreCard: document.querySelector("#scoreCard"),
+        statusText: document.querySelector("#statusText"),
+        metricCpt: document.querySelector("#metricCpt"),
+        metricUnits: document.querySelector("#metricUnits"),
+        metricPayer: document.querySelector("#metricPayer"),
+        claimTable: document.querySelector("#claimTable"),
+        findings: document.querySelector("#findings"),
+        sessionNote: document.querySelector("#sessionNote"),
+        documentationTags: document.querySelector("#documentationTags"),
+        nextStep: document.querySelector("#nextStep")
+      };
+
+      let selectedId = packets[0].id;
+      let lastReport = "";
+
+      function audit(packet) {
+        const findings = rules.filter((rule) => rule.applies(packet)).map((rule) => {
+          const passed = rule.test(packet);
+          return {
+            id: rule.id,
+            label: rule.label,
+            severity: passed ? "pass" : rule.severity || "fail",
+            message: passed ? "Passed." : rule.fail
+          };
+        });
+        const hasFail = findings.some((finding) => finding.severity === "fail");
+        const hasWarning = findings.some((finding) => finding.severity === "warning");
+        const status = hasFail ? "fail" : hasWarning ? "warning" : "pass";
+        return { status, findings };
+      }
+
+      function render() {
+        const packet = packets.find((item) => item.id === selectedId) || packets[0];
+        const result = audit(packet);
+        elements.packetSelect.value = packet.id;
+        elements.scoreCard.className = `panel score ${result.status}`;
+        elements.statusText.textContent = result.status.toUpperCase();
+        elements.metricCpt.textContent = packet.cpt;
+        elements.metricUnits.textContent = `${packet.units} / ${packet.minutes} min`;
+        elements.metricPayer.textContent = packet.payer;
+
+        const rows = [
+          ["Client", packet.clientId],
+          ["Date of service", packet.dateOfService],
+          ["CPT / modifier", `${packet.cpt} / ${packet.modifier}`],
+          ["Provider", `${packet.provider} (${packet.credential})`],
+          ["Diagnosis", packet.diagnosis],
+          ["Authorization", packet.authorization.number],
+          ["Authorization dates", `${packet.authorization.start} to ${packet.authorization.end}`],
+          ["Remaining units before claim", packet.authorization.remainingUnits]
+        ];
+        elements.claimTable.innerHTML = rows.map(([key, value]) => `<tr><th>${key}</th><td>${value}</td></tr>`).join("");
+        elements.findings.innerHTML = result.findings.map((finding) => `
+          <article class="finding ${finding.severity}">
+            <span class="tag">${finding.id} · ${finding.severity.toUpperCase()}</span>
+            <h3>${finding.label}</h3>
+            <p class="note">${finding.message}</p>
+          </article>
+        `).join("");
+        elements.sessionNote.textContent = packet.note;
+        elements.nextStep.textContent = packet.nextStep;
+        elements.documentationTags.innerHTML = Object.entries(packet.facts)
+          .filter(([, value]) => value)
+          .map(([key]) => `<span class="tag">${key.replace(/[A-Z]/g, " $&").toLowerCase()}</span>`)
+          .join("");
+        document.querySelectorAll(".packet-button").forEach((button) => {
+          button.setAttribute("aria-pressed", String(button.dataset.id === packet.id));
+        });
+        lastReport = buildReport(packet, result);
+      }
+
+      function buildReport(packet, result) {
+        const lines = [
+          `ABA Claim Readiness Audit`,
+          `Packet: ${packet.title}`,
+          `Status: ${result.status.toUpperCase()}`,
+          `Client: ${packet.clientId}`,
+          `DOS: ${packet.dateOfService}`,
+          `CPT: ${packet.cpt}`,
+          `Units: ${packet.units}`,
+          `Payer: ${packet.payer}`,
+          "",
+          "Findings:"
+        ];
+        result.findings.forEach((finding) => {
+          lines.push(`- ${finding.id} [${finding.severity.toUpperCase()}] ${finding.label}: ${finding.message}`);
+        });
+        lines.push("", `Next step: ${packet.nextStep}`);
+        return lines.join("\n");
+      }
+
+      function setup() {
+        elements.packetSelect.innerHTML = packets.map((packet) => `<option value="${packet.id}">${packet.title}</option>`).join("");
+        elements.packetList.innerHTML = packets.map((packet) => `
+          <button class="packet-button" type="button" data-id="${packet.id}" aria-pressed="false">
+            <strong>${packet.title}</strong>
+            <span>${packet.subtitle}</span>
+          </button>
+        `).join("");
+        elements.packetSelect.addEventListener("change", (event) => {
+          selectedId = event.target.value;
+          render();
+        });
+        elements.packetList.addEventListener("click", (event) => {
+          const button = event.target.closest(".packet-button");
+          if (!button) return;
+          selectedId = button.dataset.id;
+          render();
+        });
+        elements.runAudit.addEventListener("click", render);
+        elements.copyReport.addEventListener("click", async () => {
+          try {
+            await navigator.clipboard.writeText(lastReport);
+            elements.copyReport.textContent = "Copied";
+            setTimeout(() => {
+              elements.copyReport.textContent = "Copy Report";
+            }, 1200);
+          } catch {
+            window.prompt("Audit report", lastReport);
+          }
+        });
+        render();
+      }
+
+      setup();
+    </script>
+  </body>
+</html>
+
