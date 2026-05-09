@@ -130,9 +130,11 @@ function toOddsApiDateTime(date) {
 }
 
 function dateBounds(dateValue) {
-  const start = new Date(`${dateValue}T00:00:00`);
+  // Use a broad US sports-day window instead of server-local midnight.
+  // Render runs in UTC, and late US games often start after 00:00Z.
+  const start = new Date(`${dateValue}T08:00:00Z`);
   const end = new Date(start);
-  end.setDate(start.getDate() + 1);
+  end.setUTCDate(start.getUTCDate() + 1);
   return {
     from: toOddsApiDateTime(start),
     to: toOddsApiDateTime(end)

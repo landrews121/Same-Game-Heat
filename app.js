@@ -194,7 +194,7 @@ document.querySelectorAll("[data-parlay-view]").forEach((button) => {
 const tabButtons = Array.from(document.querySelectorAll(".mobile-tabs button"));
 const parlayTabButtons = Array.from(document.querySelectorAll("[data-parlay-view]"));
 const leagueTabButtons = Array.from(document.querySelectorAll("[data-sport-target]"));
-const boardBuildVersion = "v47-mobile-games-news-tabs";
+const boardBuildVersion = "v48-us-sports-day-slate";
 const shotBuildVersion = "v4-quality-first";
 const minimumLegProbability = 0.6;
 const singleLegProbability = 0.62;
@@ -4373,9 +4373,9 @@ function render() {
 }
 
 function getDateBounds(date) {
-  const start = new Date(`${date}T00:00:00`);
+  const start = new Date(`${date}T08:00:00Z`);
   const end = new Date(start);
-  end.setDate(start.getDate() + 1);
+  end.setUTCDate(start.getUTCDate() + 1);
   return {
     from: toOddsApiDateTime(start),
     to: toOddsApiDateTime(end)
