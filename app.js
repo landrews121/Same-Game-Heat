@@ -194,7 +194,7 @@ document.querySelectorAll("[data-parlay-view]").forEach((button) => {
 const tabButtons = Array.from(document.querySelectorAll(".mobile-tabs button"));
 const parlayTabButtons = Array.from(document.querySelectorAll("[data-parlay-view]"));
 const leagueTabButtons = Array.from(document.querySelectorAll("[data-sport-target]"));
-const boardBuildVersion = "v54-player-stat-lockout";
+const boardBuildVersion = "v55-star-board-priority";
 const shotBuildVersion = "v4-quality-first";
 const minimumLegProbability = 0.6;
 const singleLegProbability = 0.62;
@@ -2036,18 +2036,24 @@ function bestLegForEachPlayer(legs) {
 }
 
 function buildStarValueParlay(game, usedLegs = []) {
-  const pool = (playoffEngineActive() ? playoffFullLineCandidatePool(game, "Star Value Engine") : reserveLegPool(game, "three"))
+  const fullPool = (playoffEngineActive() ? playoffFullLineCandidatePool(game, "Star Value Engine") : reserveLegPool(game, "three"))
     .filter((leg) => !leg.modeledFloor)
     .filter((leg) => !usedLegKeySet(usedLegs).has(boardExposureKey(leg)))
     .filter((leg) => leg.selectedBookAvailable !== false)
     .filter((leg) => leg.manualInjury !== "player_out" && leg.manualInjury !== "minutes_limit")
-    .filter((leg) => leg.playerTier === "star" || leg.playerTier === "starter" || Number(leg.averageMinutes || 0) >= 28 || leg.score >= 50)
-    .filter((leg) => leg.probability >= 0.46 && leg.score >= 28)
+    .filter((leg) => Number.isFinite(Number(leg.probability)))
     .sort((a, b) =>
       b.probability - a.probability ||
       b.survivabilityScore - a.survivabilityScore ||
       b.score - a.score
     );
+  const corePool = fullPool.filter((leg) =>
+    leg.playerTier === "star" ||
+    leg.playerTier === "starter" ||
+    Number(leg.averageMinutes || 0) >= 28 ||
+    leg.score >= 50
+  );
+  const pool = corePool.length >= 4 ? corePool : fullPool;
   const bestByPlayer = bestLegForEachPlayer(pool);
   const homeKey = normalizeName(game.homeTeam);
   const awayKey = normalizeName(game.awayTeam);
@@ -2089,11 +2095,11 @@ function shotLockKey() {
 function liveGameBuild(game) {
   const usedLegs = [];
   const singleLegs = reserveUsedLegs(usedLegs, buildBestSingleLeg(game));
+  const valueStarLegs = reserveUsedLegs(usedLegs, buildStarValueParlay(game, usedLegs));
   const safeLadderLegs = reserveUsedLegs(usedLegs, buildSafeLadder(game, usedLegs));
   const saferLegs = reserveUsedLegs(usedLegs, buildParlay(game, 2, usedLegs));
   const sameTeamLegs = reserveUsedLegs(usedLegs, buildSameTeamParlay(game, saferLegs, usedLegs));
   const threeLegs = reserveUsedLegs(usedLegs, buildMixedTeamParlay(game, usedLegs));
-  const valueStarLegs = reserveUsedLegs(usedLegs, buildStarValueParlay(game, usedLegs));
   return {
     singleLegs,
     safeLadderLegs,
