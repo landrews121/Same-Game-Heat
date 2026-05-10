@@ -194,7 +194,7 @@ document.querySelectorAll("[data-parlay-view]").forEach((button) => {
 const tabButtons = Array.from(document.querySelectorAll(".mobile-tabs button"));
 const parlayTabButtons = Array.from(document.querySelectorAll("[data-parlay-view]"));
 const leagueTabButtons = Array.from(document.querySelectorAll("[data-sport-target]"));
-const boardBuildVersion = "v55-star-board-priority";
+const boardBuildVersion = "v57-priced-board-fill";
 const shotBuildVersion = "v4-quality-first";
 const minimumLegProbability = 0.6;
 const singleLegProbability = 0.62;
@@ -1736,8 +1736,7 @@ function buildSafeLadder(game, usedLegs = []) {
     const pricedPool = playoffFullLineCandidatePool(game, "Safe Ladder Price Engine")
       .filter(pricedFullLineLeg)
       .filter((leg) => !usedLegKeySet(usedLegs).has(boardExposureKey(leg)))
-      .filter((leg) => leg.probability >= 0.5 && leg.survivabilityScore >= 32)
-      .filter((leg) => leg.playerTier === "star" || leg.playerTier === "starter" || leg.probability >= 0.56)
+      .filter((leg) => leg.probability >= 0.46 && leg.score >= 28)
       .sort((a, b) =>
         b.probability - a.probability ||
         b.survivabilityScore - a.survivabilityScore ||
@@ -1973,13 +1972,13 @@ function buildPlayoffLowRiskParlay(game, usedLegs = []) {
   const basePool = playoffFullLineCandidatePool(game, "Low-Risk Price Engine")
     .filter(pricedFullLineLeg)
     .filter((leg) => !usedLegKeySet(usedLegs).has(boardExposureKey(leg)))
-    .filter((leg) => leg.probability >= 0.5 && leg.survivabilityScore >= 30)
+    .filter((leg) => leg.probability >= 0.46 && leg.score >= 28)
     .sort((a, b) =>
       b.probability - a.probability ||
       b.survivabilityScore - a.survivabilityScore ||
       b.score - a.score
     );
-  let selected = bestPricedTwoLegParlay(basePool.filter((leg) => leg.probability >= 0.54 && leg.survivabilityScore >= 42), game);
+  let selected = bestPricedTwoLegParlay(basePool.filter((leg) => leg.probability >= 0.5 && leg.survivabilityScore >= 34), game);
   if (selected.length < 2) {
     selected = bestPricedTwoLegParlay(basePool, game, { allowJuicedLegs: true });
   }
@@ -2095,10 +2094,10 @@ function shotLockKey() {
 function liveGameBuild(game) {
   const usedLegs = [];
   const singleLegs = reserveUsedLegs(usedLegs, buildBestSingleLeg(game));
-  const valueStarLegs = reserveUsedLegs(usedLegs, buildStarValueParlay(game, usedLegs));
   const safeLadderLegs = reserveUsedLegs(usedLegs, buildSafeLadder(game, usedLegs));
   const saferLegs = reserveUsedLegs(usedLegs, buildParlay(game, 2, usedLegs));
   const sameTeamLegs = reserveUsedLegs(usedLegs, buildSameTeamParlay(game, saferLegs, usedLegs));
+  const valueStarLegs = reserveUsedLegs(usedLegs, buildStarValueParlay(game, usedLegs));
   const threeLegs = reserveUsedLegs(usedLegs, buildMixedTeamParlay(game, usedLegs));
   return {
     singleLegs,
