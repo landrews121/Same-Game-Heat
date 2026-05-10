@@ -194,7 +194,7 @@ document.querySelectorAll("[data-parlay-view]").forEach((button) => {
 const tabButtons = Array.from(document.querySelectorAll(".mobile-tabs button"));
 const parlayTabButtons = Array.from(document.querySelectorAll("[data-parlay-view]"));
 const leagueTabButtons = Array.from(document.querySelectorAll("[data-sport-target]"));
-const boardBuildVersion = "v48-us-sports-day-slate";
+const boardBuildVersion = "v49-odds-and-board-fill";
 const shotBuildVersion = "v4-quality-first";
 const minimumLegProbability = 0.6;
 const singleLegProbability = 0.62;
@@ -1588,7 +1588,19 @@ function floorMilestoneForProp(prop) {
 
 function floorOddsForProp(prop, cushion) {
   const base = Number(prop.overOdds ?? prop.odds);
-  const floorPrice = cushion >= 7 ? -360 : cushion >= 5 ? -300 : cushion >= 3 ? -240 : -200;
+  const market = prop.market;
+  let floorPrice = -650;
+
+  if (market === "player_assists") {
+    floorPrice = cushion >= 3.5 ? -1200 : cushion >= 2.5 ? -1000 : -650;
+  } else if (market === "player_rebounds") {
+    floorPrice = cushion >= 3.5 ? -900 : cushion >= 2.5 ? -700 : -500;
+  } else if (market === "player_points") {
+    floorPrice = cushion >= 8 ? -1200 : cushion >= 6 ? -900 : cushion >= 4 ? -650 : -450;
+  } else if (isComboMarket(market)) {
+    floorPrice = cushion >= 8 ? -850 : cushion >= 6 ? -700 : cushion >= 4 ? -500 : -360;
+  }
+
   if (!Number.isFinite(base)) return floorPrice;
   return Math.min(base, floorPrice);
 }
@@ -1921,14 +1933,22 @@ function playoffFullLineAnchorPool(game) {
 }
 
 function buildPlayoffLowRiskParlay(game) {
-  const pool = playoffAnchorPool(game)
-    .filter((leg) => leg.survivabilityScore >= 62 && leg.probability >= 0.58)
+  const basePool = playoffAnchorPool(game);
+  const pool = basePool
+    .filter((leg) => (leg.survivabilityScore >= 62 || (leg.modeledFloor && leg.survivabilityScore >= 54)) && leg.probability >= 0.58)
     .sort((a, b) => b.survivabilityScore - a.survivabilityScore || b.probability - a.probability);
-  const selected = selectUniqueLegs(pool, 3, {
+  let selected = selectUniqueLegs(pool, 3, {
     allowMultipleAssists: true,
     game,
     avoidUsageCorrelation: false
   });
+  if (selected.length < 2) {
+    selected = selectUniqueLegs(basePool.filter((leg) => leg.probability >= 0.56), 3, {
+      allowMultipleAssists: true,
+      game,
+      avoidUsageCorrelation: false
+    });
+  }
   return selected.length >= 2 ? selected.slice(0, Math.min(3, selected.length)).map((leg) => ({
     ...leg,
     contextNotes: [...(leg.contextNotes || []), "Low-risk playoff build: stable role and survivability first"]
@@ -1936,14 +1956,28 @@ function buildPlayoffLowRiskParlay(game) {
 }
 
 function buildPlayoffValueParlay(game) {
-  const pool = playoffFullLineCandidatePool(game, "Value Playoff Engine")
+  const basePool = playoffFullLineCandidatePool(game, "Value Playoff Engine")
+    .filter((leg) => !leg.modeledFloor);
+  const pool = basePool
     .filter((leg) => leg.survivabilityScore >= 50 && leg.probability >= 0.5 && !leg.modeledFloor)
     .sort((a, b) => b.score - a.score || b.survivabilityScore - a.survivabilityScore);
-  const selected = selectUniqueLegs(pool, 3, {
+  let selected = selectUniqueLegs(pool, 3, {
     allowMultipleAssists: true,
     game,
     avoidUsageCorrelation: false
   });
+  if (selected.length < 2) {
+    selected = selectUniqueLegs(basePool.filter((leg) =>
+      ["star", "starter"].includes(leg.playerTier) &&
+      leg.probability >= 0.52 &&
+      leg.score >= 35 &&
+      leg.survivabilityScore >= 30
+    ), 3, {
+      allowMultipleAssists: true,
+      game,
+      avoidUsageCorrelation: false
+    });
+  }
   return selected.length >= 2 ? selected.slice(0, Math.min(3, selected.length)).map((leg) => ({
     ...leg,
     contextNotes: [...(leg.contextNotes || []), "Value playoff build: full-line read with acceptable survivability"]
@@ -2106,11 +2140,21 @@ function boostedShotLeg(leg, game) {
 function shotCandidatesForGame(game) {
   const baseBuild = gameParlayBuild(game);
   const excluded = new Set([...(baseBuild.singleLegs || []), ...(baseBuild.safeLadderLegs || []), ...(baseBuild.saferLegs || []), ...(baseBuild.sameTeamLegs || []), ...(baseBuild.threeLegs || []), ...(baseBuild.valueStarLegs || [])].map(shotLegKey));
-  return game.candidates
+  const scored = game.candidates
     .filter((prop) => !prop.excluded)
     .filter((prop) => playerBelongsToGame(prop, game))
-    .flatMap((prop) => scorePropSides(prop, game).map((leg) => boostedShotLeg(leg, game)))
-    .filter((leg) => qualityGate(leg, "shot") || consistencyGate(leg, "shot"))
+    .flatMap((prop) => scorePropSides(prop, game).map((leg) => boostedShotLeg(leg, game)));
+  const gated = scored.filter((leg) => qualityGate(leg, "shot") || consistencyGate(leg, "shot"));
+  const fallback = scored.filter((leg) =>
+    ["star", "starter"].includes(leg.playerTier || inferPlayerTier(leg)) &&
+    leg.probability >= 0.5 &&
+    leg.score >= 34 &&
+    leg.manualInjury !== "player_out" &&
+    leg.manualInjury !== "minutes_limit" &&
+    !(leg.market === "player_threes" && leg.direction === "Over")
+  );
+  return [...gated, ...fallback]
+    .filter((leg, index, legs) => legs.findIndex((item) => shotLegKey(item) === shotLegKey(leg)) === index)
     .filter((leg) => !(leg.market === "player_threes" && leg.direction === "Over" && leg.probability < minimumLegProbability))
     .map((leg) => ({
       ...leg,
@@ -2293,10 +2337,16 @@ function conservativeParlayOdds(legs) {
   if (!legs.length) return 100;
   const decimalProduct = legs.reduce((product, leg) => product * americanToDecimalOdds(leg.odds), 1);
   const rawProfit = Math.max(0, decimalProduct - 1);
-  const sameGameHaircut = legs.length <= 2 ? 0.82 : legs.length <= 3 ? 0.72 : 0.58;
-  const marketOverlapHaircut = new Set(legs.map((leg) => leg.market)).size < legs.length ? 0.9 : 1;
+  const hasModeledFloor = legs.some((leg) => leg.modeledFloor);
+  const sameGameHaircut = hasModeledFloor ? 0.72 : legs.length <= 2 ? 0.82 : legs.length <= 3 ? 0.72 : 0.58;
+  const marketOverlapHaircut = hasModeledFloor ? 1 : new Set(legs.map((leg) => leg.market)).size < legs.length ? 0.9 : 1;
   const conservativeDecimal = 1 + rawProfit * sameGameHaircut * marketOverlapHaircut;
   return decimalToAmericanOdds(conservativeDecimal);
+}
+
+function boardOddsLabel(legs) {
+  const odds = formatOdds(conservativeParlayOdds(legs));
+  return legs.some((leg) => leg.modeledFloor) ? `Est. ${odds}` : odds;
 }
 
 function averageLegProbability(legs) {
@@ -3755,7 +3805,7 @@ function renderParlayGroup(title, legs, description, gameLabel = "") {
   const probability = averageLegProbability(legs);
   const status = boardStatus(grade, legs);
   const bookTitle = elements.bookFilter.options[elements.bookFilter.selectedIndex]?.text || "Sportsbook";
-  const displayOdds = conservativeParlayOdds(legs);
+  const usesModeledFloor = legs.some((leg) => leg.modeledFloor);
 
   return `
     <article class="parlay-group">
@@ -3770,12 +3820,12 @@ function renderParlayGroup(title, legs, description, gameLabel = "") {
           <p>${title}</p>
         </div>
         <div class="parlay-stats">
-          <strong>${formatOdds(displayOdds)}</strong>
+          <strong>${boardOddsLabel(legs)}</strong>
           <span>Grade ${grade}/100</span>
         </div>
       </div>
       <div class="slip-subline">
-        <span>${description}</span>
+        <span>${description}${usesModeledFloor ? " Alt prices are estimated until confirmed in the sportsbook." : ""}</span>
         <strong>${status.label}: ${formatProbability(probability)} avg leg hit</strong>
       </div>
       <div class="board-status ${status.className}">${status.detail}</div>
@@ -3794,6 +3844,7 @@ function renderLeg(leg, gameLabel = "") {
   const title = leg.floorLabel || `${leg.direction} ${leg.line}`;
   const marketLabel = leg.floorMarketLabel || `${marketLabels[leg.market] || leg.market} OU`;
   const floorText = leg.sourceLine ? ` · standard line ${leg.sourceLine}` : "";
+  const oddsText = Number.isFinite(Number(leg.odds)) ? ` · ${leg.modeledFloor ? "est. " : ""}${formatOdds(leg.odds)}` : "";
   const survivabilityText = Number.isFinite(leg.survivabilityScore) ? ` · survive ${leg.survivabilityScore}/100` : "";
   return `
     <article class="leg-card">
@@ -3801,7 +3852,7 @@ function renderLeg(leg, gameLabel = "") {
         <div class="leg-title">${title}</div>
         <div class="leg-meta">${leg.player} - ${marketLabel}</div>
         <div class="leg-game">${gameLabel || leg.gameLabel || ""}</div>
-        <div class="leg-read">Grade ${leg.score}/100 · est. hit ${hitProbability}${survivabilityText}${floorText}</div>
+        <div class="leg-read">Grade ${leg.score}/100 · est. hit ${hitProbability}${survivabilityText}${floorText}${oddsText}</div>
       </div>
     </article>
   `;
