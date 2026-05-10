@@ -7,6 +7,7 @@ const { promisify } = require("node:util");
 
 const root = __dirname;
 const execFileAsync = promisify(execFile);
+const savedBoardsFile = process.env.SAVED_BOARDS_FILE || path.join(root, ".saved-boards.json");
 
 loadEnvFile();
 
@@ -342,7 +343,9 @@ async function cacheSlateProps(props) {
 }
 
 async function cacheSavedBoard(board) {
-  if (!supabaseEnabled() || !board?.key) return false;
+  if (!board?.key) return false;
+  const localCached = await cacheSavedBoardLocally(board);
+  if (!supabaseEnabled()) return localCached;
   try {
     await supabaseRequest("saved_boards?on_conflict=id", {
       method: "POST",
@@ -359,23 +362,64 @@ async function cacheSavedBoard(board) {
     });
     return true;
   } catch {
+    return localCached;
+  }
+}
+
+async function readLocalSavedBoards() {
+  try {
+    const contents = await fs.readFile(savedBoardsFile, "utf8");
+    const boards = JSON.parse(contents);
+    return Array.isArray(boards) ? boards : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeLocalSavedBoards(boards) {
+  await fs.writeFile(savedBoardsFile, JSON.stringify(boards.slice(0, 60), null, 2));
+}
+
+async function cacheSavedBoardLocally(board) {
+  try {
+    const boards = await readLocalSavedBoards();
+    const nextBoards = [
+      board,
+      ...boards.filter((item) => item?.key !== board.key)
+    ].sort((a, b) => String(b?.date || "").localeCompare(String(a?.date || "")));
+    await writeLocalSavedBoards(nextBoards);
+    return true;
+  } catch {
     return false;
   }
 }
 
 async function getSavedBoards({ before, limit = 14 } = {}) {
-  if (!supabaseEnabled()) return [];
+  const localBoards = await readLocalSavedBoards();
+  let remoteBoards = [];
   const params = new URLSearchParams();
   params.set("select", "*");
   params.set("order", "slate_date.desc,updated_at.desc");
   params.set("limit", String(limit));
-  if (before) params.set("slate_date", `lt.${before}`);
-  try {
-    const rows = await supabaseRequest(`saved_boards?${params.toString()}`);
-    return (rows || []).map((row) => row.payload).filter(Boolean);
-  } catch {
-    return [];
+  if (before) params.set("slate_date", `lte.${before}`);
+  if (supabaseEnabled()) {
+    try {
+      const rows = await supabaseRequest(`saved_boards?${params.toString()}`);
+      remoteBoards = (rows || []).map((row) => row.payload).filter(Boolean);
+    } catch {
+      remoteBoards = [];
+    }
   }
+  const boards = [...remoteBoards, ...localBoards]
+    .filter((board) => board?.key)
+    .filter((board) => !before || String(board.date || "") <= String(before));
+  const byKey = new Map();
+  boards.forEach((board) => {
+    if (!byKey.has(board.key)) byKey.set(board.key, board);
+  });
+  return Array.from(byKey.values())
+    .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))
+    .slice(0, limit);
 }
 
 async function supabaseHealth() {
