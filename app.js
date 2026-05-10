@@ -194,7 +194,7 @@ document.querySelectorAll("[data-parlay-view]").forEach((button) => {
 const tabButtons = Array.from(document.querySelectorAll(".mobile-tabs button"));
 const parlayTabButtons = Array.from(document.querySelectorAll("[data-parlay-view]"));
 const leagueTabButtons = Array.from(document.querySelectorAll("[data-sport-target]"));
-const boardBuildVersion = "v53-strict-cross-board-exposure";
+const boardBuildVersion = "v54-player-stat-lockout";
 const shotBuildVersion = "v4-quality-first";
 const minimumLegProbability = 0.6;
 const singleLegProbability = 0.62;
@@ -2149,7 +2149,7 @@ function shotLegKey(leg) {
 }
 
 function boardExposureKey(leg) {
-  return `${normalizeName(leg.player)}|${leg.market}|${leg.direction}`;
+  return `${normalizeName(leg.player)}|${leg.market}`;
 }
 
 function shotPlayerMarketKey(leg) {
