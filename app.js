@@ -187,14 +187,14 @@ const elements = {
   playerContext: document.querySelector("#playerContext"),
   candidateGuide: document.querySelector("#candidateGuide")
 };
-const allowedParlayViews = ["single", "safe", "two", "three", "glory"];
+const allowedParlayViews = ["single", "safe", "three", "glory"];
 document.querySelectorAll("[data-parlay-view]").forEach((button) => {
   if (!allowedParlayViews.includes(button.dataset.parlayView)) button.remove();
 });
 const tabButtons = Array.from(document.querySelectorAll(".mobile-tabs button"));
 const parlayTabButtons = Array.from(document.querySelectorAll("[data-parlay-view]"));
 const leagueTabButtons = Array.from(document.querySelectorAll("[data-sport-target]"));
-const boardBuildVersion = "v58-star-first-then-priced-fill";
+const boardBuildVersion = "v59-star-team-fill-no-low-risk";
 const shotBuildVersion = "v4-quality-first";
 const minimumLegProbability = 0.6;
 const singleLegProbability = 0.62;
@@ -467,9 +467,47 @@ function standardDeviation(values) {
   return Math.sqrt(average(values.map((value) => (value - mean) ** 2)));
 }
 
+const teamAliases = {
+  atl: "atlantahawks",
+  bos: "bostonceltics",
+  bkn: "brooklynnets",
+  cha: "charlottehornets",
+  chi: "chicagobulls",
+  cle: "clevelandcavaliers",
+  dal: "dallasmavericks",
+  den: "denvernuggets",
+  det: "detroitpistons",
+  gsw: "goldenstatewarriors",
+  hou: "houstonrockets",
+  ind: "indianapacers",
+  lac: "losangelesclippers",
+  lal: "losangeleslakers",
+  mem: "memphisgrizzlies",
+  mia: "miamiheat",
+  mil: "milwaukeebucks",
+  min: "minnesotatimberwolves",
+  nop: "neworleanspelicans",
+  nyk: "newyorkknicks",
+  okc: "oklahomacitythunder",
+  orl: "orlandomagic",
+  phi: "philadelphia76ers",
+  phx: "phoenixsuns",
+  por: "portlandtrailblazers",
+  sac: "sacramentokings",
+  sas: "sanantoniospurs",
+  tor: "torontoraptors",
+  uta: "utahjazz",
+  was: "washingtonwizards"
+};
+
+function normalizedTeamName(value) {
+  const key = normalizeName(value);
+  return teamAliases[key] || key;
+}
+
 function sameTeamName(left, right) {
-  const a = normalizeName(left);
-  const b = normalizeName(right);
+  const a = normalizedTeamName(left);
+  const b = normalizedTeamName(right);
   return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
 }
 
@@ -1454,9 +1492,9 @@ function buildBestSingleLeg(game) {
 
 function legTeamKey(leg, game) {
   const team = propTeamName(leg, game);
-  if (sameTeamName(team, game.homeTeam)) return normalizeName(game.homeTeam);
-  if (sameTeamName(team, game.awayTeam)) return normalizeName(game.awayTeam);
-  return normalizeName(team || "");
+  if (sameTeamName(team, game.homeTeam)) return normalizedTeamName(game.homeTeam);
+  if (sameTeamName(team, game.awayTeam)) return normalizedTeamName(game.awayTeam);
+  return normalizedTeamName(team || "");
 }
 
 function playerBelongsToGame(prop, game) {
@@ -1468,7 +1506,7 @@ function playerBelongsToGame(prop, game) {
 function buildSameTeamParlay(game, excludedPlayerLegs = [], usedLegs = []) {
   if (playoffEngineActive()) {
     const excludedPlayers = new Set(excludedPlayerLegs.map((leg) => normalizeName(leg.player)));
-    const alternate = playoffFullLineCandidatePool(game, "Low-Risk Alternate Price Engine")
+    const alternate = playoffFullLineCandidatePool(game, "Priced Pair Alternate Engine")
       .filter(pricedFullLineLeg)
       .filter((leg) => !usedLegKeySet(usedLegs).has(boardExposureKey(leg)))
       .filter((leg) => !excludedPlayers.has(normalizeName(leg.player)))
@@ -1477,7 +1515,7 @@ function buildSameTeamParlay(game, excludedPlayerLegs = [], usedLegs = []) {
     const selected = bestPricedTwoLegParlay(alternate, game);
     return selected.length >= 2 ? selected.slice(0, 2).map((leg) => ({
       ...leg,
-      contextNotes: [...(leg.contextNotes || []), "Low-risk alternate: priced full-line pair with different players from the first board"]
+      contextNotes: [...(leg.contextNotes || []), "Priced pair alternate: full-line pair with different players from the first board"]
     })) : [];
   }
   const excludedPlayers = new Set(excludedPlayerLegs.map((leg) => normalizeName(leg.player)));
@@ -1522,8 +1560,8 @@ function buildMixedTeamParlay(game, usedLegs = []) {
   }
   const reserve = reserveLegPool(game, "three");
   const pool = excludeUsedLegs([...reserve, ...consistencyLegPool(game, "three", reserve)], usedLegs);
-  const homeKey = normalizeName(game.homeTeam);
-  const awayKey = normalizeName(game.awayTeam);
+  const homeKey = normalizedTeamName(game.homeTeam);
+  const awayKey = normalizedTeamName(game.awayTeam);
   const homeLegs = pool.filter((leg) => legTeamKey(leg, game) === homeKey);
   const awayLegs = pool.filter((leg) => legTeamKey(leg, game) === awayKey);
 
@@ -1921,7 +1959,6 @@ function candidateGuideRank(leg) {
 
 function candidateGuideStatus(leg, selectedKeys) {
   if (selectedKeys.anchor.has(shotLegKey(leg))) return { label: "Anchor", className: "strong" };
-  if (selectedKeys.lowRisk.has(shotLegKey(leg))) return { label: "Low Risk", className: "strong" };
   if (selectedKeys.value.has(shotLegKey(leg))) return { label: "Value", className: "playable" };
   if (leg.modeledFloor && leg.probability >= 0.7) return { label: "Ladder", className: "strong" };
   if (Number(leg.survivabilityScore || 0) >= 58 && Number(leg.probability || 0) >= 0.56) return { label: "Playable", className: "playable" };
@@ -1969,7 +2006,7 @@ function playoffFullLineAnchorPool(game) {
 }
 
 function buildPlayoffLowRiskParlay(game, usedLegs = []) {
-  const basePool = playoffFullLineCandidatePool(game, "Low-Risk Price Engine")
+  const basePool = playoffFullLineCandidatePool(game, "Priced Pair Engine")
     .filter(pricedFullLineLeg)
     .filter((leg) => !usedLegKeySet(usedLegs).has(boardExposureKey(leg)))
     .filter((leg) => leg.probability >= 0.46 && leg.score >= 28)
@@ -1984,7 +2021,7 @@ function buildPlayoffLowRiskParlay(game, usedLegs = []) {
   }
   return selected.length >= 2 ? selected.slice(0, 2).map((leg) => ({
     ...leg,
-    contextNotes: [...(leg.contextNotes || []), `Low-risk playoff build: full-line pair priced to reach ${formatOdds(minimumPlayableBoardOdds)} or better`]
+    contextNotes: [...(leg.contextNotes || []), `Priced pair playoff build: full-line pair priced to reach ${formatOdds(minimumPlayableBoardOdds)} or better`]
   })) : [];
 }
 
@@ -2035,10 +2072,17 @@ function bestLegForEachPlayer(legs) {
 }
 
 function buildStarValueParlay(game, usedLegs = []) {
-  const fullPool = (playoffEngineActive() ? playoffFullLineCandidatePool(game, "Star Value Engine") : reserveLegPool(game, "three"))
+  const primaryPool = playoffEngineActive() ? playoffFullLineCandidatePool(game, "Star Value Engine") : reserveLegPool(game, "three");
+  const fallbackPool = scoredLegPool(game)
+    .filter((leg) => !leg.excluded)
+    .filter((leg) => playerBelongsToGame(leg, game))
+    .filter((leg) => leg.market !== "player_threes" || leg.direction !== "Over")
+    .map((leg) => playoffEngineActive() ? playoffLeg(leg, game, "Star Value Fallback") : leg);
+  const rawPool = [...primaryPool, ...fallbackPool]
+    .filter((leg, index, legs) => legs.findIndex((item) => shotLegKey(item) === shotLegKey(leg)) === index);
+  const cleanPool = rawPool
     .filter((leg) => !leg.modeledFloor)
     .filter((leg) => !usedLegKeySet(usedLegs).has(boardExposureKey(leg)))
-    .filter((leg) => leg.selectedBookAvailable !== false)
     .filter((leg) => leg.manualInjury !== "player_out" && leg.manualInjury !== "minutes_limit")
     .filter((leg) => Number.isFinite(Number(leg.probability)))
     .sort((a, b) =>
@@ -2046,6 +2090,8 @@ function buildStarValueParlay(game, usedLegs = []) {
       b.survivabilityScore - a.survivabilityScore ||
       b.score - a.score
     );
+  const availablePool = cleanPool.filter((leg) => leg.selectedBookAvailable !== false);
+  const fullPool = availablePool.length >= 4 ? availablePool : cleanPool;
   const corePool = fullPool.filter((leg) =>
     leg.playerTier === "star" ||
     leg.playerTier === "starter" ||
@@ -2054,20 +2100,32 @@ function buildStarValueParlay(game, usedLegs = []) {
   );
   const pool = corePool.length >= 4 ? corePool : fullPool;
   const bestByPlayer = bestLegForEachPlayer(pool);
-  const homeKey = normalizeName(game.homeTeam);
-  const awayKey = normalizeName(game.awayTeam);
-  const homeLegs = selectUniqueLegs(bestByPlayer.filter((leg) => legTeamKey(leg, game) === homeKey), 2, {
+  const homeKey = normalizedTeamName(game.homeTeam);
+  const awayKey = normalizedTeamName(game.awayTeam);
+  const homeLegs = selectUniqueLegs(bestByPlayer.filter((leg) => sameTeamName(propTeamName(leg, game), game.homeTeam)), 2, {
     allowMultipleAssists: true,
     game,
     avoidUsageCorrelation: false
   });
-  const awayLegs = selectUniqueLegs(bestByPlayer.filter((leg) => legTeamKey(leg, game) === awayKey), 2, {
+  const awayLegs = selectUniqueLegs(bestByPlayer.filter((leg) => sameTeamName(propTeamName(leg, game), game.awayTeam)), 2, {
     allowMultipleAssists: true,
     game,
     avoidUsageCorrelation: false
   });
   const selected = [...awayLegs, ...homeLegs].slice(0, 4);
-  const fallback = selected.length >= 4 ? selected : selectUniqueLegs(bestByPlayer, 4, {
+  const teamBalancedFallback = selected.length >= 4 ? selected : [
+    ...selectUniqueLegs(bestByPlayer.filter((leg) => normalizedTeamName(propTeamName(leg, game)) === awayKey), 2, {
+      allowMultipleAssists: true,
+      game,
+      avoidUsageCorrelation: false
+    }),
+    ...selectUniqueLegs(bestByPlayer.filter((leg) => normalizedTeamName(propTeamName(leg, game)) === homeKey), 2, {
+      allowMultipleAssists: true,
+      game,
+      avoidUsageCorrelation: false
+    })
+  ];
+  const fallback = teamBalancedFallback.length >= 4 ? teamBalancedFallback : selectUniqueLegs(bestByPlayer, 4, {
     allowMultipleAssists: true,
     game,
     avoidUsageCorrelation: false
@@ -2096,8 +2154,8 @@ function liveGameBuild(game) {
   const singleLegs = reserveUsedLegs(usedLegs, buildBestSingleLeg(game));
   const valueStarLegs = reserveUsedLegs(usedLegs, buildStarValueParlay(game, usedLegs));
   const safeLadderLegs = reserveUsedLegs(usedLegs, buildSafeLadder(game, usedLegs));
-  const saferLegs = reserveUsedLegs(usedLegs, buildParlay(game, 2, usedLegs));
-  const sameTeamLegs = reserveUsedLegs(usedLegs, buildSameTeamParlay(game, saferLegs, usedLegs));
+  const saferLegs = [];
+  const sameTeamLegs = [];
   const threeLegs = reserveUsedLegs(usedLegs, buildMixedTeamParlay(game, usedLegs));
   return {
     singleLegs,
@@ -2693,14 +2751,10 @@ function currentBoardSnapshot() {
     const build = gameParlayBuild(game);
     const singleLegs = build.singleLegs || [];
     const safeLadderLegs = build.safeLadderLegs || [];
-    const saferLegs = build.saferLegs || [];
-    const sameTeamLegs = build.sameTeamLegs || [];
     const threeLegs = build.threeLegs || [];
     const valueStarLegs = build.valueStarLegs || [];
     if (singleLegs.length) parlays.push(savedParlay("Bet of the Day", gameLabel, "Bet of the Day", singleLegs));
     if (safeLadderLegs.length) parlays.push(savedParlay("Safe Ladder", gameLabel, "Safe Ladder", safeLadderLegs));
-    if (saferLegs.length) parlays.push(savedParlay("2-Leg Safer Parlay", gameLabel, "2-Leg Safer", saferLegs));
-    if (sameTeamLegs.length) parlays.push(savedParlay("2-Leg Alternate Parlay", gameLabel, "2-Leg Alternate", sameTeamLegs));
     if (threeLegs.length) parlays.push(savedParlay("3-Leg Mixed-Team Parlay", gameLabel, "3-Leg Mixed", threeLegs));
     if (valueStarLegs.length) parlays.push(savedParlay("Star Value Board", gameLabel, "Star Value", valueStarLegs));
   });
@@ -2906,8 +2960,8 @@ function boardHasFinalResults(board) {
 const successBoardTypes = [
   { key: "single", label: "Single", match: /best.single/i },
   { key: "safe", label: "Safe Ladder", match: /safe.ladder/i },
-  { key: "two", label: "2 Leg", match: /2-leg|2 leg/i },
   { key: "three", label: "3 Leg", match: /3-leg|3 leg/i },
+  { key: "star", label: "Star Value", match: /star.value/i },
   { key: "shot", label: "Shot of Glory", match: /shot/i }
 ];
 
@@ -3843,21 +3897,17 @@ function renderParlay(game) {
   const build = gameParlayBuild(game);
   const singleLegs = build.singleLegs || [];
   const safeLadderLegs = build.safeLadderLegs || [];
-  const saferLegs = build.saferLegs || [];
-  const sameTeamLegs = build.sameTeamLegs || [];
   const threeLegs = build.threeLegs || [];
   const valueStarLegs = build.valueStarLegs || [];
-  const twoLegBoards = [saferLegs, sameTeamLegs].filter((legs) => legs.length);
-  const valueBoards = [threeLegs, valueStarLegs].filter((legs) => legs.length);
+  const valueBoards = [valueStarLegs, threeLegs].filter((legs) => legs.length);
   const viewLegs = {
     single: singleLegs,
     safe: safeLadderLegs,
-    two: twoLegBoards.flat(),
     three: valueBoards.flat()
   };
-  const activeLegs = activeParlayView === "single" ? singleLegs : activeParlayView === "safe" ? safeLadderLegs : activeParlayView === "three" ? valueBoards.flat() : twoLegBoards.flat();
-  const score = (activeParlayView === "two" && twoLegBoards.length) || (activeParlayView === "three" && valueBoards.length)
-    ? Math.round(average((activeParlayView === "two" ? twoLegBoards : valueBoards).map((legs) => parlayGrade(legs))))
+  const activeLegs = activeParlayView === "single" ? singleLegs : activeParlayView === "safe" ? safeLadderLegs : activeParlayView === "three" ? valueBoards.flat() : singleLegs;
+  const score = activeParlayView === "three" && valueBoards.length
+    ? Math.round(average(valueBoards.map((legs) => parlayGrade(legs))))
     : parlayGrade(activeLegs);
   elements.selectedGameTitle.textContent = `${game.awayTeam} @ ${game.homeTeam}`;
   elements.parlayScore.textContent = score || "--";
@@ -3877,20 +3927,11 @@ function renderParlay(game) {
     return;
   }
 
-  if (activeParlayView === "two") {
-    elements.parlays.classList.add("two-card-grid");
-    elements.parlays.innerHTML = [
-      renderParlayGroup("Low-Risk Parlay", saferLegs, build.locked ? "Locked once this game started." : "Playoff Engine: minute certainty, stable role, and survivability first.", gameLabel),
-      renderParlayGroup("Low-Risk Alternate", sameTeamLegs, build.locked ? "Locked once this game started." : "Alternate stable legs with different players from the first board.", gameLabel)
-    ].join("");
-    return;
-  }
-
   if (activeParlayView === "three") {
     elements.parlays.classList.add("two-card-grid");
     elements.parlays.innerHTML = [
-      renderParlayGroup("Value Parlay", threeLegs, build.locked ? "Locked once this game started." : "Full-line playoff reads with acceptable survivability. Not a forced board.", gameLabel),
-      renderParlayGroup("Star Value Board", valueStarLegs, build.locked ? "Locked once this game started." : "Star/core board: two best candidates from each team by hit probability, over or under.", gameLabel)
+      renderParlayGroup("Star Value Board", valueStarLegs, build.locked ? "Locked once this game started." : "Star/core board: two best candidates from each team by hit probability, over or under.", gameLabel),
+      renderParlayGroup("Value Parlay", threeLegs, build.locked ? "Locked once this game started." : "Full-line playoff reads with acceptable survivability. Not a forced board.", gameLabel)
     ].join("");
     return;
   }
@@ -4044,7 +4085,7 @@ function renderCandidateGuide(game) {
   const build = gameParlayBuild(game);
   const selectedKeys = {
     anchor: new Set((build.singleLegs || []).map(shotLegKey)),
-    lowRisk: new Set([...(build.saferLegs || []), ...(build.sameTeamLegs || [])].map(shotLegKey)),
+    lowRisk: new Set(),
     value: new Set([...(build.threeLegs || []), ...(build.valueStarLegs || [])].map(shotLegKey))
   };
   const guideLegs = candidateGuidePool(game);
