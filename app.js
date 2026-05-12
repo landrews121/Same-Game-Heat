@@ -194,7 +194,7 @@ document.querySelectorAll("[data-parlay-view]").forEach((button) => {
 const tabButtons = Array.from(document.querySelectorAll(".mobile-tabs button"));
 const parlayTabButtons = Array.from(document.querySelectorAll("[data-parlay-view]"));
 const leagueTabButtons = Array.from(document.querySelectorAll("[data-sport-target]"));
-const boardBuildVersion = "v57-priced-board-fill";
+const boardBuildVersion = "v58-star-first-then-priced-fill";
 const shotBuildVersion = "v4-quality-first";
 const minimumLegProbability = 0.6;
 const singleLegProbability = 0.62;
@@ -2094,10 +2094,10 @@ function shotLockKey() {
 function liveGameBuild(game) {
   const usedLegs = [];
   const singleLegs = reserveUsedLegs(usedLegs, buildBestSingleLeg(game));
+  const valueStarLegs = reserveUsedLegs(usedLegs, buildStarValueParlay(game, usedLegs));
   const safeLadderLegs = reserveUsedLegs(usedLegs, buildSafeLadder(game, usedLegs));
   const saferLegs = reserveUsedLegs(usedLegs, buildParlay(game, 2, usedLegs));
   const sameTeamLegs = reserveUsedLegs(usedLegs, buildSameTeamParlay(game, saferLegs, usedLegs));
-  const valueStarLegs = reserveUsedLegs(usedLegs, buildStarValueParlay(game, usedLegs));
   const threeLegs = reserveUsedLegs(usedLegs, buildMixedTeamParlay(game, usedLegs));
   return {
     singleLegs,
