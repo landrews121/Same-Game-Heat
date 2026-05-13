@@ -187,14 +187,14 @@ const elements = {
   playerContext: document.querySelector("#playerContext"),
   candidateGuide: document.querySelector("#candidateGuide")
 };
-const allowedParlayViews = ["single", "safe", "three", "glory"];
+const allowedParlayViews = ["single", "three", "glory"];
 document.querySelectorAll("[data-parlay-view]").forEach((button) => {
   if (!allowedParlayViews.includes(button.dataset.parlayView)) button.remove();
 });
 const tabButtons = Array.from(document.querySelectorAll(".mobile-tabs button"));
 const parlayTabButtons = Array.from(document.querySelectorAll("[data-parlay-view]"));
 const leagueTabButtons = Array.from(document.querySelectorAll("[data-sport-target]"));
-const boardBuildVersion = "v59-star-team-fill-no-low-risk";
+const boardBuildVersion = "v60-two-bet-of-day-no-safe";
 const shotBuildVersion = "v4-quality-first";
 const minimumLegProbability = 0.6;
 const singleLegProbability = 0.62;
@@ -1476,17 +1476,21 @@ function buildParlay(game, count, usedLegs = []) {
 
 function buildBestSingleLeg(game) {
   if (playoffEngineActive()) {
-    return playoffFullLineAnchorPool(game).slice(0, 1).map((leg) => ({
+    return selectUniqueLegs(playoffFullLineAnchorPool(game), 2, {
+      avoidUsageCorrelation: false,
+      allowMultipleAssists: true,
+      game
+    }).map((leg, index) => ({
       ...leg,
-      contextNotes: [...(leg.contextNotes || []), "Bet of the Day: highest-probability full sportsbook line in this game"]
+      contextNotes: [...(leg.contextNotes || []), index === 0 ? "Bet of the Day: highest-probability full sportsbook line in this game" : "Bet of the Day 2: next-best full sportsbook line by hit probability"]
     }));
   }
-  const strict = selectUniqueLegs(strictLegPool(game, "single"), 1, { avoidUsageCorrelation: false, game });
-  const consistent = strict.length ? strict : selectUniqueLegs(consistencyLegPool(game, "single"), 1, { avoidUsageCorrelation: false, game });
-  const fallback = consistent.length ? consistent : selectUniqueLegs(reserveLegPool(game, "standard"), 1, { avoidUsageCorrelation: false, game });
-  return fallback.slice(0, 1).map((leg) => ({
+  const strict = selectUniqueLegs(strictLegPool(game, "single"), 2, { avoidUsageCorrelation: false, allowMultipleAssists: true, game });
+  const consistent = strict.length >= 2 ? strict : selectUniqueLegs([...strict, ...consistencyLegPool(game, "single")], 2, { avoidUsageCorrelation: false, allowMultipleAssists: true, game });
+  const fallback = consistent.length >= 2 ? consistent : selectUniqueLegs([...consistent, ...reserveLegPool(game, "standard")], 2, { avoidUsageCorrelation: false, allowMultipleAssists: true, game });
+  return fallback.slice(0, 2).map((leg, index) => ({
     ...leg,
-    contextNotes: [...(leg.contextNotes || []), strict.length ? "Bet of the Day: strongest quality-gated full-line read" : "Bet of the Day: strongest full-line read available"]
+    contextNotes: [...(leg.contextNotes || []), index === 0 ? "Bet of the Day: strongest quality-gated full-line read" : "Bet of the Day 2: next-best full-line read available"]
   }));
 }
 
@@ -1603,212 +1607,6 @@ function buildMixedTeamParlay(game, usedLegs = []) {
   return selected.slice(0, 3).map((leg) => ({
     ...leg,
     contextNotes: [...(leg.contextNotes || []), "Mixed-team 3-leg build"]
-  }));
-}
-
-function floorMilestoneForProp(prop) {
-  const line = Number(prop.line);
-  if (!Number.isFinite(line)) return null;
-
-  if (prop.market === "player_points") {
-    if (line >= 27.5) return { target: 20, label: "20+", marketLabel: "Points" };
-    if (line >= 22.5) return { target: 18, label: "18+", marketLabel: "Points" };
-    if (line >= 18.5) return { target: 15, label: "15+", marketLabel: "Points" };
-    if (line >= 13.5) return { target: 10, label: "10+", marketLabel: "Points" };
-  }
-
-  if (prop.market === "player_points_rebounds") {
-    const target = Math.max(12, Math.floor(line - 5.5));
-    if (line - target >= 4.5) return { target, label: `${target}+`, marketLabel: "Points + Rebounds" };
-  }
-
-  if (prop.market === "player_points_rebounds_assists") {
-    const target = Math.max(18, Math.floor(line - 7.5));
-    if (line - target >= 6.5) return { target, label: `${target}+`, marketLabel: "Points + Rebounds + Assists" };
-  }
-
-  if (prop.market === "player_rebounds") {
-    const target = Math.max(6, Math.floor(line - 2.5));
-    if (line - target >= 1.5) return { target, label: `${target}+`, marketLabel: "Rebounds" };
-  }
-
-  if (prop.market === "player_assists" && (prop.playerTier === "star" || prop.playerTier === "starter")) {
-    const target = Math.max(3, Math.floor(line - 2));
-    if (line - target >= 1.5) return { target, label: `${target}+`, marketLabel: "Assists" };
-  }
-
-  return null;
-}
-
-function floorOddsForProp(prop, cushion) {
-  const base = Number(prop.overOdds ?? prop.odds);
-  const market = prop.market;
-  let floorPrice = -650;
-
-  if (market === "player_assists") {
-    floorPrice = cushion >= 3.5 ? -1200 : cushion >= 2.5 ? -1000 : -650;
-  } else if (market === "player_rebounds") {
-    floorPrice = cushion >= 3.5 ? -900 : cushion >= 2.5 ? -700 : -500;
-  } else if (market === "player_points") {
-    floorPrice = cushion >= 8 ? -1200 : cushion >= 6 ? -900 : cushion >= 4 ? -650 : -450;
-  } else if (isComboMarket(market)) {
-    floorPrice = cushion >= 8 ? -850 : cushion >= 6 ? -700 : cushion >= 4 ? -500 : -360;
-  }
-
-  if (!Number.isFinite(base)) return floorPrice;
-  return Math.min(base, floorPrice);
-}
-
-function safeFloorCandidate(prop, game) {
-  prop.playerTier = inferPlayerTier(prop);
-  if (prop.excluded || !playerBelongsToGame(prop, game)) return null;
-  if (prop.manualInjury === "player_out" || prop.manualInjury === "player_questionable" || prop.manualInjury === "minutes_limit") return null;
-  if (prop.market === "player_threes") return null;
-
-  const floor = floorMilestoneForProp(prop);
-  if (!floor) return null;
-
-  const logs = prop.seriesLogs || [];
-  const values = logs.map((log) => logValueForMarket(log, prop.market)).filter((value) => Number.isFinite(value));
-  const minutes = logs.map(numericLogMinutes).filter((value) => value !== null);
-  const averageMinutes = minutes.length ? average(minutes) : 0;
-  const minuteSwing = minutes.length ? Math.max(...minutes) - Math.min(...minutes) : 0;
-  const isCoreRole = prop.playerTier === "star" || prop.playerTier === "starter" || averageMinutes >= 27;
-  if (!isCoreRole) return null;
-
-  const hits = values.filter((value) => value >= floor.target).length;
-  const hitRate = values.length ? hits / values.length : 0.58;
-  if (values.length >= 3 && hitRate < 0.7) return null;
-  if (minuteSwing >= 12 && prop.playerTier !== "star") return null;
-
-  const scored = scoreCandidate(prop, game, "Over");
-  const risk = agentConflictRisk(scored);
-  if (risk.fragileRoleOver || risk.severe) return null;
-
-  const cushion = Number(prop.line) - floor.target;
-  const roleBoost = prop.playerTier === "star" ? 10 : prop.playerTier === "starter" ? 6 : 0;
-  const logBoost = values.length ? (hitRate - 0.5) * 34 : 0;
-  const minutesBoost = averageMinutes >= 32 ? 8 : averageMinutes >= 28 ? 5 : 0;
-  const volatilityPenalty = Math.max(0, minuteSwing - 6) * 1.2;
-  const eliteFloor = values.length >= 2
-    && hitRate >= 1
-    && cushion >= 4
-    && minuteSwing <= 8;
-  const score = Math.round(clamp(scored.score + roleBoost + logBoost + minutesBoost + cushion * 2.4 - volatilityPenalty, 58, 97));
-  const probabilityCeiling = eliteFloor ? 0.92 : 0.86;
-  const probability = clamp((values.length ? hitRate : scored.probability + 0.08) + cushion * 0.012 + roleBoost / 300 - volatilityPenalty / 500, 0.58, probabilityCeiling);
-
-  return {
-    ...scored,
-    direction: "Over",
-    line: floor.target - 0.5,
-    sourceLine: prop.line,
-    floorLabel: floor.label,
-    floorMarketLabel: floor.marketLabel,
-    modeledFloor: true,
-    odds: floorOddsForProp(prop, cushion),
-    score,
-    probability,
-    eliteFloor,
-    seriesHits: hits,
-    seriesGames: values.length,
-    contextNotes: [
-      ...(scored.contextNotes || []),
-      `Safe Ladder: lowered from sportsbook line ${prop.line} to ${floor.label} ${floor.marketLabel}`,
-      eliteFloor ? "Elite floor candidate: perfect recent hit rate with cushion and stable role" : null,
-      values.length ? `Floor hit ${hits}/${values.length} recent logs` : "Modeled from role and sportsbook line until logs fill in"
-    ].filter(Boolean)
-  };
-}
-
-function safeDoubleDoubleCandidate(prop, game) {
-  prop.playerTier = inferPlayerTier(prop);
-  if (prop.excluded || !playerBelongsToGame(prop, game)) return null;
-  if (!["player_rebounds", "player_points_rebounds", "player_points_rebounds_assists"].includes(prop.market)) return null;
-  if (prop.manualInjury === "player_out" || prop.manualInjury === "player_questionable" || prop.manualInjury === "minutes_limit") return null;
-
-  const logs = prop.seriesLogs || [];
-  const doubles = logs.filter((log) => Number(log.pts) >= 10 && Number(log.reb) >= 10).length;
-  const minutes = logs.map(numericLogMinutes).filter((value) => value !== null);
-  const reboundValues = logs.map((log) => Number(log.reb)).filter((value) => Number.isFinite(value));
-  const pointValues = logs.map((log) => Number(log.pts)).filter((value) => Number.isFinite(value));
-  const averageMinutes = minutes.length ? average(minutes) : 0;
-  const averageRebounds = reboundValues.length ? average(reboundValues) : 0;
-  const averagePoints = pointValues.length ? average(pointValues) : 0;
-  const hitRate = logs.length ? doubles / logs.length : 0;
-
-  if (logs.length < 3 || hitRate < 0.6 || averageMinutes < 28 || averageRebounds < 8.5 || averagePoints < 10) return null;
-
-  const scored = scoreCandidate(prop, game, "Over");
-  const risk = agentConflictRisk(scored);
-  if (risk.fragileRoleOver || risk.severe) return null;
-
-  const eliteFloor = hitRate >= 0.9 && averageMinutes >= 32;
-
-  return {
-    ...scored,
-    id: `${prop.id || prop.player}-double-double`,
-    market: "player_double_double",
-    direction: "Over",
-    line: 0.5,
-    floorLabel: "Double Double",
-    floorMarketLabel: "To Record a Double Double",
-    modeledFloor: true,
-    odds: -280,
-    score: Math.round(clamp(scored.score + hitRate * 24 + 8, 62, 97)),
-    probability: clamp(hitRate + 0.06, 0.6, eliteFloor ? 0.9 : 0.84),
-    eliteFloor,
-    seriesHits: doubles,
-    seriesGames: logs.length,
-    contextNotes: [
-      ...(scored.contextNotes || []),
-      `Safe Ladder: double-double profile hit ${doubles}/${logs.length} recent logs`,
-      eliteFloor ? "Elite floor candidate: double-double profile has held with starter minutes" : null,
-      "Stable rebound role creates a safer milestone profile"
-    ].filter(Boolean)
-  };
-}
-
-function buildSafeLadder(game, usedLegs = []) {
-  if (playoffEngineActive()) {
-    const pricedPool = playoffFullLineCandidatePool(game, "Safe Ladder Price Engine")
-      .filter(pricedFullLineLeg)
-      .filter((leg) => !usedLegKeySet(usedLegs).has(boardExposureKey(leg)))
-      .filter((leg) => leg.probability >= 0.46 && leg.score >= 28)
-      .sort((a, b) =>
-        b.probability - a.probability ||
-        b.survivabilityScore - a.survivabilityScore ||
-        b.score - a.score
-      );
-    const selected = bestPricedTwoLegParlay(pricedPool, game);
-    return selected.length >= 2 ? selected.map((leg) => ({
-      ...leg,
-      contextNotes: [
-        ...(leg.contextNotes || []),
-        `Safe Ladder priced build: full sportsbook line with board odds ${formatOdds(conservativeParlayOdds(selected))} or better than ${formatOdds(minimumPlayableBoardOdds)}`
-      ]
-    })) : [];
-  }
-
-  const floorLegs = game.candidates
-    .filter((prop) => !prop.excluded)
-    .filter((prop) => playerBelongsToGame(prop, game))
-    .flatMap((prop) => [safeDoubleDoubleCandidate(prop, game), safeFloorCandidate(prop, game)])
-    .filter(Boolean)
-    .filter((leg) => !usedLegKeySet(usedLegs).has(boardExposureKey(leg)))
-    .sort((a, b) => b.probability - a.probability || b.score - a.score);
-
-  const selected = [];
-  for (const leg of floorLegs) {
-    if (selected.length >= 4) break;
-    if (selected.some((item) => normalizeName(item.player) === normalizeName(leg.player))) continue;
-    if (selected.some((item) => shotLegKey(item) === shotLegKey(leg))) continue;
-    selected.push(leg);
-  }
-
-  return selected.map((leg) => ({
-    ...leg,
-    contextNotes: [...(leg.contextNotes || []), "Safe Ladder board: floor target, stable role, and recent-log cushion"]
   }));
 }
 
@@ -1936,9 +1734,7 @@ function candidateGuidePool(game) {
   const fullLineLegs = playoffEngineActive()
     ? playoffFullLineCandidatePool(game, "Candidate Guide")
     : reserveLegPool(game, "standard");
-  const floorLegs = playoffEngineActive()
-    ? buildSafeLadder(game).map((leg) => playoffLeg(leg, game, "Candidate Guide"))
-    : [];
+  const floorLegs = [];
   return [...floorLegs, ...fullLineLegs]
     .filter((leg, index, legs) => legs.findIndex((item) => shotLegKey(item) === shotLegKey(leg)) === index)
     .filter((leg) => Number(leg.probability || 0) >= 0.6)
@@ -2153,13 +1949,11 @@ function liveGameBuild(game) {
   const usedLegs = [];
   const singleLegs = reserveUsedLegs(usedLegs, buildBestSingleLeg(game));
   const valueStarLegs = reserveUsedLegs(usedLegs, buildStarValueParlay(game, usedLegs));
-  const safeLadderLegs = reserveUsedLegs(usedLegs, buildSafeLadder(game, usedLegs));
   const saferLegs = [];
   const sameTeamLegs = [];
   const threeLegs = reserveUsedLegs(usedLegs, buildMixedTeamParlay(game, usedLegs));
   return {
     singleLegs,
-    safeLadderLegs,
     saferLegs,
     sameTeamLegs,
     threeLegs,
@@ -2182,21 +1976,20 @@ function savedBuildForGame(game) {
     (item.games || []).some((label) => gameLabelMatches(label, gameLabel))
   );
   if (!board?.parlays?.length) return null;
-  const single = board.parlays.find((parlay) => /best.single/i.test(parlay.title || "") && gameLabelMatches(parlay.gameLabel, gameLabel));
+  const single = board.parlays.find((parlay) => /best.single|bet.of.the.day/i.test(parlay.title || "") && gameLabelMatches(parlay.gameLabel, gameLabel));
   const safer = board.parlays.find((parlay) => /safer|independent/i.test(parlay.title || "") && gameLabelMatches(parlay.gameLabel, gameLabel)) ||
     board.parlays.find((parlay) => /2-leg/i.test(parlay.title || "") && !/same.team/i.test(parlay.title || "") && gameLabelMatches(parlay.gameLabel, gameLabel));
   const sameTeam = board.parlays.find((parlay) => /alternate|same.team/i.test(parlay.title || "") && gameLabelMatches(parlay.gameLabel, gameLabel));
   const three = board.parlays.find((parlay) => /3-leg/i.test(parlay.title || "") && gameLabelMatches(parlay.gameLabel, gameLabel));
   const valueStar = board.parlays.find((parlay) => /star.value|core/i.test(parlay.title || "") && gameLabelMatches(parlay.gameLabel, gameLabel));
-  const safeLadder = board.parlays.find((parlay) => /safe.ladder/i.test(parlay.title || "") && gameLabelMatches(parlay.gameLabel, gameLabel));
-  if (!single?.legs?.length && !safeLadder?.legs?.length && !safer?.legs?.length && !sameTeam?.legs?.length && !three?.legs?.length && !valueStar?.legs?.length) return null;
+  const betOfDay = board.parlays.filter((parlay) => /bet.of.the.day|best.single/i.test(parlay.title || "") && gameLabelMatches(parlay.gameLabel, gameLabel));
+  if (!betOfDay.length && !single?.legs?.length && !safer?.legs?.length && !sameTeam?.legs?.length && !three?.legs?.length && !valueStar?.legs?.length) return null;
   const hydrateLeg = (leg) => ({
     ...leg,
     probability: Number.isFinite(leg.probability) ? leg.probability : clamp((Number(leg.score) || 60) / 175, 0.32, 0.58)
   });
   return {
-    singleLegs: (single?.legs || []).map(hydrateLeg),
-    safeLadderLegs: (safeLadder?.legs || []).map(hydrateLeg),
+    singleLegs: (betOfDay.length ? betOfDay.flatMap((parlay) => parlay.legs || []) : (single?.legs || [])).map(hydrateLeg),
     saferLegs: (safer?.legs || []).map(hydrateLeg),
     sameTeamLegs: (sameTeam?.legs || []).map(hydrateLeg),
     threeLegs: (three?.legs || []).map(hydrateLeg),
@@ -2255,7 +2048,7 @@ function boostedShotLeg(leg, game) {
 
 function shotCandidatesForGame(game) {
   const baseBuild = gameParlayBuild(game);
-  const excluded = new Set([...(baseBuild.singleLegs || []), ...(baseBuild.safeLadderLegs || []), ...(baseBuild.saferLegs || []), ...(baseBuild.sameTeamLegs || []), ...(baseBuild.threeLegs || []), ...(baseBuild.valueStarLegs || [])].map(boardExposureKey));
+  const excluded = new Set([...(baseBuild.singleLegs || []), ...(baseBuild.saferLegs || []), ...(baseBuild.sameTeamLegs || []), ...(baseBuild.threeLegs || []), ...(baseBuild.valueStarLegs || [])].map(boardExposureKey));
   const scored = game.candidates
     .filter((prop) => !prop.excluded)
     .filter((prop) => playerBelongsToGame(prop, game))
@@ -2328,7 +2121,7 @@ function addShotLegsFromPool(selected, pool, target, options = {}) {
 }
 
 function gameParlayBuild(game) {
-  if (!game) return { singleLegs: [], safeLadderLegs: [], saferLegs: [], sameTeamLegs: [], threeLegs: [], valueStarLegs: [], locked: false, lockedAt: "" };
+  if (!game) return { singleLegs: [], saferLegs: [], sameTeamLegs: [], threeLegs: [], valueStarLegs: [], locked: false, lockedAt: "" };
   const key = gameLockKey(game);
   if (!gameHasStarted(game) || boardEnrichmentPending || backgroundEnrichmentRunning) return liveGameBuild(game);
   if (!lockedParlayBuilds[key]) {
@@ -2750,11 +2543,10 @@ function currentBoardSnapshot() {
     const gameLabel = `${game.awayTeam} @ ${game.homeTeam}`;
     const build = gameParlayBuild(game);
     const singleLegs = build.singleLegs || [];
-    const safeLadderLegs = build.safeLadderLegs || [];
     const threeLegs = build.threeLegs || [];
     const valueStarLegs = build.valueStarLegs || [];
-    if (singleLegs.length) parlays.push(savedParlay("Bet of the Day", gameLabel, "Bet of the Day", singleLegs));
-    if (safeLadderLegs.length) parlays.push(savedParlay("Safe Ladder", gameLabel, "Safe Ladder", safeLadderLegs));
+    if (singleLegs[0]) parlays.push(savedParlay("Bet of the Day", gameLabel, "Bet of the Day", [singleLegs[0]]));
+    if (singleLegs[1]) parlays.push(savedParlay("Bet of the Day 2", gameLabel, "Bet of the Day", [singleLegs[1]]));
     if (threeLegs.length) parlays.push(savedParlay("3-Leg Mixed-Team Parlay", gameLabel, "3-Leg Mixed", threeLegs));
     if (valueStarLegs.length) parlays.push(savedParlay("Star Value Board", gameLabel, "Star Value", valueStarLegs));
   });
@@ -2958,8 +2750,7 @@ function boardHasFinalResults(board) {
 }
 
 const successBoardTypes = [
-  { key: "single", label: "Single", match: /best.single/i },
-  { key: "safe", label: "Safe Ladder", match: /safe.ladder/i },
+  { key: "single", label: "Bet of the Day", match: /best.single|bet.of.the.day/i },
   { key: "three", label: "3 Leg", match: /3-leg|3 leg/i },
   { key: "star", label: "Star Value", match: /star.value/i },
   { key: "shot", label: "Shot of Glory", match: /shot/i }
@@ -3517,7 +3308,6 @@ function agentReadRows(game) {
   const build = gameParlayBuild(game);
   const boardLegs = [
     ...(build.singleLegs || []),
-    ...(build.safeLadderLegs || []),
     ...(build.saferLegs || []),
     ...(build.sameTeamLegs || []),
     ...(build.threeLegs || []),
@@ -3896,18 +3686,19 @@ function renderGames() {
 function renderParlay(game) {
   const build = gameParlayBuild(game);
   const singleLegs = build.singleLegs || [];
-  const safeLadderLegs = build.safeLadderLegs || [];
   const threeLegs = build.threeLegs || [];
   const valueStarLegs = build.valueStarLegs || [];
+  const betOfDayBoards = singleLegs.map((leg) => [leg]);
   const valueBoards = [valueStarLegs, threeLegs].filter((legs) => legs.length);
   const viewLegs = {
     single: singleLegs,
-    safe: safeLadderLegs,
     three: valueBoards.flat()
   };
-  const activeLegs = activeParlayView === "single" ? singleLegs : activeParlayView === "safe" ? safeLadderLegs : activeParlayView === "three" ? valueBoards.flat() : singleLegs;
-  const score = activeParlayView === "three" && valueBoards.length
-    ? Math.round(average(valueBoards.map((legs) => parlayGrade(legs))))
+  const activeLegs = activeParlayView === "single" ? singleLegs : activeParlayView === "three" ? valueBoards.flat() : singleLegs;
+  const score = activeParlayView === "single" && betOfDayBoards.length
+    ? Math.round(average(betOfDayBoards.map((legs) => parlayGrade(legs))))
+    : activeParlayView === "three" && valueBoards.length
+      ? Math.round(average(valueBoards.map((legs) => parlayGrade(legs))))
     : parlayGrade(activeLegs);
   elements.selectedGameTitle.textContent = `${game.awayTeam} @ ${game.homeTeam}`;
   elements.parlayScore.textContent = score || "--";
@@ -3916,14 +3707,11 @@ function renderParlay(game) {
   const gameLabel = `${game.awayTeam} @ ${game.homeTeam}`;
 
   if (activeParlayView === "single") {
-    elements.parlays.classList.remove("two-card-grid");
-    elements.parlays.innerHTML = renderParlayGroup("Bet of the Day", singleLegs, build.locked ? "Locked once this game started." : "Highest-probability full sportsbook line in this game, scanning both over and under.", gameLabel);
-    return;
-  }
-
-  if (activeParlayView === "safe") {
-    elements.parlays.classList.remove("two-card-grid");
-    elements.parlays.innerHTML = renderParlayGroup("Safe Ladder", safeLadderLegs, build.locked ? "Locked once this game started." : "Priced full-line pair targeting board odds of -130 or better.", gameLabel);
+    elements.parlays.classList.add("two-card-grid");
+    elements.parlays.innerHTML = [
+      renderParlayGroup("Bet of the Day", singleLegs[0] ? [singleLegs[0]] : [], build.locked ? "Locked once this game started." : "Highest-probability full sportsbook line in this game, scanning both over and under.", gameLabel),
+      renderParlayGroup("Bet of the Day 2", singleLegs[1] ? [singleLegs[1]] : [], build.locked ? "Locked once this game started." : "Next-best candidate by hit probability after the top Bet of the Day.", gameLabel)
+    ].join("");
     return;
   }
 
@@ -4179,7 +3967,7 @@ function generatedLegKeys() {
   const keys = new Set();
   slate.forEach((game) => {
     const build = gameParlayBuild(game);
-    [...(build.singleLegs || []), ...(build.safeLadderLegs || []), ...(build.saferLegs || []), ...(build.sameTeamLegs || []), ...(build.threeLegs || []), ...(build.valueStarLegs || [])].forEach((leg) => {
+    [...(build.singleLegs || []), ...(build.saferLegs || []), ...(build.sameTeamLegs || []), ...(build.threeLegs || []), ...(build.valueStarLegs || [])].forEach((leg) => {
       keys.add(propKey(game.id, leg.id));
     });
   });
