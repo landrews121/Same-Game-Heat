@@ -194,7 +194,7 @@ document.querySelectorAll("[data-parlay-view]").forEach((button) => {
 const tabButtons = Array.from(document.querySelectorAll(".mobile-tabs button"));
 const parlayTabButtons = Array.from(document.querySelectorAll("[data-parlay-view]"));
 const leagueTabButtons = Array.from(document.querySelectorAll("[data-sport-target]"));
-const boardBuildVersion = "v61-miss-risk-tightening";
+const boardBuildVersion = "v62-fill-bet-value-fallback";
 const shotBuildVersion = "v4-quality-first";
 const minimumLegProbability = 0.6;
 const singleLegProbability = 0.62;
@@ -1403,6 +1403,53 @@ function boardQualityGate(leg, tier = "standard") {
   return missRiskPenalty < 16 || (leg.probability >= 0.6 && leg.score >= 68);
 }
 
+function boardPlayableFallbackGate(leg, tier = "standard") {
+  if (leg.excluded) return false;
+  if (leg.modeledFloor) return false;
+  if (leg.manualInjury === "player_out" || leg.manualInjury === "minutes_limit") return false;
+  if (leg.selectedBookAvailable === false) return false;
+  if (leg.market === "player_threes" && leg.direction === "Over") return false;
+
+  const risk = agentConflictRisk(leg);
+  if (risk.fragileRoleOver) return false;
+
+  const missRiskPenalty = Number(leg.missRiskPenalty || 0);
+  const isCore = leg.playerTier === "star" || leg.playerTier === "starter" || Number(leg.averageMinutes || 0) >= 26;
+  const probability = Number(leg.probability || 0);
+  const score = Number(leg.score || 0);
+
+  if (tier === "single") {
+    if (!isCore) return probability >= 0.56 && score >= 56 && missRiskPenalty <= 10;
+    if (risk.severe || missRiskPenalty >= 16) return probability >= 0.58 && score >= 62;
+    return probability >= 0.5 && score >= 42;
+  }
+
+  if (tier === "star") {
+    if (!isCore) return false;
+    if (risk.severe || missRiskPenalty >= 18) return probability >= 0.57 && score >= 58;
+    return probability >= 0.48 && score >= 38;
+  }
+
+  if (risk.severe && probability < 0.54) return false;
+  if (missRiskPenalty >= 18 && probability < 0.56) return false;
+  return probability >= 0.46 && score >= 34;
+}
+
+function relaxedFullLinePool(game, label = "Fallback Engine", tier = "standard") {
+  return scoredLegPool(game)
+    .filter((leg) => !leg.modeledFloor)
+    .filter((leg) => playerBelongsToGame(leg, game))
+    .filter((leg) => leg.manualInjury !== "player_out" && leg.manualInjury !== "minutes_limit")
+    .map((leg) => playoffEngineActive() ? playoffLeg(leg, game, label) : leg)
+    .filter((leg) => boardPlayableFallbackGate(leg, tier))
+    .filter((leg, index, legs) => legs.findIndex((item) => shotLegKey(item) === shotLegKey(leg)) === index)
+    .sort((a, b) =>
+      b.probability - a.probability ||
+      b.survivabilityScore - a.survivabilityScore ||
+      b.score - a.score
+    );
+}
+
 function agentConflictGate(leg, tier = "standard") {
   const risk = agentConflictRisk(leg);
   if (!risk.any) return true;
@@ -1636,14 +1683,18 @@ function buildBestSingleLeg(game) {
         b.survivabilityScore - a.survivabilityScore ||
         b.score - a.score
       );
-    const fallbackAnchors = cleanAnchors.length >= 2 ? cleanAnchors : playoffFullLineAnchorPool(game)
+    const starAnchors = cleanAnchors.length >= 2 ? cleanAnchors : playoffFullLineAnchorPool(game)
       .filter((leg) => boardQualityGate(leg, "star"))
       .sort((a, b) =>
         b.probability - a.probability ||
         b.survivabilityScore - a.survivabilityScore ||
         b.score - a.score
       );
-    return selectUniqueLegs(fallbackAnchors, 2, {
+    const relaxedAnchors = starAnchors.length >= 2 ? starAnchors : [
+      ...starAnchors,
+      ...relaxedFullLinePool(game, "Bet of the Day Fallback", "single")
+    ].filter((leg, index, legs) => legs.findIndex((item) => boardExposureKey(item) === boardExposureKey(leg)) === index);
+    return selectUniqueLegs(relaxedAnchors, 2, {
       avoidUsageCorrelation: false,
       allowMultipleAssists: true,
       game
@@ -2047,25 +2098,30 @@ function bestLegForEachPlayer(legs) {
 
 function buildStarValueParlay(game, usedLegs = []) {
   const primaryPool = playoffEngineActive() ? playoffFullLineCandidatePool(game, "Star Value Engine") : reserveLegPool(game, "three");
-  const fallbackPool = scoredLegPool(game)
-    .filter((leg) => !leg.excluded)
-    .filter((leg) => playerBelongsToGame(leg, game))
-    .filter((leg) => leg.market !== "player_threes" || leg.direction !== "Over")
-    .map((leg) => playoffEngineActive() ? playoffLeg(leg, game, "Star Value Fallback") : leg)
-    .filter((leg) => !playoffEngineActive() || boardQualityGate(leg, "star"));
+  const fallbackPool = playoffEngineActive()
+    ? relaxedFullLinePool(game, "Star Value Fallback", "star")
+    : scoredLegPool(game)
+      .filter((leg) => !leg.excluded)
+      .filter((leg) => playerBelongsToGame(leg, game))
+      .filter((leg) => leg.market !== "player_threes" || leg.direction !== "Over");
   const rawPool = [...primaryPool, ...fallbackPool]
     .filter((leg, index, legs) => legs.findIndex((item) => shotLegKey(item) === shotLegKey(leg)) === index);
-  const cleanPool = rawPool
+  let cleanPool = rawPool
     .filter((leg) => !leg.modeledFloor)
     .filter((leg) => !usedLegKeySet(usedLegs).has(boardExposureKey(leg)))
     .filter((leg) => leg.manualInjury !== "player_out" && leg.manualInjury !== "minutes_limit")
-    .filter((leg) => !playoffEngineActive() || boardQualityGate(leg, "star"))
+    .filter((leg) => !playoffEngineActive() || boardPlayableFallbackGate(leg, "star"))
     .filter((leg) => Number.isFinite(Number(leg.probability)))
     .sort((a, b) =>
       b.probability - a.probability ||
       b.survivabilityScore - a.survivabilityScore ||
       b.score - a.score
     );
+  if (cleanPool.length < 2 && playoffEngineActive()) {
+    cleanPool = relaxedFullLinePool(game, "Star Value Last Resort", "star")
+      .filter((leg) => !usedLegKeySet(usedLegs).has(boardExposureKey(leg)))
+      .filter((leg, index, legs) => legs.findIndex((item) => shotLegKey(item) === shotLegKey(leg)) === index);
+  }
   const availablePool = cleanPool.filter((leg) => leg.selectedBookAvailable !== false);
   const fullPool = availablePool.length >= 4 ? availablePool : cleanPool;
   const corePool = fullPool.filter((leg) =>
