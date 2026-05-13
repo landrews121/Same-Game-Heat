@@ -194,7 +194,7 @@ document.querySelectorAll("[data-parlay-view]").forEach((button) => {
 const tabButtons = Array.from(document.querySelectorAll(".mobile-tabs button"));
 const parlayTabButtons = Array.from(document.querySelectorAll("[data-parlay-view]"));
 const leagueTabButtons = Array.from(document.querySelectorAll("[data-sport-target]"));
-const boardBuildVersion = "v60-two-bet-of-day-no-safe";
+const boardBuildVersion = "v61-miss-risk-tightening";
 const shotBuildVersion = "v4-quality-first";
 const minimumLegProbability = 0.6;
 const singleLegProbability = 0.62;
@@ -952,6 +952,119 @@ function noSeriesContext(prop, direction) {
   };
 }
 
+function selectedLineQualityContext(prop, direction) {
+  if (!prop.lineAlternates?.length) return { penalty: 0, probabilityPenalty: 0, boost: 0, probabilityBoost: 0, notes: [] };
+
+  const line = Number(prop.line);
+  const peerLines = prop.lineAlternates.map((item) => Number(item.line)).filter(Number.isFinite);
+  if (!Number.isFinite(line) || !peerLines.length) return { penalty: 0, probabilityPenalty: 0, boost: 0, probabilityBoost: 0, notes: [] };
+
+  const marketAverage = average([line, ...peerLines]);
+  const gap = direction === "Over" ? line - marketAverage : marketAverage - line;
+  const softGap = direction === "Over" ? marketAverage - line : line - marketAverage;
+  const notes = [];
+  let penalty = 0;
+  let probabilityPenalty = 0;
+  let boost = 0;
+  let probabilityBoost = 0;
+
+  if (gap >= 1) {
+    penalty += 9;
+    probabilityPenalty += 0.045;
+    notes.push("Miss risk: selected sportsbook line is tougher than the market");
+  } else if (gap >= 0.5) {
+    penalty += 5;
+    probabilityPenalty += 0.025;
+    notes.push("Miss risk: selected sportsbook line is slightly worse than the market");
+  }
+
+  if (softGap >= 1) {
+    boost += 5;
+    probabilityBoost += 0.025;
+    notes.push("Line value: selected sportsbook is giving a softer number");
+  } else if (softGap >= 0.5) {
+    boost += 2;
+    probabilityBoost += 0.01;
+    notes.push("Line value: selected sportsbook is a little better than the market");
+  }
+
+  return { penalty, probabilityPenalty, boost, probabilityBoost, notes };
+}
+
+function missRiskContext(prop, direction, game) {
+  const logs = prop.seriesLogs || [];
+  const values = logs.map((log) => logValueForMarket(log, prop.market)).filter((value) => Number.isFinite(value));
+  const minutes = logs.map(numericLogMinutes).filter((value) => value !== null);
+  const line = Number(prop.line);
+  const isOver = direction === "Over";
+  const isPrimary = prop.playerTier === "star" || prop.playerTier === "starter";
+  const isRotation = prop.playerTier === "rotation";
+  const averageMinutes = minutes.length ? average(minutes) : Number(prop.averageMinutes || 0);
+  const minuteSwing = minutes.length ? Math.max(...minutes) - Math.min(...minutes) : 0;
+  const recentValues = values.slice(0, 4);
+  const hitCount = recentValues.filter((value) => isOver ? value > line : value < line).length;
+  const hitRate = recentValues.length ? hitCount / recentValues.length : null;
+  const recentAverage = recentValues.length ? average(recentValues) : null;
+  const edge = recentAverage === null || !Number.isFinite(line) ? 0 : isOver ? recentAverage - line : line - recentAverage;
+  const outCount = prop.teamSituation?.lineupKeyOut?.length || 0;
+  const confirmedStarter = Boolean(prop.teamSituation?.confirmedStarter);
+  const usageMarkets = ["player_points", "player_points_rebounds_assists", "player_points_assists", "player_points_rebounds", "player_rebounds_assists"];
+  const lowVarianceMarkets = ["player_rebounds", "player_assists", "player_points_rebounds_assists", "player_points_assists", "player_points_rebounds", "player_rebounds_assists"];
+  const notes = [];
+  let penalty = 0;
+  let probabilityPenalty = 0;
+
+  if (isOver && isRotation) {
+    penalty += 14;
+    probabilityPenalty += 0.07;
+    notes.push("Miss risk: role-player over needs too many things to go right");
+  }
+
+  if (isOver && !isPrimary && usageMarkets.includes(prop.market)) {
+    penalty += 8;
+    probabilityPenalty += 0.04;
+    notes.push("Miss risk: non-star usage over can disappear if the rotation tightens");
+  }
+
+  if (minutes.length >= 3 && minuteSwing >= 9) {
+    penalty += isPrimary ? 5 : 10;
+    probabilityPenalty += isPrimary ? 0.025 : 0.05;
+    notes.push("Miss risk: minutes have not been steady enough");
+  }
+
+  if (hitRate !== null && hitRate >= 0.75 && edge < 1) {
+    penalty += 7;
+    probabilityPenalty += 0.035;
+    notes.push("Miss risk: hit rate is strong, but the cushion above the line is thin");
+  }
+
+  if (hitRate !== null && hitRate <= 0.25 && direction === "Under" && isPrimary && averageMinutes >= 30) {
+    penalty += 6;
+    probabilityPenalty += 0.03;
+    notes.push("Miss risk: under leans on a cold stretch from a core player");
+  }
+
+  if (direction === "Under" && confirmedStarter && outCount >= 1 && lowVarianceMarkets.includes(prop.market)) {
+    penalty += 8;
+    probabilityPenalty += 0.04;
+    notes.push("Miss risk: teammate absences can raise touches, making the under fragile");
+  }
+
+  if (prop.market === "player_threes" && isOver) {
+    penalty += 12;
+    probabilityPenalty += 0.06;
+    notes.push("Miss risk: three-point overs are too volatile for quality boards");
+  }
+
+  if (game?.source === "Sample") {
+    penalty += 4;
+    probabilityPenalty += 0.02;
+    notes.push("Miss risk: sample slate is only for layout testing");
+  }
+
+  return { penalty, probabilityPenalty, notes };
+}
+
 function agentAdjustment(agent, delta, probabilityDelta, note) {
   return { agent, delta, probabilityDelta, note };
 }
@@ -1140,6 +1253,8 @@ function scoreCandidate(prop, game, forcedDirection = "") {
   const elimination = eliminationContext(prop, direction);
   const marketResistance = marketResistanceContext(prop, direction);
   const noSeries = noSeriesContext(prop, direction);
+  const lineQuality = selectedLineQualityContext(prop, direction);
+  const missRisk = missRiskContext(prop, direction, game);
   const agentSignals = internalAgentSignals(prop, direction, game);
   const agentScoreAdjustment = agentSignals.reduce((sum, signal) => sum + Number(signal.delta || 0), 0);
   const agentProbabilityAdjustment = agentSignals.reduce((sum, signal) => sum + Number(signal.probabilityDelta || 0), 0);
@@ -1154,10 +1269,10 @@ function scoreCandidate(prop, game, forcedDirection = "") {
   const edgeScore = Math.max(0, directionalEdge) * 2.6 + Math.min(0, directionalEdge) * 1.2;
   const seriesEdgeScore = (Math.max(0, directionalSeriesEdge) * 3.8 + Math.min(0, directionalSeriesEdge) * 1.6) * seriesWeight;
   const seasonH2HEdgeScore = (Math.max(0, directionalSeasonH2HEdge) * 1.2 + Math.min(0, directionalSeasonH2HEdge) * 0.6) * seasonH2HWeight;
-  const rawScore = 46 + edgeScore + seriesEdgeScore + seasonH2HEdgeScore + (directionalRecentHitRate - 0.5) * 18 + (directionalSeriesHitRate - 0.5) * 64 * seriesWeight + (directionalSeasonH2HHitRate - 0.5) * 14 * seasonH2HWeight + seriesConviction + injuryScore + elimination.boost + confirmedStarterBoost + agentScoreAdjustment - oddsPenalty - context.penalty - marketResistance.penalty - noSeries.penalty;
+  const rawScore = 46 + edgeScore + seriesEdgeScore + seasonH2HEdgeScore + (directionalRecentHitRate - 0.5) * 18 + (directionalSeriesHitRate - 0.5) * 64 * seriesWeight + (directionalSeasonH2HHitRate - 0.5) * 14 * seasonH2HWeight + seriesConviction + injuryScore + elimination.boost + confirmedStarterBoost + lineQuality.boost + agentScoreAdjustment - oddsPenalty - context.penalty - marketResistance.penalty - noSeries.penalty - lineQuality.penalty - missRisk.penalty;
   const scoreCap = missingSeriesLogs ? noSeries.scoreCap : 96;
   const edgeProbability = clamp(directionalBlendedEdge * 0.01, -0.05, 0.07);
-  const probability = clamp(directionalRecentHitRate * 0.42 + directionalSeriesHitRate * 0.34 * seriesWeight + directionalSeasonH2HHitRate * 0.14 * seasonH2HWeight + 0.08 + edgeProbability + injuryScore / 290 + elimination.probabilityBoost + confirmedStarterProbabilityBoost + agentProbabilityAdjustment - context.probabilityPenalty - marketResistance.probabilityPenalty - noSeries.probabilityPenalty, 0.26, 0.76);
+  const probability = clamp(directionalRecentHitRate * 0.42 + directionalSeriesHitRate * 0.34 * seriesWeight + directionalSeasonH2HHitRate * 0.14 * seasonH2HWeight + 0.08 + edgeProbability + injuryScore / 290 + elimination.probabilityBoost + confirmedStarterProbabilityBoost + lineQuality.probabilityBoost + agentProbabilityAdjustment - context.probabilityPenalty - marketResistance.probabilityPenalty - noSeries.probabilityPenalty - lineQuality.probabilityPenalty - missRisk.probabilityPenalty, 0.26, 0.76);
 
   return {
     ...prop,
@@ -1179,11 +1294,14 @@ function scoreCandidate(prop, game, forcedDirection = "") {
       ...(forcedDirection && seriesDirection && direction !== seriesDirection ? ["Two-sided scan: series trend opposes this side"] : []),
       ...context.notes,
       ...marketResistance.notes,
+      ...lineQuality.notes,
+      ...missRisk.notes,
       ...noSeries.notes,
       ...agentSignals.map((signal) => signal.note)
     ],
     agentSignals,
     missingSeriesLogs,
+    missRiskPenalty: missRisk.penalty + lineQuality.penalty,
     averageMinutes: context.averageMinutes,
     minuteSwing: context.minuteSwing,
     score: Math.round(clamp(rawScore, 12, scoreCap)),
@@ -1239,15 +1357,50 @@ function agentConflictRisk(leg) {
     notes.includes("role-player injury bump needs confirmed minutes")
   );
   const worseLine = notes.includes("worse than market average");
-  const severe = fragileRoleOver || minutesAgainst || negativeDelta >= 18 || probabilityDrag >= 0.09 || (volatileMinutes && worseLine);
+  const missRiskPenalty = Number(leg.missRiskPenalty || 0);
+  const severe = fragileRoleOver || minutesAgainst || negativeDelta >= 18 || probabilityDrag >= 0.09 || missRiskPenalty >= 16 || (volatileMinutes && worseLine);
 
   return {
-    any: severe || negativeDelta >= 12 || probabilityDrag >= 0.06,
+    any: severe || negativeDelta >= 12 || probabilityDrag >= 0.06 || missRiskPenalty >= 10,
     severe,
     fragileRoleOver,
     negativeDelta,
     probabilityDrag
   };
+}
+
+function boardQualityGate(leg, tier = "standard") {
+  if (leg.excluded) return false;
+  if (leg.manualInjury === "player_out" || leg.manualInjury === "minutes_limit") return false;
+  if (tier !== "shot" && leg.selectedBookAvailable === false) return false;
+  if (tier !== "shot" && leg.market === "player_threes" && leg.direction === "Over") return false;
+
+  const missRiskPenalty = Number(leg.missRiskPenalty || 0);
+  const risk = agentConflictRisk(leg);
+  const survivability = Number(leg.survivabilityScore || 0);
+  const isCore = leg.playerTier === "star" || leg.playerTier === "starter" || Number(leg.averageMinutes || 0) >= 28;
+
+  if (tier === "single") {
+    if (!isCore) return leg.probability >= 0.66 && leg.score >= 76 && missRiskPenalty <= 6;
+    if (risk.severe || missRiskPenalty >= 12) return leg.probability >= 0.66 && leg.score >= 76 && survivability >= 62;
+    return leg.probability >= 0.56 && leg.score >= 56 && survivability >= 42;
+  }
+
+  if (tier === "star") {
+    if (!isCore) return false;
+    if (risk.severe || missRiskPenalty >= 14) return leg.probability >= 0.63 && leg.score >= 72;
+    return leg.probability >= 0.52 && leg.score >= 45;
+  }
+
+  if (tier === "shot") {
+    if (leg.market === "player_threes" && leg.direction === "Over" && leg.probability < 0.64) return false;
+    if (risk.fragileRoleOver) return false;
+    if (missRiskPenalty >= 18 && leg.probability < 0.58) return false;
+    return leg.probability >= 0.48 && leg.score >= 42;
+  }
+
+  if (risk.severe && leg.probability < 0.58) return false;
+  return missRiskPenalty < 16 || (leg.probability >= 0.6 && leg.score >= 68);
 }
 
 function agentConflictGate(leg, tier = "standard") {
@@ -1476,7 +1629,21 @@ function buildParlay(game, count, usedLegs = []) {
 
 function buildBestSingleLeg(game) {
   if (playoffEngineActive()) {
-    return selectUniqueLegs(playoffFullLineAnchorPool(game), 2, {
+    const cleanAnchors = playoffFullLineAnchorPool(game)
+      .filter((leg) => boardQualityGate(leg, "single"))
+      .sort((a, b) =>
+        b.probability - a.probability ||
+        b.survivabilityScore - a.survivabilityScore ||
+        b.score - a.score
+      );
+    const fallbackAnchors = cleanAnchors.length >= 2 ? cleanAnchors : playoffFullLineAnchorPool(game)
+      .filter((leg) => boardQualityGate(leg, "star"))
+      .sort((a, b) =>
+        b.probability - a.probability ||
+        b.survivabilityScore - a.survivabilityScore ||
+        b.score - a.score
+      );
+    return selectUniqueLegs(fallbackAnchors, 2, {
       avoidUsageCorrelation: false,
       allowMultipleAssists: true,
       game
@@ -1713,7 +1880,15 @@ function playoffLeg(leg, game, label = "Playoff Engine") {
   };
 }
 
+function playoffPoolGateTier(label = "") {
+  if (/shot/i.test(label)) return "shot";
+  if (/star/i.test(label)) return "star";
+  if (/anchor|bet of the day/i.test(label)) return "single";
+  return "standard";
+}
+
 function playoffFullLineCandidatePool(game, label = "Playoff Engine") {
+  const gateTier = playoffPoolGateTier(label);
   return scoredLegPool(game)
     .filter((leg) => {
       if (leg.excluded) return false;
@@ -1725,6 +1900,7 @@ function playoffFullLineCandidatePool(game, label = "Playoff Engine") {
       return true;
     })
     .map((leg) => playoffLeg(leg, game, label))
+    .filter((leg) => boardQualityGate(leg, gateTier))
     .filter((leg, index, legs) => legs.findIndex((item) => shotLegKey(item) === shotLegKey(leg)) === index)
     .sort((a, b) => b.survivabilityScore - a.survivabilityScore || b.probability - a.probability || b.score - a.score);
 }
@@ -1792,12 +1968,14 @@ function playoffFullLineAnchorPool(game) {
     .filter((leg) => leg.selectedBookAvailable !== false)
     .filter((leg) => leg.manualInjury !== "player_out" && leg.manualInjury !== "minutes_limit")
     .map((leg) => playoffLeg(leg, game, "Bet of the Day Engine"))
+    .filter((leg) => boardQualityGate(leg, "single"))
     .sort((a, b) => b.probability - a.probability || b.survivabilityScore - a.survivabilityScore || b.score - a.score);
   if (allFullLineReads.length) return allFullLineReads;
   return scoredLegPool(game)
     .filter((leg) => !leg.modeledFloor)
     .filter((leg) => leg.manualInjury !== "player_out" && leg.manualInjury !== "minutes_limit")
     .map((leg) => playoffLeg(leg, game, "Bet of the Day Engine"))
+    .filter((leg) => boardQualityGate(leg, "star"))
     .sort((a, b) => b.probability - a.probability || b.survivabilityScore - a.survivabilityScore || b.score - a.score);
 }
 
@@ -1873,13 +2051,15 @@ function buildStarValueParlay(game, usedLegs = []) {
     .filter((leg) => !leg.excluded)
     .filter((leg) => playerBelongsToGame(leg, game))
     .filter((leg) => leg.market !== "player_threes" || leg.direction !== "Over")
-    .map((leg) => playoffEngineActive() ? playoffLeg(leg, game, "Star Value Fallback") : leg);
+    .map((leg) => playoffEngineActive() ? playoffLeg(leg, game, "Star Value Fallback") : leg)
+    .filter((leg) => !playoffEngineActive() || boardQualityGate(leg, "star"));
   const rawPool = [...primaryPool, ...fallbackPool]
     .filter((leg, index, legs) => legs.findIndex((item) => shotLegKey(item) === shotLegKey(leg)) === index);
   const cleanPool = rawPool
     .filter((leg) => !leg.modeledFloor)
     .filter((leg) => !usedLegKeySet(usedLegs).has(boardExposureKey(leg)))
     .filter((leg) => leg.manualInjury !== "player_out" && leg.manualInjury !== "minutes_limit")
+    .filter((leg) => !playoffEngineActive() || boardQualityGate(leg, "star"))
     .filter((leg) => Number.isFinite(Number(leg.probability)))
     .sort((a, b) =>
       b.probability - a.probability ||
@@ -2053,8 +2233,9 @@ function shotCandidatesForGame(game) {
     .filter((prop) => !prop.excluded)
     .filter((prop) => playerBelongsToGame(prop, game))
     .flatMap((prop) => scorePropSides(prop, game).map((leg) => boostedShotLeg(leg, game)));
-  const gated = scored.filter((leg) => qualityGate(leg, "shot") || consistencyGate(leg, "shot"));
+  const gated = scored.filter((leg) => boardQualityGate(leg, "shot") && (qualityGate(leg, "shot") || consistencyGate(leg, "shot")));
   const fallback = scored.filter((leg) =>
+    boardQualityGate(leg, "shot") &&
     ["star", "starter"].includes(leg.playerTier || inferPlayerTier(leg)) &&
     leg.probability >= 0.5 &&
     leg.score >= 34 &&
