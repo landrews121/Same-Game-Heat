@@ -58,6 +58,30 @@ const marketLabels = {
   player_rush_yds: "Rush Yards"
 };
 
+const sportsbookAliases = {
+  fanatics: ["fanatics", "fanaticssportsbook", "fanatics_sportsbook", "fanatics sportsbook"],
+  draftkings: ["draftkings", "draftkings_us", "draftkings sportsbook"],
+  fanduel: ["fanduel", "fanduel_us", "fanduel sportsbook"],
+  betmgm: ["betmgm", "betmgm_us", "betmgm sportsbook"],
+  caesars: ["caesars", "williamhill_us", "williamhill", "caesars sportsbook"]
+};
+
+function sportsbookMatches(bookmaker, selectedBook) {
+  const selected = String(selectedBook || "").trim().toLowerCase();
+  const aliases = sportsbookAliases[selected] || [selected];
+  const bookmakerKey = normalizeName(bookmaker?.key || "");
+  const bookmakerTitle = normalizeName(bookmaker?.title || "");
+  return aliases.some((alias) => {
+    const normalizedAlias = normalizeName(alias);
+    return normalizedAlias && (
+      bookmakerKey === normalizedAlias ||
+      bookmakerTitle === normalizedAlias ||
+      bookmakerKey.includes(normalizedAlias) ||
+      bookmakerTitle.includes(normalizedAlias)
+    );
+  });
+}
+
 const sportConfigs = {
   basketball_nba: {
     label: "NBA",
@@ -194,7 +218,7 @@ document.querySelectorAll("[data-parlay-view]").forEach((button) => {
 const tabButtons = Array.from(document.querySelectorAll(".mobile-tabs button"));
 const parlayTabButtons = Array.from(document.querySelectorAll("[data-parlay-view]"));
 const leagueTabButtons = Array.from(document.querySelectorAll("[data-sport-target]"));
-const boardBuildVersion = "v62-fill-bet-value-fallback";
+const boardBuildVersion = "v63-consensus-candidate-fallback";
 const shotBuildVersion = "v4-quality-first";
 const minimumLegProbability = 0.6;
 const singleLegProbability = 0.62;
@@ -1403,11 +1427,11 @@ function boardQualityGate(leg, tier = "standard") {
   return missRiskPenalty < 16 || (leg.probability >= 0.6 && leg.score >= 68);
 }
 
-function boardPlayableFallbackGate(leg, tier = "standard") {
+function boardPlayableFallbackGate(leg, tier = "standard", options = {}) {
   if (leg.excluded) return false;
   if (leg.modeledFloor) return false;
   if (leg.manualInjury === "player_out" || leg.manualInjury === "minutes_limit") return false;
-  if (leg.selectedBookAvailable === false) return false;
+  if (leg.selectedBookAvailable === false && !options.allowUnavailable) return false;
   if (leg.market === "player_threes" && leg.direction === "Over") return false;
 
   const risk = agentConflictRisk(leg);
@@ -1435,13 +1459,13 @@ function boardPlayableFallbackGate(leg, tier = "standard") {
   return probability >= 0.46 && score >= 34;
 }
 
-function relaxedFullLinePool(game, label = "Fallback Engine", tier = "standard") {
+function relaxedFullLinePool(game, label = "Fallback Engine", tier = "standard", options = {}) {
   return scoredLegPool(game)
     .filter((leg) => !leg.modeledFloor)
     .filter((leg) => playerBelongsToGame(leg, game))
     .filter((leg) => leg.manualInjury !== "player_out" && leg.manualInjury !== "minutes_limit")
     .map((leg) => playoffEngineActive() ? playoffLeg(leg, game, label) : leg)
-    .filter((leg) => boardPlayableFallbackGate(leg, tier))
+    .filter((leg) => boardPlayableFallbackGate(leg, tier, options))
     .filter((leg, index, legs) => legs.findIndex((item) => shotLegKey(item) === shotLegKey(leg)) === index)
     .sort((a, b) =>
       b.probability - a.probability ||
@@ -1694,13 +1718,21 @@ function buildBestSingleLeg(game) {
       ...starAnchors,
       ...relaxedFullLinePool(game, "Bet of the Day Fallback", "single")
     ].filter((leg, index, legs) => legs.findIndex((item) => boardExposureKey(item) === boardExposureKey(leg)) === index);
-    return selectUniqueLegs(relaxedAnchors, 2, {
+    const consensusAnchors = relaxedAnchors.length >= 2 ? relaxedAnchors : [
+      ...relaxedAnchors,
+      ...relaxedFullLinePool(game, "Bet of the Day Consensus Fallback", "single", { allowUnavailable: true })
+    ].filter((leg, index, legs) => legs.findIndex((item) => boardExposureKey(item) === boardExposureKey(leg)) === index);
+    return selectUniqueLegs(consensusAnchors, 2, {
       avoidUsageCorrelation: false,
       allowMultipleAssists: true,
       game
     }).map((leg, index) => ({
       ...leg,
-      contextNotes: [...(leg.contextNotes || []), index === 0 ? "Bet of the Day: highest-probability full sportsbook line in this game" : "Bet of the Day 2: next-best full sportsbook line by hit probability"]
+      contextNotes: [
+        ...(leg.contextNotes || []),
+        leg.selectedBookAvailable === false ? "Selected sportsbook line unavailable; showing best consensus fallback" : "",
+        index === 0 ? "Bet of the Day: highest-probability full sportsbook line in this game" : "Bet of the Day 2: next-best full sportsbook line by hit probability"
+      ].filter(Boolean)
     }));
   }
   const strict = selectUniqueLegs(strictLegPool(game, "single"), 2, { avoidUsageCorrelation: false, allowMultipleAssists: true, game });
@@ -1958,18 +1990,22 @@ function playoffFullLineCandidatePool(game, label = "Playoff Engine") {
 
 function candidateGuidePool(game) {
   if (!game) return [];
-  const fullLineLegs = playoffEngineActive()
+  const strictLegs = playoffEngineActive()
     ? playoffFullLineCandidatePool(game, "Candidate Guide")
     : reserveLegPool(game, "standard");
+  const fallbackLegs = playoffEngineActive()
+    ? relaxedFullLinePool(game, "Candidate Guide Fallback", "standard", { allowUnavailable: true })
+    : [];
   const floorLegs = [];
-  return [...floorLegs, ...fullLineLegs]
+  const pool = [...floorLegs, ...strictLegs, ...fallbackLegs]
     .filter((leg, index, legs) => legs.findIndex((item) => shotLegKey(item) === shotLegKey(leg)) === index)
-    .filter((leg) => Number(leg.probability || 0) >= 0.6)
     .sort((a, b) => {
       const aRank = candidateGuideRank(a);
       const bRank = candidateGuideRank(b);
       return bRank - aRank || b.probability - a.probability || b.score - a.score;
-    })
+    });
+  const sixtyPlus = pool.filter((leg) => Number(leg.probability || 0) >= 0.6);
+  return (sixtyPlus.length ? sixtyPlus : pool.filter((leg) => Number(leg.probability || 0) >= 0.48))
     .slice(0, 20);
 }
 
@@ -2119,6 +2155,11 @@ function buildStarValueParlay(game, usedLegs = []) {
     );
   if (cleanPool.length < 2 && playoffEngineActive()) {
     cleanPool = relaxedFullLinePool(game, "Star Value Last Resort", "star")
+      .filter((leg) => !usedLegKeySet(usedLegs).has(boardExposureKey(leg)))
+      .filter((leg, index, legs) => legs.findIndex((item) => shotLegKey(item) === shotLegKey(leg)) === index);
+  }
+  if (cleanPool.length < 2 && playoffEngineActive()) {
+    cleanPool = relaxedFullLinePool(game, "Star Value Consensus Fallback", "star", { allowUnavailable: true })
       .filter((leg) => !usedLegKeySet(usedLegs).has(boardExposureKey(leg)))
       .filter((leg, index, legs) => legs.findIndex((item) => shotLegKey(item) === shotLegKey(leg)) === index);
   }
@@ -4114,6 +4155,7 @@ function renderCandidateGuide(game) {
     value: new Set([...(build.threeLegs || []), ...(build.valueStarLegs || [])].map(shotLegKey))
   };
   const guideLegs = candidateGuidePool(game);
+  const guideHasSixtyPlus = guideLegs.some((leg) => Number(leg.probability || 0) >= 0.6);
   const rows = guideLegs.map((leg) => {
     const status = candidateGuideStatus(leg, selectedKeys);
     const title = leg.floorLabel || `${leg.direction} ${leg.line}`;
@@ -4146,7 +4188,7 @@ function renderCandidateGuide(game) {
       <div class="candidate-guide-heading">
         <div>
           <h3>Playoff Candidate</h3>
-          <p>${escapeHtml(game.awayTeam)} @ ${escapeHtml(game.homeTeam)} · ${guideLegs.length} candidates at 60%+</p>
+          <p>${escapeHtml(game.awayTeam)} @ ${escapeHtml(game.homeTeam)} · ${guideLegs.length} ${guideHasSixtyPlus ? "candidates at 60%+" : "best playable watchlist candidates"}</p>
         </div>
         <span class="candidate-guide-key">🏀🏀🏀🏀 89-100 · 🏀🏀🏀 76-88 · 🏀🏀 60-75</span>
       </div>
@@ -4652,7 +4694,7 @@ function parseOddsCandidates(eventOdds, selectedBook) {
         lineItem.books.add(bookmakerTitle);
         if (direction === "Over") lineItem.overOdds = outcome.price;
         if (direction === "Under") lineItem.underOdds = outcome.price;
-        if (bookmakerKey === bookKey) {
+        if (bookmakerKey === bookKey || sportsbookMatches(bookmaker, bookKey)) {
           lineItem.selected = true;
           lineItem.selectedBookKey = bookmaker.key;
           lineItem.selectedBookTitle = bookmakerTitle;
