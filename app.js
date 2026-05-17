@@ -218,7 +218,7 @@ document.querySelectorAll("[data-parlay-view]").forEach((button) => {
 const tabButtons = Array.from(document.querySelectorAll(".mobile-tabs button"));
 const parlayTabButtons = Array.from(document.querySelectorAll("[data-parlay-view]"));
 const leagueTabButtons = Array.from(document.querySelectorAll("[data-sport-target]"));
-const boardBuildVersion = "v63-consensus-candidate-fallback";
+const boardBuildVersion = "v64-game-7-elimination-mode";
 const shotBuildVersion = "v4-quality-first";
 const minimumLegProbability = 0.6;
 const singleLegProbability = 0.62;
@@ -478,6 +478,130 @@ function eliminationContext(prop, direction) {
   }
 
   return { boost, probabilityBoost, notes };
+}
+
+function playerMinutesProfile(prop) {
+  const logs = prop.seriesLogs || [];
+  const minutes = logs.map(numericLogMinutes).filter((value) => value !== null);
+  const averageMinutes = minutes.length ? average(minutes) : Number(prop.averageMinutes || 0);
+  const last3 = minutes.slice(0, 3);
+  const last3Average = last3.length ? average(last3) : averageMinutes;
+  const latestMinutes = minutes.length ? minutes[0] : 0;
+  const minuteSwing = minutes.length ? Math.max(...minutes) - Math.min(...minutes) : Number(prop.minuteSwing || 0);
+  const minuteDeviation = standardDeviation(minutes);
+
+  return { minutes, averageMinutes, last3Average, latestMinutes, minuteSwing, minuteDeviation };
+}
+
+function game7ImpactScore(prop) {
+  const latest = prop.seriesLogs?.[0];
+  if (!latest) return 0;
+  const pts = Number(latest.pts || 0);
+  const reb = Number(latest.reb || 0);
+  const ast = Number(latest.ast || 0);
+  const stl = Number(latest.stl || latest.steals || 0);
+  const blk = Number(latest.blk || latest.blocks || 0);
+  return pts * 0.25 + reb * 0.65 + ast * 0.75 + stl * 1.25 + blk * 1.25;
+}
+
+function gameImportanceScore(prop, game) {
+  const situation = prop?.teamSituation || {};
+  if (situation.isGame7) return 10;
+  if (situation.isEliminationGame || situation.facingElimination) return 8;
+  if (situation.isPlayoffGame || (game?.gameImportanceScore || 0) >= 5 || prop?.seriesGames >= 3) return 5;
+  return 0;
+}
+
+function pressureGameContext(prop, direction, game) {
+  const importanceScore = gameImportanceScore(prop, game);
+  if (importanceScore < 8) return { boost: 0, penalty: 0, probabilityBoost: 0, probabilityPenalty: 0, notes: [], importanceScore };
+
+  const notes = [];
+  let boost = 0;
+  let penalty = 0;
+  let probabilityBoost = 0;
+  let probabilityPenalty = 0;
+  const profile = playerMinutesProfile(prop);
+  const isGame7 = prop.teamSituation?.isGame7 || importanceScore >= 10;
+  const isHome = Boolean(prop.teamSituation?.isHome);
+  const isStar = prop.playerTier === "star";
+  const isStarter = prop.playerTier === "starter";
+  const isPrimary = isStar || isStarter;
+  const isRolePlayer = !isPrimary;
+  const physicalMarkets = ["player_rebounds", "player_assists", "player_points_rebounds_assists", "player_points_assists", "player_points_rebounds", "player_rebounds_assists", "player_double_double"];
+  const usageMarkets = ["player_points", "player_points_rebounds_assists", "player_points_assists", "player_points_rebounds"];
+  const line = Number(prop.line);
+  const seriesAverage = Number(prop.seriesAvg);
+  const lineInflation = Number.isFinite(line) && Number.isFinite(seriesAverage) ? line - seriesAverage : 0;
+
+  if (isGame7) {
+    boost += 4;
+    probabilityBoost += 0.015;
+    notes.push("Game 7 mode: pressure-game minutes and series matchup evidence are weighted heavier");
+  }
+
+  if (profile.averageMinutes >= 36 && profile.minuteDeviation <= 3.5) {
+    boost += 9;
+    probabilityBoost += 0.04;
+    notes.push("Game 7 mode: locked-in minutes make this leg more trustworthy");
+  } else if (profile.last3Average >= 32 && profile.minuteSwing <= 8) {
+    boost += 6;
+    probabilityBoost += 0.025;
+    notes.push("Game 7 mode: recent minutes are stable enough for a playoff read");
+  }
+
+  if (isHome && isStar) {
+    boost += 6;
+    probabilityBoost += 0.025;
+    notes.push("Game 7 mode: home star gets a workload and crowd-energy bump");
+  } else if (isHome && physicalMarkets.includes(prop.market)) {
+    boost += 4;
+    probabilityBoost += 0.018;
+    notes.push("Game 7 mode: home physicality supports rebounds, assists, and combo stats");
+  }
+
+  if (isRolePlayer && profile.last3Average < 22 && !prop.teamSituation?.confirmedStarter) {
+    penalty += direction === "Over" ? 10 : 5;
+    probabilityPenalty += direction === "Over" ? 0.05 : 0.025;
+    notes.push("Game 7 mode: unstable bench minutes are downgraded");
+  }
+
+  if (isRolePlayer && profile.latestMinutes >= 24 && game7ImpactScore(prop) >= 8) {
+    boost += 5;
+    probabilityBoost += 0.02;
+    notes.push("Game 7 mode: bench exception earned by real last-game impact");
+  }
+
+  if (direction === "Over" && isPrimary && lineInflation >= 2.5 && usageMarkets.includes(prop.market)) {
+    penalty += 7;
+    probabilityPenalty += 0.035;
+    notes.push("Game 7 mode: inflated star line warning");
+  }
+
+  if (prop.manualInjury === "player_questionable" || prop.injuryWatch?.status) {
+    penalty += 5;
+    probabilityPenalty += 0.025;
+    notes.push("Game 7 mode: recently questionable player gets a role-stability penalty");
+  }
+
+  const propTeam = propTeamName(prop, game);
+  const pistonsCavsGame = sameTeamName(game?.homeTeam, "Detroit Pistons") && sameTeamName(game?.awayTeam, "Cleveland Cavaliers") ||
+    sameTeamName(game?.homeTeam, "Cleveland Cavaliers") && sameTeamName(game?.awayTeam, "Detroit Pistons");
+  const opponentForcedTurnovers = Number(prop.teamSituation?.opponentForcedTurnoversLastGame || (pistonsCavsGame && sameTeamName(propTeam, "Cleveland Cavaliers") ? 20 : 0));
+  if (opponentForcedTurnovers >= 18) {
+    if (prop.market === "player_assists") {
+      penalty += 3;
+      probabilityPenalty += 0.015;
+      notes.push("Game 7 mode: opponent turnover pressure makes assists less automatic");
+    }
+    if (direction === "Over" && prop.market === "player_points" && isPrimary) {
+      penalty += 2;
+      probabilityPenalty += 0.01;
+      notes.push("Game 7 mode: ball pressure slightly lowers primary-handler scoring overs");
+    }
+  }
+
+  return { boost, penalty, probabilityBoost, probabilityPenalty, notes, importanceScore };
 }
 
 function numericLogMinutes(log) {
@@ -1254,9 +1378,18 @@ function scoreCandidate(prop, game, forcedDirection = "") {
   const injuryScore = injuryImpact(prop.manualInjury);
   const seriesWeight = clamp(prop.seriesGames / 4, 0, 1);
   const seasonH2HWeight = clamp(prop.seasonH2HGames / 8, 0, 0.7);
+  const importanceScore = gameImportanceScore(prop, game);
+  const isPressureGame = importanceScore >= 8;
+  const isGame7 = importanceScore >= 10;
+  const recentEdgeWeight = isGame7 ? 0.15 : 0.42;
+  const seriesEdgeWeight = isGame7 ? 0.6 : isPressureGame ? 0.5 : 0.4;
+  const h2hEdgeWeight = isGame7 ? 0.15 : isPressureGame ? 0.16 : 0.18;
+  const recentProbabilityWeight = isGame7 ? 0.18 : isPressureGame ? 0.28 : 0.42;
+  const seriesProbabilityWeight = isGame7 ? 0.6 : isPressureGame ? 0.46 : 0.34;
+  const h2hProbabilityWeight = isGame7 ? 0.12 : isPressureGame ? 0.13 : 0.14;
   const seriesHitRate = prop.seriesGames ? clamp(prop.seriesHits / prop.seriesGames, 0, 1) : 0.5;
   const seasonH2HHitRate = prop.seasonH2HGames ? clamp(prop.seasonH2HHits / prop.seasonH2HGames, 0, 1) : 0.5;
-  const blendedEdge = edge * 0.42 + seriesEdge * 0.4 * seriesWeight + seasonH2HEdge * 0.18 * seasonH2HWeight;
+  const blendedEdge = edge * recentEdgeWeight + seriesEdge * seriesEdgeWeight * seriesWeight + seasonH2HEdge * h2hEdgeWeight * seasonH2HWeight;
   const seriesDirection = prop.seriesGames >= 3 && Math.abs(seriesHitRate - 0.5) >= 0.24 ? (seriesHitRate > 0.5 ? "Over" : "Under") : null;
   const direction = ["Over", "Under"].includes(forcedDirection) ? forcedDirection : seriesDirection || (blendedEdge >= 0 ? "Over" : "Under");
   const directionalRecentHitRate = direction === "Over" ? prop.recentHitRate : 1 - prop.recentHitRate;
@@ -1279,6 +1412,7 @@ function scoreCandidate(prop, game, forcedDirection = "") {
   const noSeries = noSeriesContext(prop, direction);
   const lineQuality = selectedLineQualityContext(prop, direction);
   const missRisk = missRiskContext(prop, direction, game);
+  const pressure = pressureGameContext(prop, direction, game);
   const agentSignals = internalAgentSignals(prop, direction, game);
   const agentScoreAdjustment = agentSignals.reduce((sum, signal) => sum + Number(signal.delta || 0), 0);
   const agentProbabilityAdjustment = agentSignals.reduce((sum, signal) => sum + Number(signal.probabilityDelta || 0), 0);
@@ -1291,12 +1425,12 @@ function scoreCandidate(prop, game, forcedDirection = "") {
   const confirmedStarterProbabilityBoost = confirmedStarterBoost ? Math.min(0.06, 0.02 + outCount * 0.01) : 0;
   const missingSeriesLogs = !prop.seriesGames;
   const edgeScore = Math.max(0, directionalEdge) * 2.6 + Math.min(0, directionalEdge) * 1.2;
-  const seriesEdgeScore = (Math.max(0, directionalSeriesEdge) * 3.8 + Math.min(0, directionalSeriesEdge) * 1.6) * seriesWeight;
+  const seriesEdgeScore = (Math.max(0, directionalSeriesEdge) * (isPressureGame ? 4.8 : 3.8) + Math.min(0, directionalSeriesEdge) * (isPressureGame ? 2.2 : 1.6)) * seriesWeight;
   const seasonH2HEdgeScore = (Math.max(0, directionalSeasonH2HEdge) * 1.2 + Math.min(0, directionalSeasonH2HEdge) * 0.6) * seasonH2HWeight;
-  const rawScore = 46 + edgeScore + seriesEdgeScore + seasonH2HEdgeScore + (directionalRecentHitRate - 0.5) * 18 + (directionalSeriesHitRate - 0.5) * 64 * seriesWeight + (directionalSeasonH2HHitRate - 0.5) * 14 * seasonH2HWeight + seriesConviction + injuryScore + elimination.boost + confirmedStarterBoost + lineQuality.boost + agentScoreAdjustment - oddsPenalty - context.penalty - marketResistance.penalty - noSeries.penalty - lineQuality.penalty - missRisk.penalty;
+  const rawScore = 46 + edgeScore + seriesEdgeScore + seasonH2HEdgeScore + (directionalRecentHitRate - 0.5) * (isPressureGame ? 12 : 18) + (directionalSeriesHitRate - 0.5) * (isPressureGame ? 82 : 64) * seriesWeight + (directionalSeasonH2HHitRate - 0.5) * (isPressureGame ? 18 : 14) * seasonH2HWeight + seriesConviction + injuryScore + elimination.boost + pressure.boost + confirmedStarterBoost + lineQuality.boost + agentScoreAdjustment - oddsPenalty - context.penalty - pressure.penalty - marketResistance.penalty - noSeries.penalty - lineQuality.penalty - missRisk.penalty;
   const scoreCap = missingSeriesLogs ? noSeries.scoreCap : 96;
   const edgeProbability = clamp(directionalBlendedEdge * 0.01, -0.05, 0.07);
-  const probability = clamp(directionalRecentHitRate * 0.42 + directionalSeriesHitRate * 0.34 * seriesWeight + directionalSeasonH2HHitRate * 0.14 * seasonH2HWeight + 0.08 + edgeProbability + injuryScore / 290 + elimination.probabilityBoost + confirmedStarterProbabilityBoost + lineQuality.probabilityBoost + agentProbabilityAdjustment - context.probabilityPenalty - marketResistance.probabilityPenalty - noSeries.probabilityPenalty - lineQuality.probabilityPenalty - missRisk.probabilityPenalty, 0.26, 0.76);
+  const probability = clamp(directionalRecentHitRate * recentProbabilityWeight + directionalSeriesHitRate * seriesProbabilityWeight * seriesWeight + directionalSeasonH2HHitRate * h2hProbabilityWeight * seasonH2HWeight + 0.08 + edgeProbability + injuryScore / 290 + elimination.probabilityBoost + pressure.probabilityBoost + confirmedStarterProbabilityBoost + lineQuality.probabilityBoost + agentProbabilityAdjustment - context.probabilityPenalty - pressure.probabilityPenalty - marketResistance.probabilityPenalty - noSeries.probabilityPenalty - lineQuality.probabilityPenalty - missRisk.probabilityPenalty, 0.26, 0.78);
 
   return {
     ...prop,
@@ -1311,11 +1445,13 @@ function scoreCandidate(prop, game, forcedDirection = "") {
     directionalSeasonH2HHitRate,
     seasonH2HHitRate,
     blendedEdge,
+    gameImportanceScore: importanceScore,
     seriesDirection,
     contextNotes: [
       ...elimination.notes,
       ...(confirmedStarterBoost ? ["Confirmed starter boost with multiple teammates out"] : []),
       ...(forcedDirection && seriesDirection && direction !== seriesDirection ? ["Two-sided scan: series trend opposes this side"] : []),
+      ...pressure.notes,
       ...context.notes,
       ...marketResistance.notes,
       ...lineQuality.notes,
@@ -1885,6 +2021,12 @@ function playoffSurvivability(leg, game) {
   const isLowVarianceMarket = ["player_rebounds", "player_assists", "player_points_rebounds_assists", "player_points_assists", "player_points_rebounds", "player_rebounds_assists", "player_double_double"].includes(leg.market);
   const isHighVarianceMarket = leg.market === "player_threes" || (leg.market === "player_points" && isRolePlayer);
   const outCount = leg.teamSituation?.lineupKeyOut?.length || 0;
+  const importanceScore = gameImportanceScore(leg, game);
+  const isGame7 = importanceScore >= 10;
+  const last3Minutes = minutes.slice(0, 3);
+  const last3AverageMinutes = last3Minutes.length ? average(last3Minutes) : averageMinutes;
+  const latestMinutes = minutes.length ? minutes[0] : 0;
+  const impactScore = game7ImpactScore(leg);
 
   let score = 0;
   const notes = [];
@@ -1909,6 +2051,44 @@ function playoffSurvivability(leg, game) {
   if (leg.playerTier === "star") score += 15;
   else if (leg.playerTier === "starter") score += 11;
   else score += 2;
+
+  if (isGame7) {
+    score += 8;
+    notes.push("Game 7 Mode: pressure and locked minutes are prioritized");
+
+    if (averageMinutes >= 36 && (minuteDeviation <= 3.5 || minuteSwing <= 6)) {
+      score += 12;
+      notes.push("Game 7 Mode: elite player-minute floor");
+    } else if (last3AverageMinutes >= 32 && minuteSwing <= 8) {
+      score += 8;
+      notes.push("Game 7 Mode: stable recent playoff workload");
+    }
+
+    if (leg.teamSituation?.isHome && leg.playerTier === "star") {
+      score += 8;
+      notes.push("Game 7 Mode: home star pressure boost");
+    } else if (leg.teamSituation?.isHome && isLowVarianceMarket) {
+      score += 5;
+      notes.push("Game 7 Mode: home physical stat boost");
+    }
+
+    if (isRolePlayer && last3AverageMinutes < 22 && !leg.teamSituation?.confirmedStarter) {
+      score -= leg.direction === "Over" ? 16 : 8;
+      notes.push("Game 7 Mode: rotation shrink risk");
+    }
+
+    if (isRolePlayer && latestMinutes >= 24 && impactScore >= 8) {
+      score += 8;
+      notes.push("Game 7 Mode: bench exception from real last-game impact");
+    }
+
+    const lineInflation = Number(leg.line) - Number(leg.seriesAvg);
+    if (leg.direction === "Over" && isPrimary && Number.isFinite(lineInflation) && lineInflation >= 2.5 && ["player_points", "player_points_rebounds_assists", "player_points_assists", "player_points_rebounds"].includes(leg.market)) {
+      score -= 10;
+      notes.push("Game 7 Mode: inflated star line warning");
+    }
+  }
+
   if (outCount && isPrimary && leg.direction === "Over") {
     score += Math.min(8, outCount * 2);
     notes.push("Playoff Engine: teammate absences can stabilize primary usage");
@@ -3797,6 +3977,13 @@ function applyGameContext(game, news) {
         ...(prop.teamSituation || {}),
         isHome: team ? team.isHome : prop.teamSituation?.isHome,
         facingElimination: team ? team.facingElimination : prop.teamSituation?.facingElimination,
+        isPlayoffGame: team ? team.isPlayoffGame : prop.teamSituation?.isPlayoffGame,
+        isEliminationGame: team ? team.isEliminationGame : prop.teamSituation?.isEliminationGame,
+        isGame7: team ? team.isGame7 : prop.teamSituation?.isGame7,
+        gameImportanceScore: team ? team.gameImportanceScore : prop.teamSituation?.gameImportanceScore,
+        wins: team ? team.wins : prop.teamSituation?.wins,
+        opponentWins: team ? team.opponentWins : prop.teamSituation?.opponentWins,
+        winsNeeded: team ? team.winsNeeded : prop.teamSituation?.winsNeeded,
         seriesSummary: team ? team.seriesSummary : prop.teamSituation?.seriesSummary,
         lineupKeyOut: [...new Set([...existingOut, ...outNames])],
         confirmedStarter,

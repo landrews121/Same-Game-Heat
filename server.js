@@ -549,6 +549,9 @@ function gameTeamSituations(event) {
   const competitors = competition.competitors || [];
   const series = competition.series || {};
   const winsNeeded = series.totalCompetitions ? Math.floor(series.totalCompetitions / 2) + 1 : 4;
+  const isPlayoffGame = Boolean(series.summary || series.totalCompetitions || (series.competitors || []).length);
+  const allWins = (series.competitors || []).map((item) => Number(item.wins || 0));
+  const isGame7 = isPlayoffGame && allWins.length >= 2 && allWins.every((wins) => wins === winsNeeded - 1);
 
   return competitors.map((competitor) => {
     const seriesEntry = (series.competitors || []).find((item) => String(item.id) === String(competitor.id));
@@ -559,6 +562,9 @@ function gameTeamSituations(event) {
         .filter((item) => String(item.id) !== String(competitor.id))
         .map((item) => Number(item.wins || 0))
     );
+    const facingElimination = opponentWins === winsNeeded - 1 && wins < winsNeeded;
+    const isEliminationGame = isGame7 || facingElimination || wins === winsNeeded - 1;
+    const gameImportanceScore = isGame7 ? 10 : facingElimination ? 8 : isPlayoffGame ? 5 : 0;
 
     return {
       id: competitor.team?.id || competitor.id || "",
@@ -567,8 +573,13 @@ function gameTeamSituations(event) {
       isHome: competitor.homeAway === "home",
       wins,
       opponentWins,
+      winsNeeded,
       seriesSummary: series.summary || competitor.record || "",
-      facingElimination: opponentWins === winsNeeded - 1 && wins < winsNeeded - 1
+      facingElimination,
+      isPlayoffGame,
+      isEliminationGame,
+      isGame7,
+      gameImportanceScore
     };
   });
 }
