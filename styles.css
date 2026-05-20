@@ -368,6 +368,33 @@ select:focus {
   display: none;
 }
 
+.section-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-bottom: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f4f8ff;
+  padding: 6px;
+}
+
+.section-tabs button {
+  min-height: 40px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.section-tabs button.active {
+  background: linear-gradient(180deg, #2f6fb8, var(--accent-deep));
+  color: #fff;
+  box-shadow: 0 7px 16px rgba(16, 47, 95, 0.18);
+}
+
 .workspace {
   display: grid;
   grid-template-columns: minmax(300px, 390px) minmax(0, 1fr);
@@ -376,6 +403,7 @@ select:focus {
 }
 
 .slate-panel,
+.left-tab-panel,
 .parlay-card,
 .glory-panel,
 .game-news-panel,
@@ -389,6 +417,18 @@ select:focus {
   position: sticky;
   top: 24px;
   background: linear-gradient(180deg, #ffffff, #f8fbff);
+}
+
+.left-tab-panel {
+  display: none;
+  padding: 0;
+}
+
+.app-shell[data-mobile-tab="games"] .games-panel,
+.app-shell[data-mobile-tab="news"] .game-news-panel,
+.app-shell[data-mobile-tab="logs"] .context-panel,
+.app-shell[data-mobile-tab="saved"] .saved-board-section {
+  display: grid;
 }
 
 .pill {
@@ -457,6 +497,12 @@ select:focus {
   margin-top: 18px;
   border-top: 1px solid var(--line);
   padding-top: 16px;
+}
+
+.left-tab-panel.saved-board-section {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
 }
 
 .compact-heading h2 {
@@ -1882,8 +1928,7 @@ select:focus {
     display: contents;
   }
 
-  .slate-panel > .section-heading,
-  .game-list,
+  .games-panel,
   .top-strip,
   .game-news-panel,
   .parlay-card,
@@ -1894,8 +1939,7 @@ select:focus {
     min-width: 0;
   }
 
-  .app-shell[data-mobile-tab="games"] .slate-panel > .section-heading,
-  .app-shell[data-mobile-tab="games"] .game-list,
+  .app-shell[data-mobile-tab="games"] .games-panel,
   .app-shell[data-mobile-tab="games"] .top-strip,
   .app-shell[data-mobile-tab="games"] .parlay-card,
   .app-shell[data-mobile-tab="games"] .glory-panel,
@@ -1905,7 +1949,7 @@ select:focus {
     display: grid;
   }
 
-  .slate-panel > .section-heading {
+  .games-panel {
     order: 1;
     border: 1px solid var(--line);
     border-radius: 8px;
@@ -1915,17 +1959,11 @@ select:focus {
   }
 
   .game-list {
-    order: 2;
     display: grid;
     grid-template-columns: 1fr;
     gap: 8px;
     overflow: visible;
     margin-top: 8px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: #fff;
-    padding: 10px;
-    box-shadow: var(--shadow-soft);
   }
 
   .game-card {
@@ -2294,22 +2332,22 @@ select:focus {
     text-align: left;
   }
 
-  .app-shell:not([data-mobile-tab="games"]) .slate-panel > .section-heading,
-  .app-shell:not([data-mobile-tab="games"]) .game-list,
+  .app-shell:not([data-mobile-tab="games"]) .games-panel,
   .app-shell:not([data-mobile-tab="games"]) .top-strip,
   .app-shell:not([data-mobile-tab="games"]) .parlay-card,
   .app-shell:not([data-mobile-tab="games"]) .glory-panel,
   .app-shell:not([data-mobile-tab="news"]) .game-news-panel,
+  .app-shell:not([data-mobile-tab="logs"]) .context-panel,
   .app-shell:not([data-mobile-tab="saved"]) .saved-board-section {
     display: none;
   }
 
-  .app-shell[data-mobile-tab="games"] .slate-panel > .section-heading,
-  .app-shell[data-mobile-tab="games"] .game-list,
+  .app-shell[data-mobile-tab="games"] .games-panel,
   .app-shell[data-mobile-tab="games"] .top-strip,
   .app-shell[data-mobile-tab="games"] .parlay-card,
   .app-shell[data-mobile-tab="games"] .glory-panel,
   .app-shell[data-mobile-tab="news"] .game-news-panel,
+  .app-shell[data-mobile-tab="logs"] .context-panel,
   .app-shell[data-mobile-tab="saved"] .saved-board-section {
     display: grid;
   }

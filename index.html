@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Same Game Heat</title>
-    <link rel="stylesheet" href="styles.css?v=v64-game-7-elimination-mode" />
+    <link rel="stylesheet" href="styles.css?v=v65-left-section-tabs" />
   </head>
   <body>
     <main id="appShell" class="app-shell" data-mobile-tab="games">
@@ -58,47 +58,24 @@
       <p id="sportReadiness" class="sport-readiness">NBA mode is live. MLB is scaffolded for sportsbook-line testing.</p>
       <p id="status" class="status">Loading today’s slate and building boards...</p>
 
-      <nav class="mobile-tabs" aria-label="Mobile sections">
-        <button type="button" class="active" data-tab="games" aria-selected="true">Games</button>
-        <button type="button" data-tab="news" aria-selected="false">LineUp/News</button>
-        <button type="button" data-tab="logs" aria-selected="false">Player Logs</button>
-        <button type="button" data-tab="saved" aria-selected="false">Saved</button>
-      </nav>
-
       <section class="workspace">
         <aside class="panel slate-panel">
-          <div class="section-heading">
-            <h2>Games</h2>
-            <span id="gameCount" class="pill">0 games</span>
-          </div>
-          <div id="gameList" class="game-list"></div>
-          <div class="saved-board-section">
-            <div class="section-heading compact-heading">
-              <h2>Saved Boards</h2>
-              <span class="pill">Results</span>
-            </div>
-            <label class="saved-date-picker">
-              Saved Date
-              <input id="savedBoardDate" type="date" />
-            </label>
-            <div id="boardSuccess" class="board-success-panel">Board success will appear after saved results are graded.</div>
-            <div id="savedBoards" class="saved-board-list">Previous boards will appear here after games are graded.</div>
-          </div>
-        </aside>
+          <nav class="mobile-tabs section-tabs" aria-label="Sections">
+            <button type="button" class="active" data-tab="games" aria-selected="true">Games</button>
+            <button type="button" data-tab="news" aria-selected="false">LineUp/News</button>
+            <button type="button" data-tab="logs" aria-selected="false">Player Logs</button>
+            <button type="button" data-tab="saved" aria-selected="false">Saved</button>
+          </nav>
 
-        <section class="results-column">
-          <section class="top-strip">
-            <div>
-              <p class="eyebrow">Selected Game</p>
-              <h2 id="selectedGameTitle">No game selected</h2>
+          <section class="left-tab-panel games-panel">
+            <div class="section-heading">
+              <h2>Games</h2>
+              <span id="gameCount" class="pill">0 games</span>
             </div>
-            <div class="grade-meter" aria-label="Parlay grade">
-              <span id="parlayScore">--</span>
-              <small>/100</small>
-            </div>
+            <div id="gameList" class="game-list"></div>
           </section>
 
-          <section class="panel game-news-panel">
+          <section class="left-tab-panel game-news-panel">
             <div class="section-heading">
               <h2>Game News</h2>
               <div class="heading-actions">
@@ -109,20 +86,7 @@
             <div id="gameNews" class="news-empty">Select a game to view relevant injuries, starting lineups, and updates.</div>
           </section>
 
-          <section id="parlayCard" class="panel parlay-card">
-            <div class="section-heading">
-              <h2>Game Parlays</h2>
-              <span id="riskLabel" class="pill">Awaiting slate</span>
-            </div>
-            <nav id="parlayTabs" class="parlay-tabs" aria-label="Parlay boards">
-              <button type="button" class="active" data-parlay-view="single" aria-selected="true">Bet of the Day</button>
-              <button type="button" data-parlay-view="three" aria-selected="false">Value</button>
-              <button type="button" data-parlay-view="glory" aria-selected="false">Shot of Glory</button>
-            </nav>
-            <div id="parlays" class="legs-empty">Fetch or load a slate to generate parlays.</div>
-          </section>
-
-          <section class="panel context-panel">
+          <section class="left-tab-panel context-panel">
             <div class="section-heading">
               <h2>Player Series Game Logs</h2>
               <div class="heading-actions">
@@ -143,10 +107,49 @@
               <div id="candidateGuide" class="candidate-guide"></div>
             </div>
           </section>
+
+          <section class="left-tab-panel saved-board-section">
+            <div class="section-heading compact-heading">
+              <h2>Saved Boards</h2>
+              <span class="pill">Results</span>
+            </div>
+            <label class="saved-date-picker">
+              Saved Date
+              <input id="savedBoardDate" type="date" />
+            </label>
+            <div id="boardSuccess" class="board-success-panel">Board success will appear after saved results are graded.</div>
+            <div id="savedBoards" class="saved-board-list">Previous boards will appear here after games are graded.</div>
+          </section>
+        </aside>
+
+        <section class="results-column">
+          <section class="top-strip">
+            <div>
+              <p class="eyebrow">Selected Game</p>
+              <h2 id="selectedGameTitle">No game selected</h2>
+            </div>
+            <div class="grade-meter" aria-label="Parlay grade">
+              <span id="parlayScore">--</span>
+              <small>/100</small>
+            </div>
+          </section>
+
+          <section id="parlayCard" class="panel parlay-card">
+            <div class="section-heading">
+              <h2>Game Parlays</h2>
+              <span id="riskLabel" class="pill">Awaiting slate</span>
+            </div>
+            <nav id="parlayTabs" class="parlay-tabs" aria-label="Parlay boards">
+              <button type="button" class="active" data-parlay-view="single" aria-selected="true">Bet of the Day</button>
+              <button type="button" data-parlay-view="three" aria-selected="false">Value</button>
+              <button type="button" data-parlay-view="glory" aria-selected="false">Shot of Glory</button>
+            </nav>
+            <div id="parlays" class="legs-empty">Fetch or load a slate to generate parlays.</div>
+          </section>
         </section>
       </section>
     </main>
 
-    <script src="app.js?v=v64-game-7-elimination-mode"></script>
+    <script src="app.js?v=v65-left-section-tabs"></script>
   </body>
 </html>
