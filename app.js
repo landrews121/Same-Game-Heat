@@ -3293,6 +3293,22 @@ function preferredSavedBoardDate(boards) {
   return dates.find((date) => date < today) || dates[0];
 }
 
+function displaySavedBoardsForDate(boards) {
+  if (!boards.length) return [];
+  const completed = boards.filter((board) => boardGamesFinal(board) || boardHasFinalResults(board));
+  const pool = completed.length ? completed : boards;
+  const ranked = [...pool].sort((a, b) => {
+    const aComplete = boardHasFinalResults(a) ? 1 : 0;
+    const bComplete = boardHasFinalResults(b) ? 1 : 0;
+    if (aComplete !== bComplete) return bComplete - aComplete;
+    const aLegs = snapshotLegCount(a);
+    const bLegs = snapshotLegCount(b);
+    if (aLegs !== bLegs) return bLegs - aLegs;
+    return String(b.savedAt || "").localeCompare(String(a.savedAt || ""));
+  });
+  return ranked[0] ? [ranked[0]] : [];
+}
+
 function renderSavedBoards() {
   if (!elements.savedBoards) return;
   const savedWithLegs = savedBoards.filter((board) =>
@@ -3307,7 +3323,8 @@ function renderSavedBoards() {
   ensureFinalStatsForBoards(savedWithLegs);
   renderBoardSuccess(savedWithLegs);
   const selectedDateBoards = savedWithLegs.filter((board) => board.date === selectedSavedDate);
-  const boards = selectedDateBoards.filter((board) => selectedSavedDate < today || boardGamesFinal(board) || boardHasFinalResults(board));
+  const eligibleBoards = selectedDateBoards.filter((board) => selectedSavedDate < today || boardGamesFinal(board) || boardHasFinalResults(board));
+  const boards = displaySavedBoardsForDate(eligibleBoards);
 
   if (!boards.length) {
     elements.savedBoards.textContent = `No saved board results for ${selectedSavedDate} yet.`;
