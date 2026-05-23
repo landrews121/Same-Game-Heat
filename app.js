@@ -2854,10 +2854,8 @@ function boardStatus(grade, legs = []) {
 }
 
 function parlayTone(grade, legs = []) {
-  if (legs.length) return boardStatus(grade, legs).label;
-  if (grade >= 74) return "Strong";
-  if (grade >= 57) return "Playable";
-  return "Thin";
+  if (legs.length) return `${legs.length} leg${legs.length === 1 ? "" : "s"}`;
+  return "Awaiting legs";
 }
 
 function loadSavedBoards() {
@@ -4298,9 +4296,6 @@ function renderParlayGroup(title, legs, description, gameLabel = "") {
     `;
   }
 
-  const grade = parlayGrade(legs);
-  const probability = averageLegProbability(legs);
-  const status = boardStatus(grade, legs);
   const bookTitle = elements.bookFilter.options[elements.bookFilter.selectedIndex]?.text || "Sportsbook";
   const usesModeledFloor = legs.some((leg) => leg.modeledFloor);
 
@@ -4322,9 +4317,7 @@ function renderParlayGroup(title, legs, description, gameLabel = "") {
       </div>
       <div class="slip-subline">
         <span>${description}${usesModeledFloor ? " Alt prices are estimated until confirmed in the sportsbook." : ""}</span>
-        <strong>${status.label}: ${formatProbability(probability)} avg leg hit</strong>
       </div>
-      <div class="board-status ${status.className}">${status.detail}</div>
       <div class="leg-list">
         ${legs.map((leg) => renderLeg(leg, gameLabel)).join("")}
       </div>
@@ -4336,18 +4329,18 @@ function renderParlayGroup(title, legs, description, gameLabel = "") {
 }
 
 function renderLeg(leg, gameLabel = "") {
-  const hitProbability = Number.isFinite(leg.probability) ? formatProbability(leg.probability) : "--";
   const title = leg.floorLabel || `${leg.direction} ${leg.line}`;
   const marketLabel = leg.floorMarketLabel || `${marketLabels[leg.market] || leg.market} OU`;
   const floorText = leg.sourceLine ? ` · standard line ${leg.sourceLine}` : "";
   const oddsText = Number.isFinite(Number(leg.odds)) ? ` · ${leg.modeledFloor ? "est. " : ""}${formatOdds(leg.odds)}` : "";
+  const readText = `${floorText}${oddsText}`.replace(/^ · /, "");
   return `
     <article class="leg-card">
       <div>
         <div class="leg-title">${title}</div>
         <div class="leg-meta">${leg.player} - ${marketLabel}</div>
         <div class="leg-game">${gameLabel || leg.gameLabel || ""}</div>
-        <div class="leg-read">Hit read ${hitProbability}${floorText}${oddsText}</div>
+        ${readText ? `<div class="leg-read">${readText}</div>` : ""}
       </div>
     </article>
   `;
@@ -4395,7 +4388,7 @@ function renderShotForGlory() {
   const gamesWithLegs = gameBuilds.filter((item) => item.legs.length).length;
   const targetLegs = build.targetLegs || 6;
   if (elements.parlayScore) elements.parlayScore.textContent = grade || "--";
-  elements.riskLabel.textContent = build.locked ? "Locked at slate start" : `${boardStatus(grade, legs).label} · ${legs.length}/${targetLegs} legs`;
+  elements.riskLabel.textContent = build.locked ? "Locked at slate start" : `${legs.length}/${targetLegs} legs`;
   elements.parlays.innerHTML = renderParlayGroup(
     "Shot of Glory",
     legs,
