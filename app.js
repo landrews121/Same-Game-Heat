@@ -251,6 +251,7 @@ function setMobileTab(tab) {
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", active ? "true" : "false");
   });
+  if (nextTab === "saved") loadServerSavedBoards();
 }
 
 function setParlayView(view) {
@@ -2854,10 +2855,25 @@ function parlayTone(grade, legs = []) {
 
 function loadSavedBoards() {
   try {
-    return JSON.parse(localStorage.getItem("propLensSavedBoards") || "[]");
+    const parsed = JSON.parse(localStorage.getItem("propLensSavedBoards") || "[]");
+    return Array.isArray(parsed)
+      ? parsed.map((board) => normalizeSavedBoard(board, "local")).filter(Boolean)
+      : [];
   } catch {
     return [];
   }
+}
+
+function normalizeSavedBoard(board, source = "local") {
+  if (!board || typeof board !== "object") return null;
+  return {
+    ...board,
+    storageSource: board.storageSource || source
+  };
+}
+
+function savedBoardSourceRank(board) {
+  return board?.storageSource === "server" ? 1 : 0;
 }
 
 function saveSavedBoards() {
@@ -2878,7 +2894,9 @@ function saveLockedParlayBuilds() {
 
 function mergeSavedBoards(boards) {
   const byKey = new Map();
-  [...boards, ...savedBoards].forEach((board) => {
+  const serverBoards = (boards || []).map((board) => normalizeSavedBoard(board, "server")).filter(Boolean);
+  const localBoards = (savedBoards || []).map((board) => normalizeSavedBoard(board, board.storageSource || "local")).filter(Boolean);
+  [...serverBoards, ...localBoards].forEach((board) => {
     if (board?.key && !byKey.has(board.key)) byKey.set(board.key, board);
   });
   savedBoards = Array.from(byKey.values())
@@ -2910,10 +2928,8 @@ async function loadServerSavedBoards() {
     const response = await fetch(url);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Could not load saved boards");
-    if (payload.boards?.length) {
-      mergeSavedBoards(payload.boards);
-      renderSavedBoards();
-    }
+    mergeSavedBoards(payload.boards || []);
+    renderSavedBoards();
   } catch {
     renderSavedBoards();
   }
@@ -3078,6 +3094,7 @@ function currentBoardSnapshot() {
     date,
     sport,
     buildVersion: boardBuildVersion,
+    storageSource: "local",
     bookKey: elements.bookFilter.value,
     bookTitle: elements.bookFilter.options[elements.bookFilter.selectedIndex]?.text || elements.bookFilter.value,
     savedAt: new Date().toISOString(),
@@ -3340,6 +3357,9 @@ function displaySavedBoardsForDate(boards) {
   const completed = boards.filter((board) => boardGamesFinal(board) || boardHasFinalResults(board));
   const pool = completed.length ? completed : boards;
   const ranked = [...pool].sort((a, b) => {
+    const aSource = savedBoardSourceRank(a);
+    const bSource = savedBoardSourceRank(b);
+    if (aSource !== bSource) return bSource - aSource;
     const aComplete = boardHasFinalResults(a) ? 1 : 0;
     const bComplete = boardHasFinalResults(b) ? 1 : 0;
     if (aComplete !== bComplete) return bComplete - aComplete;
