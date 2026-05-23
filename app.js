@@ -2178,10 +2178,17 @@ function playoffLeg(leg, game, label = "Playoff Engine") {
     score: Math.round(clamp(Math.max(Number(leg.score) || 0, 38) * 0.55 + survival.score * 0.45, 10, 98)),
     contextNotes: [
       ...(leg.contextNotes || []),
-      `${label}: survivability ${survival.score}/100`,
+      `${label}: survivability ${survivabilityLabel(survival.score)}`,
       ...survival.notes
     ]
   };
+}
+
+function survivabilityLabel(score) {
+  if (score >= 82) return "elite";
+  if (score >= 70) return "strong";
+  if (score >= 58) return "solid";
+  return "thin";
 }
 
 function playoffPoolGateTier(label = "") {
@@ -2848,9 +2855,9 @@ function boardStatus(grade, legs = []) {
 
 function parlayTone(grade, legs = []) {
   if (legs.length) return boardStatus(grade, legs).label;
-  if (grade >= 74) return "Strong grade";
-  if (grade >= 57) return "Playable grade";
-  return "Thin grade";
+  if (grade >= 74) return "Strong";
+  if (grade >= 57) return "Playable";
+  return "Thin";
 }
 
 function loadSavedBoards() {
@@ -3313,7 +3320,7 @@ function renderBoardSuccess(boards = savedBoards) {
   const hasResults = rows.some((row) => row.gradedParlays || row.gradedLegs);
 
   if (!hasResults) {
-    elements.boardSuccess.textContent = "Board success will appear after saved results are graded.";
+    elements.boardSuccess.textContent = "Board success will appear after saved results are final.";
     return;
   }
 
@@ -4245,7 +4252,7 @@ function renderParlay(game) {
       ? Math.round(average(valueBoards.map((legs) => parlayGrade(legs))))
     : parlayGrade(activeLegs);
   elements.selectedGameTitle.textContent = `${game.awayTeam} @ ${game.homeTeam}`;
-  elements.parlayScore.textContent = score || "--";
+  if (elements.parlayScore) elements.parlayScore.textContent = score || "--";
   elements.riskLabel.textContent = build.locked ? "Locked at start" : parlayTone(score, activeLegs);
   updateParlayTabs();
   const gameLabel = `${game.awayTeam} @ ${game.homeTeam}`;
@@ -4311,7 +4318,6 @@ function renderParlayGroup(title, legs, description, gameLabel = "") {
         </div>
         <div class="parlay-stats">
           <strong>${boardOddsLabel(legs)}</strong>
-          <span>Grade ${grade}/100</span>
         </div>
       </div>
       <div class="slip-subline">
@@ -4335,14 +4341,13 @@ function renderLeg(leg, gameLabel = "") {
   const marketLabel = leg.floorMarketLabel || `${marketLabels[leg.market] || leg.market} OU`;
   const floorText = leg.sourceLine ? ` · standard line ${leg.sourceLine}` : "";
   const oddsText = Number.isFinite(Number(leg.odds)) ? ` · ${leg.modeledFloor ? "est. " : ""}${formatOdds(leg.odds)}` : "";
-  const survivabilityText = Number.isFinite(leg.survivabilityScore) ? ` · survive ${leg.survivabilityScore}/100` : "";
   return `
     <article class="leg-card">
       <div>
         <div class="leg-title">${title}</div>
         <div class="leg-meta">${leg.player} - ${marketLabel}</div>
         <div class="leg-game">${gameLabel || leg.gameLabel || ""}</div>
-        <div class="leg-read">Grade ${leg.score}/100 · est. hit ${hitProbability}${survivabilityText}${floorText}${oddsText}</div>
+        <div class="leg-read">Hit read ${hitProbability}${floorText}${oddsText}</div>
       </div>
     </article>
   `;
@@ -4389,7 +4394,7 @@ function renderShotForGlory() {
   const grade = parlayGrade(legs);
   const gamesWithLegs = gameBuilds.filter((item) => item.legs.length).length;
   const targetLegs = build.targetLegs || 6;
-  elements.parlayScore.textContent = grade || "--";
+  if (elements.parlayScore) elements.parlayScore.textContent = grade || "--";
   elements.riskLabel.textContent = build.locked ? "Locked at slate start" : `${boardStatus(grade, legs).label} · ${legs.length}/${targetLegs} legs`;
   elements.parlays.innerHTML = renderParlayGroup(
     "Shot of Glory",
@@ -4406,7 +4411,7 @@ function renderCandidateGuide(game) {
         <div class="candidate-guide-heading">
           <div>
             <h3>Playoff Candidate</h3>
-            <p>Select a game to see 60%+ candidate legs graded with basketball ratings.</p>
+            <p>Select a game to see 60%+ candidate legs with basketball ratings.</p>
           </div>
         </div>
       </section>
@@ -4441,8 +4446,6 @@ function renderCandidateGuide(game) {
         <div class="candidate-mini">
           <span class="${status.className}">${escapeHtml(status.label)}</span>
           <span>Hit ${formatProbability(Number(leg.probability || 0))}</span>
-          <span>Grade ${Math.round(Number(leg.score || 0))}</span>
-          <span>Survive ${Number.isFinite(leg.survivabilityScore) ? `${leg.survivabilityScore}/100` : "--"}</span>
         </div>
         <p>${notes.length ? notes.map(escapeHtml).join(" · ") : "Considered by the Playoff Engine, but no stronger guide note was available."}</p>
       </article>
@@ -4896,7 +4899,7 @@ function render() {
 
   if (!game) {
     elements.selectedGameTitle.textContent = "No game selected";
-    elements.parlayScore.textContent = "--";
+    if (elements.parlayScore) elements.parlayScore.textContent = "--";
     elements.riskLabel.textContent = "Awaiting slate";
     elements.parlays.textContent = "Fetch or load a slate to generate parlays.";
     elements.playerOptions.innerHTML = "";
