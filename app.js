@@ -3100,6 +3100,7 @@ function currentBoardSnapshot() {
     sport,
     buildVersion: boardBuildVersion,
     storageSource: "local",
+    receiptLocked: slate.some((game) => gameHasStarted(game)),
     bookKey: elements.bookFilter.value,
     bookTitle: elements.bookFilter.options[elements.bookFilter.selectedIndex]?.text || elements.bookFilter.value,
     savedAt: new Date().toISOString(),
@@ -3125,8 +3126,23 @@ function snapshotGameCount(board) {
   ]).size;
 }
 
+function savedBoardSlateHasStarted(board) {
+  const labels = [
+    ...(board?.games || []),
+    ...(board?.parlays || []).map((parlay) => parlay.gameLabel).filter(Boolean)
+  ];
+  if (!labels.length) return false;
+  return slate.some((game) =>
+    labels.some((label) => gameLabelMatches(label, `${game.awayTeam} @ ${game.homeTeam}`)) &&
+    gameHasStarted(game)
+  );
+}
+
 function shouldReplaceSavedBoard(existing, snapshot) {
   if (!existing) return true;
+  if (existing.receiptLocked) return false;
+  if (snapshot.receiptLocked) return true;
+  if (savedBoardSlateHasStarted(existing)) return false;
   if (snapshot.buildVersion !== existing.buildVersion) return true;
   const existingGames = snapshotGameCount(existing);
   const snapshotGames = snapshotGameCount(snapshot);
@@ -3140,13 +3156,14 @@ function upsertCurrentBoard() {
   if (!snapshot?.legs.length) return;
   const existing = savedBoards.find((board) => board.key === snapshot.key);
   const boardToSave = shouldReplaceSavedBoard(existing, snapshot) ? snapshot : existing;
+  if (!boardToSave) return;
   savedBoards = [
     boardToSave,
     ...savedBoards.filter((board) => board.key !== boardToSave.key)
   ].slice(0, 14);
   invalidateSavedLegCache();
   saveSavedBoards();
-  pushSavedBoard(boardToSave);
+  if (boardToSave === snapshot) pushSavedBoard(boardToSave);
 }
 
 function resultIcon(status) {

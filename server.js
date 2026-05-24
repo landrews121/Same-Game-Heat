@@ -344,9 +344,13 @@ async function cacheSlateProps(props) {
 
 async function cacheSavedBoard(board) {
   if (!board?.key) return false;
-  const localCached = await cacheSavedBoardLocally(board);
+  const existingLocalBoards = await readLocalSavedBoards();
+  const existingLocal = existingLocalBoards.find((item) => item?.key === board.key);
+  const localCached = existingLocal?.receiptLocked ? true : await cacheSavedBoardLocally(board);
   if (!supabaseEnabled()) return localCached;
   try {
+    const existingRemote = await supabaseRequest(`saved_boards?id=eq.${encodeURIComponent(board.key)}&select=id,payload&limit=1`);
+    if (Array.isArray(existingRemote) && existingRemote.some((row) => row?.payload?.receiptLocked)) return true;
     await supabaseRequest("saved_boards?on_conflict=id", {
       method: "POST",
       headers: { Prefer: "resolution=merge-duplicates" },
@@ -383,6 +387,8 @@ async function writeLocalSavedBoards(boards) {
 async function cacheSavedBoardLocally(board) {
   try {
     const boards = await readLocalSavedBoards();
+    const existing = boards.find((item) => item?.key === board.key);
+    if (existing?.receiptLocked) return true;
     const nextBoards = [
       board,
       ...boards.filter((item) => item?.key !== board.key)
