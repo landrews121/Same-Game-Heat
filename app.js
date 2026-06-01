@@ -5508,6 +5508,40 @@ function parseOddsCandidates(eventOdds, selectedBook) {
 
     bookmaker.markets?.forEach((market) => {
       market.outcomes?.forEach((outcome) => {
+        if (market.key === "batter_home_runs") {
+          const hrPlayer = outcome.description || outcome.name;
+          const hrPoint = outcome.point ?? 0.5;
+          if (!hrPlayer) return;
+          const groupKey = `${normalizeName(hrPlayer)}|batter_home_runs`;
+          const lineKey = String(Number(hrPoint));
+          const lines = lineGroups.get(groupKey) || new Map();
+          const lineItem = lines.get(lineKey) || {
+            line: Number(hrPoint),
+            books: new Set(),
+            selected: false,
+            overOdds: null,
+            underOdds: null,
+            selectedOverOdds: null,
+            selectedUnderOdds: null,
+            selectedBookKey: "",
+            selectedBookTitle: ""
+          };
+          lineItem.books.add(bookmakerTitle);
+          lineItem.overOdds = outcome.price;
+          if (bookmakerKey === bookKey || sportsbookMatches(bookmaker, bookKey)) {
+            lineItem.selected = true;
+            lineItem.selectedBookKey = bookmaker.key;
+            lineItem.selectedBookTitle = bookmakerTitle;
+            lineItem.selectedOverOdds = outcome.price;
+          }
+          lines.set(lineKey, lineItem);
+          lineGroups.set(groupKey, lines);
+          const existing = grouped.get(groupKey) || { player: hrPlayer, market: "batter_home_runs", entries: new Map() };
+          existing.entries.set(lineKey, lineItem);
+          grouped.set(groupKey, existing);
+          return;
+        }
+
         const player = outcome.description || outcome.name;
         const direction = outcome.name;
         if (!player || !["Over", "Under"].includes(direction) || outcome.point === undefined) return;
@@ -5611,6 +5645,9 @@ function parseOddsCandidates(eventOdds, selectedBook) {
         books: Array.from(item.books)
       }))
       .sort((a, b) => Number(a.line) - Number(b.line));
+    if (propCandidate.market === "batter_home_runs" && (!Number.isFinite(propCandidate.line) || propCandidate.line === 0)) {
+      propCandidate.line = 0.5;
+    }
     return propCandidate;
   });
   return candidateProps;
