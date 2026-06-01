@@ -457,7 +457,8 @@ function inferPlayerTier(prop) {
 
   if (prop.market?.startsWith("batter_") && ["batter_total_bases", "batter_hits", "batter_rbis", "batter_runs"].includes(prop.market)) return "starter";
   if (prop.market === "pitcher_strikeouts" && mlbPowerLine >= 4.5) return "starter";
-  if (averageMinutes >= 34 || averagePra >= 30 || scoringLine >= 21.5 || assistsLine >= 6.5 || reboundsLine >= 10.5 || praLine >= 34.5 || comboLine >= 31.5) return "star";
+  if (averageMinutes >= 36) return "star";
+  if (averageMinutes >= 34 || averagePra >= 30 || scoringLine >= 19.5 || assistsLine >= 6.5 || reboundsLine >= 10.5 || praLine >= 34.5 || comboLine >= 31.5) return "star";
   if (averageMinutes >= 28 || averagePra >= 20 || scoringLine >= 15.5 || assistsLine >= 4.5 || reboundsLine >= 7.5 || praLine >= 24.5 || comboLine >= 22.5) return "starter";
   return "rotation";
 }
@@ -519,12 +520,18 @@ function gameImportanceScore(prop, game) {
   const situation = prop?.teamSituation || {};
   if (situation.isGame7) return 10;
   if (situation.isEliminationGame || situation.facingElimination) return 8;
+  if (game?.isFinals) return Math.max(6, situation.isPlayoffGame || (game?.gameImportanceScore || 0) >= 5 || prop?.seriesGames >= 3 ? 6 : 6);
   if (situation.isPlayoffGame || (game?.gameImportanceScore || 0) >= 5 || prop?.seriesGames >= 3) return 5;
   return 0;
 }
 
 function pressureGameContext(prop, direction, game) {
   const importanceScore = gameImportanceScore(prop, game);
+  if (importanceScore < 6) return { boost: 0, penalty: 0, probabilityBoost: 0, probabilityPenalty: 0, notes: [], importanceScore };
+  if (importanceScore < 8 && game?.isFinals) {
+    const notes = ["NBA Finals: elevated star workload expected from Game 1"];
+    return { boost: 0, penalty: 0, probabilityBoost: 0, probabilityPenalty: 0, notes, importanceScore };
+  }
   if (importanceScore < 8) return { boost: 0, penalty: 0, probabilityBoost: 0, probabilityPenalty: 0, notes: [], importanceScore };
 
   const notes = [];
@@ -1074,9 +1081,10 @@ function noSeriesContext(prop, direction) {
   const opponentEdge = direction === "Over" ? Number(h2h.avg || 0) - Number(prop.line || 0) : Number(prop.line || 0) - Number(h2h.avg || 0);
   const recentFormBacksRead = recentSupport >= 0.67 && recentEdge >= 0;
   const opponentHistoryBacksRead = h2h.games >= 2 && opponentSupport >= 0.6 && opponentEdge >= 0;
-  let penalty = 6;
-  let probabilityPenalty = 0.03;
-  let scoreCap = 92;
+  const isPlayoffNoSeries = Boolean(prop.teamSituation?.isPlayoffGame);
+  let penalty = isPlayoffNoSeries ? 3 : 6;
+  let probabilityPenalty = isPlayoffNoSeries ? 0.015 : 0.03;
+  let scoreCap = isPlayoffNoSeries ? 94 : 92;
 
   if (recentFormBacksRead) {
     penalty -= isPrimary ? 9 : 6;
@@ -1473,14 +1481,23 @@ function scoreCandidate(prop, game, forcedDirection = "") {
     ? Math.min(12, 4 + outCount * 2)
     : 0;
   const confirmedStarterProbabilityBoost = confirmedStarterBoost ? Math.min(0.06, 0.02 + outCount * 0.01) : 0;
+  const isStarOrStarter = prop.playerTier === "star" || prop.playerTier === "starter";
+  const restAdvantage = Boolean(prop.teamSituation?.restAdvantage);
+  const restBoost = restAdvantage && direction === "Over" && isStarOrStarter ? 4 : 0;
+  const restProbabilityBoost = restAdvantage && direction === "Over" && isStarOrStarter ? 0.02 : 0;
+  const lowTotalMarkets = ["player_points", "player_points_rebounds_assists"];
+  const gameTotal = game?.gameTotal ?? null;
+  const isLowTotal = gameTotal !== null && gameTotal < 215;
+  const lowTotalPenalty = isLowTotal && direction === "Over" && lowTotalMarkets.includes(prop.market) ? 5 : 0;
+  const lowTotalProbabilityPenalty = isLowTotal && direction === "Over" && lowTotalMarkets.includes(prop.market) ? 0.025 : 0;
   const missingSeriesLogs = !prop.seriesGames;
   const edgeScore = Math.max(0, directionalEdge) * 2.6 + Math.min(0, directionalEdge) * 1.2;
   const seriesEdgeScore = (Math.max(0, directionalSeriesEdge) * (isPressureGame ? 4.8 : 3.8) + Math.min(0, directionalSeriesEdge) * (isPressureGame ? 2.2 : 1.6)) * seriesWeight;
   const seasonH2HEdgeScore = (Math.max(0, directionalSeasonH2HEdge) * 1.2 + Math.min(0, directionalSeasonH2HEdge) * 0.6) * seasonH2HWeight;
-  const rawScore = 46 + edgeScore + seriesEdgeScore + seasonH2HEdgeScore + (directionalRecentHitRate - 0.5) * (isPressureGame ? 12 : 18) + (directionalSeriesHitRate - 0.5) * (isPressureGame ? 82 : 64) * seriesWeight + (directionalSeasonH2HHitRate - 0.5) * (isPressureGame ? 18 : 14) * seasonH2HWeight + seriesConviction + injuryScore + elimination.boost + pressure.boost + confirmedStarterBoost + lineQuality.boost + agentScoreAdjustment - oddsPenalty - context.penalty - pressure.penalty - marketResistance.penalty - noSeries.penalty - lineQuality.penalty - missRisk.penalty;
+  const rawScore = 46 + edgeScore + seriesEdgeScore + seasonH2HEdgeScore + (directionalRecentHitRate - 0.5) * (isPressureGame ? 12 : 18) + (directionalSeriesHitRate - 0.5) * (isPressureGame ? 82 : 64) * seriesWeight + (directionalSeasonH2HHitRate - 0.5) * (isPressureGame ? 18 : 14) * seasonH2HWeight + seriesConviction + injuryScore + elimination.boost + pressure.boost + confirmedStarterBoost + restBoost + lineQuality.boost + agentScoreAdjustment - oddsPenalty - context.penalty - pressure.penalty - marketResistance.penalty - noSeries.penalty - lineQuality.penalty - missRisk.penalty - lowTotalPenalty;
   const scoreCap = missingSeriesLogs ? noSeries.scoreCap : 96;
   const edgeProbability = clamp(directionalBlendedEdge * 0.01, -0.05, 0.07);
-  const probability = clamp(directionalRecentHitRate * recentProbabilityWeight + directionalSeriesHitRate * seriesProbabilityWeight * seriesWeight + directionalSeasonH2HHitRate * h2hProbabilityWeight * seasonH2HWeight + 0.08 + edgeProbability + injuryScore / 290 + elimination.probabilityBoost + pressure.probabilityBoost + confirmedStarterProbabilityBoost + lineQuality.probabilityBoost + agentProbabilityAdjustment - context.probabilityPenalty - pressure.probabilityPenalty - marketResistance.probabilityPenalty - noSeries.probabilityPenalty - lineQuality.probabilityPenalty - missRisk.probabilityPenalty, 0.26, 0.78);
+  const probability = clamp(directionalRecentHitRate * recentProbabilityWeight + directionalSeriesHitRate * seriesProbabilityWeight * seriesWeight + directionalSeasonH2HHitRate * h2hProbabilityWeight * seasonH2HWeight + 0.08 + edgeProbability + injuryScore / 290 + elimination.probabilityBoost + pressure.probabilityBoost + confirmedStarterProbabilityBoost + restProbabilityBoost + lineQuality.probabilityBoost + agentProbabilityAdjustment - context.probabilityPenalty - pressure.probabilityPenalty - marketResistance.probabilityPenalty - noSeries.probabilityPenalty - lineQuality.probabilityPenalty - missRisk.probabilityPenalty - lowTotalProbabilityPenalty, 0.26, 0.78);
 
   return {
     ...prop,
@@ -1500,6 +1517,8 @@ function scoreCandidate(prop, game, forcedDirection = "") {
     contextNotes: [
       ...elimination.notes,
       ...(confirmedStarterBoost ? ["Confirmed starter boost with multiple teammates out"] : []),
+      ...(restBoost ? ["Rest advantage: extra recovery day boosts star/starter over"] : []),
+      ...(lowTotalPenalty ? ["Low game total environment: over scoring props penalized"] : []),
       ...(forcedDirection && seriesDirection && direction !== seriesDirection ? ["Two-sided scan: series trend opposes this side"] : []),
       ...(!prop.seriesGames && h2h.games ? [`No current series: using ${h2h.source.toLowerCase()}`] : []),
       ...pressure.notes,
@@ -5358,6 +5377,17 @@ function toOddsApiDateTime(date) {
   return date.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
+function extractGameTotal(eventOdds) {
+  for (const bookmaker of eventOdds.bookmakers || []) {
+    for (const market of bookmaker.markets || []) {
+      if (market.key !== "totals") continue;
+      const over = market.outcomes?.find((o) => o.name === "Over");
+      if (over?.point !== undefined) return Number(over.point);
+    }
+  }
+  return null;
+}
+
 function parseOddsCandidates(eventOdds, selectedBook) {
   const bookKey = String(selectedBook || "fanatics").trim().toLowerCase();
   const grouped = new Map();
@@ -6176,6 +6206,10 @@ function buildGamesFromPayloads(eventPayloads) {
     const candidates = parseOddsCandidates(odds, elements.bookFilter.value);
     const moneylines = extractMoneylineOdds(odds, elements.bookFilter.value);
     if (!event?.id) continue;
+    const commenceMs = Date.parse(event.commence_time || "");
+    const lastGameMs = Date.parse(event.lastGameDate || "");
+    const restDays = commenceMs && lastGameMs ? Math.round((commenceMs - lastGameMs) / 86400000) : null;
+    const gameTotal = extractGameTotal(odds);
     games.push({
       id: event.id,
       homeTeam: event.home_team,
@@ -6185,7 +6219,9 @@ function buildGamesFromPayloads(eventPayloads) {
       candidates,
       moneylines,
       propMarketAvailable: candidates.length > 0,
-      bookmakerCount: odds.bookmakers?.length || 0
+      bookmakerCount: odds.bookmakers?.length || 0,
+      restDays,
+      gameTotal
     });
   }
 
