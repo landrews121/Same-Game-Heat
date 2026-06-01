@@ -433,7 +433,7 @@ function marketRoleBump(market, outCount, questionableCount) {
     batter_hits: 0.25,
     batter_runs: 0.2,
     batter_rbis: 0.25,
-    batter_home_runs: 0.1,
+    batter_home_runs: 0.35,
     pitcher_strikeouts: 0.3
   };
 
@@ -1225,7 +1225,7 @@ function missRiskContext(prop, direction, game) {
     notes.push("Miss risk: role-player over needs too many things to go right");
   }
 
-  if (isOver && !isPrimary && usageMarkets.includes(prop.market)) {
+  if (isOver && !isPrimary && usageMarkets.includes(prop.market) && !prop.market?.startsWith("batter_") && prop.market !== "pitcher_strikeouts") {
     penalty += 8;
     probabilityPenalty += 0.04;
     notes.push("Miss risk: non-star usage over can disappear if the rotation tightens");
@@ -1549,12 +1549,14 @@ function selectUniqueLegs(legs, count = Infinity, options = {}) {
   const selected = [];
 
   for (const leg of legs) {
-    if (usedPlayers.has(leg.player)) continue;
+    const isMlbMarket = leg.market?.startsWith("batter_") || leg.market?.startsWith("pitcher_");
+    const dedupKey = isMlbMarket ? `${leg.player}|${leg.market}` : leg.player;
+    if (usedPlayers.has(dedupKey)) continue;
     if (!options.allowMultipleAssists && leg.market === "player_assists" && usedMarkets.get("player_assists")) continue;
     if (!options.allowMultipleThreeOvers && leg.market === "player_threes" && leg.direction === "Over" && usedMarkets.get("player_threes_over")) continue;
     if (options.avoidUsageCorrelation && selected.some((item) => correlatedUsageLegs(item, leg, options.game))) continue;
     selected.push(leg);
-    usedPlayers.add(leg.player);
+    usedPlayers.add(dedupKey);
     usedMarkets.set(leg.market, (usedMarkets.get(leg.market) || 0) + 1);
     if (leg.market === "player_threes" && leg.direction === "Over") {
       usedMarkets.set("player_threes_over", (usedMarkets.get("player_threes_over") || 0) + 1);
@@ -1581,7 +1583,8 @@ function agentConflictRisk(leg) {
   const probabilityDrag = Math.abs(negativeSignals.reduce((sum, signal) => sum + Number(signal.probabilityDelta || 0), 0));
   const volatileMinutes = notes.includes("minutes volatility");
   const minutesAgainst = notes.includes("latest minutes dipped against the over") || notes.includes("latest minutes rose against the under");
-  const fragileRoleOver = leg.direction === "Over" && leg.playerTier === "rotation" && (
+  const isBaseballMarket = leg.market?.startsWith("batter_") || leg.market === "pitcher_strikeouts";
+  const fragileRoleOver = !isBaseballMarket && leg.direction === "Over" && leg.playerTier === "rotation" && (
     volatileMinutes ||
     notes.includes("role-player overs are fragile") ||
     notes.includes("role-player injury bump needs confirmed minutes")
