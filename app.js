@@ -455,7 +455,7 @@ function inferPlayerTier(prop) {
   const comboLine = isComboMarket(prop.market) ? Number(prop.line) : 0;
   const mlbPowerLine = prop.market === "batter_total_bases" || prop.market === "pitcher_strikeouts" ? Number(prop.line) : 0;
 
-  if (prop.market?.startsWith("batter_") && ["batter_total_bases", "batter_hits", "batter_rbis", "batter_runs"].includes(prop.market)) return "starter";
+  if (prop.market?.startsWith("batter_") && ["batter_total_bases", "batter_hits", "batter_rbis", "batter_runs", "batter_home_runs"].includes(prop.market)) return "starter";
   if (prop.market === "pitcher_strikeouts" && mlbPowerLine >= 4.5) return "starter";
   if (averageMinutes >= 36) return "star";
   if (averageMinutes >= 34 || averagePra >= 30 || scoringLine >= 19.5 || assistsLine >= 6.5 || reboundsLine >= 10.5 || praLine >= 34.5 || comboLine >= 31.5) return "star";
@@ -1069,7 +1069,7 @@ function noSeriesContext(prop, direction) {
 
   const notes = ["No current-series sample; using recent form and opponent history"];
   const h2h = headToHeadFallbackContext(prop);
-  const starterMarkets = ["player_points", "player_rebounds", "player_assists", "player_points_rebounds_assists", "player_points_assists", "player_points_rebounds", "player_rebounds_assists", "batter_total_bases", "batter_hits", "batter_runs", "batter_rbis", "pitcher_strikeouts"];
+  const starterMarkets = ["player_points", "player_rebounds", "player_assists", "player_points_rebounds_assists", "player_points_assists", "player_points_rebounds", "player_rebounds_assists", "batter_total_bases", "batter_hits", "batter_runs", "batter_rbis", "batter_home_runs", "pitcher_strikeouts"];
   const outCount = prop.teamSituation?.lineupKeyOut?.length || 0;
   const confirmedStarter = Boolean(prop.teamSituation?.confirmedStarter);
   const isPrimary = prop.playerTier === "star" || prop.playerTier === "starter";
@@ -1219,7 +1219,7 @@ function missRiskContext(prop, direction, game) {
   let penalty = 0;
   let probabilityPenalty = 0;
 
-  if (isOver && isRotation) {
+  if (isOver && isRotation && !prop.market?.startsWith("batter_") && prop.market !== "pitcher_strikeouts") {
     penalty += 14;
     probabilityPenalty += 0.07;
     notes.push("Miss risk: role-player over needs too many things to go right");
