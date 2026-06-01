@@ -710,6 +710,11 @@ select:focus {
   align-items: stretch;
 }
 
+#parlays.three-card-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+}
+
 .parlay-tabs {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -1965,6 +1970,10 @@ select:focus {
   }
 
   #parlays.two-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  #parlays.three-card-grid {
     grid-template-columns: 1fr;
   }
 

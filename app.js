@@ -1860,6 +1860,22 @@ function scoredLegPool(game) {
     .sort((a, b) => b.score - a.score);
 }
 
+function buildHRProps(game, count = 2) {
+  return game.candidates
+    .filter((prop) => prop.market === "batter_home_runs" && !prop.excluded)
+    .filter((prop) => playerBelongsToGame(prop, game))
+    .flatMap((prop) => scorePropSides(prop, game))
+    .filter((leg) => leg.direction === "Over")
+    .filter((leg) => leg.manualInjury !== "player_out")
+    .filter((leg, index, legs) => legs.findIndex((item) => normalizeName(item.player) === normalizeName(leg.player)) === index)
+    .sort((a, b) => b.probability - a.probability || b.score - a.score)
+    .slice(0, count)
+    .map((leg) => ({
+      ...leg,
+      contextNotes: [...(leg.contextNotes || []), "HR Board: anytime home run ranked by park-adjusted probability"]
+    }));
+}
+
 function playableLegFloor(leg, minimumProbability = 0.5) {
   if (!Number.isFinite(leg.probability) || leg.probability < minimumProbability) return false;
   if (leg.score < 45) return false;
@@ -2545,12 +2561,14 @@ function liveGameBuild(game) {
   const saferLegs = [];
   const sameTeamLegs = [];
   const threeLegs = reserveUsedLegs(usedLegs, buildMixedTeamParlay(game, usedLegs));
+  const hrLegs = buildHRProps(game, 2);
   return {
     singleLegs,
     saferLegs,
     sameTeamLegs,
     threeLegs,
     valueStarLegs,
+    hrLegs,
     locked: false,
     lockedAt: ""
   };
@@ -2575,6 +2593,7 @@ function savedBuildForGame(game) {
   const sameTeam = board.parlays.find((parlay) => /alternate|same.team/i.test(parlay.title || "") && gameLabelMatches(parlay.gameLabel, gameLabel));
   const three = board.parlays.find((parlay) => /3-leg/i.test(parlay.title || "") && gameLabelMatches(parlay.gameLabel, gameLabel));
   const valueStar = board.parlays.find((parlay) => /star.value|core/i.test(parlay.title || "") && gameLabelMatches(parlay.gameLabel, gameLabel));
+  const hrBoard = board.parlays.find((parlay) => /home.run|hr.board/i.test(parlay.title || "") && gameLabelMatches(parlay.gameLabel, gameLabel));
   const betOfDay = board.parlays.filter((parlay) => /bet.of.the.day|best.single/i.test(parlay.title || "") && gameLabelMatches(parlay.gameLabel, gameLabel));
   if (!betOfDay.length && !single?.legs?.length && !safer?.legs?.length && !sameTeam?.legs?.length && !three?.legs?.length && !valueStar?.legs?.length) return null;
   const hydrateLeg = (leg) => ({
@@ -2587,6 +2606,7 @@ function savedBuildForGame(game) {
     sameTeamLegs: (sameTeam?.legs || []).map(hydrateLeg),
     threeLegs: (three?.legs || []).map(hydrateLeg),
     valueStarLegs: (valueStar?.legs || []).map(hydrateLeg),
+    hrLegs: (hrBoard?.legs || []).map(hydrateLeg),
     locked: true,
     lockedAt: board.savedAt || "",
     gameLabel
@@ -3249,6 +3269,7 @@ function currentBoardSnapshot() {
     if (singleLegs[1]) parlays.push(savedParlay("Bet of the Day 2", gameLabel, "Bet of the Day", [singleLegs[1]]));
     if (threeLegs.length) parlays.push(savedParlay("3-Leg Mixed-Team Parlay", gameLabel, "3-Leg Mixed", threeLegs));
     if (valueStarLegs.length) parlays.push(savedParlay("Star Value Board", gameLabel, "Star Value", valueStarLegs));
+    if (build.hrLegs?.length) parlays.push(savedParlay("Home Run Board", gameLabel, "HR Board", build.hrLegs));
   });
 
   const shotBuild = shotForGloryBuild();
@@ -4775,18 +4796,23 @@ function renderParlay(game) {
   }
 
   if (activeParlayView === "three") {
-    elements.parlays.classList.add("two-card-grid");
+    const hrLegs = build.hrLegs || [];
+    elements.parlays.classList.remove("two-card-grid");
+    elements.parlays.classList.add(hrLegs.length ? "three-card-grid" : "two-card-grid");
     elements.parlays.innerHTML = [
       renderParlayGroup("Star Value Board", valueStarLegs, build.locked ? "Locked once this game started." : "Star/core board: two best candidates from each team by hit probability, over or under.", gameLabel),
-      renderParlayGroup("Value Parlay", threeLegs, build.locked ? "Locked once this game started." : "Full-line playoff reads with acceptable survivability. Not a forced board.", gameLabel)
+      renderParlayGroup("Value Parlay", threeLegs, build.locked ? "Locked once this game started." : "Full-line playoff reads with acceptable survivability. Not a forced board.", gameLabel),
+      renderParlayGroup("Home Run Board", hrLegs, build.locked ? "Locked once this game started." : "Top 2 anytime HR props ranked by park factor and batter power profile.", gameLabel)
     ].join("");
     return;
   }
 
   elements.parlays.classList.remove("two-card-grid");
+  elements.parlays.classList.remove("three-card-grid");
 
   if (activeParlayView === "glory") {
     elements.parlays.classList.remove("two-card-grid");
+    elements.parlays.classList.remove("three-card-grid");
     renderShotForGlory();
     return;
   }
