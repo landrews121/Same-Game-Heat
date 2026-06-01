@@ -60,6 +60,15 @@ const marketLabels = {
   player_rush_yds: "Rush Yards"
 };
 
+const parkHRFactors = {
+  COL: 1.35, CIN: 1.22, NYY: 1.18, LAA: 1.14, MIL: 1.10,
+  PHI: 1.09, ATL: 1.08, CHC: 1.07, TEX: 1.06, BAL: 1.05,
+  BOS: 1.04, AZ: 1.03, HOU: 1.02, LAD: 1.01, NYM: 1.00,
+  STL: 0.99, MIN: 0.98, CLE: 0.97, DET: 0.97, SF: 0.96,
+  SEA: 0.95, MIA: 0.95, SD: 0.94, PIT: 0.93, KC: 0.92,
+  WSH: 0.91, TB: 0.90, OAK: 0.89, TOR: 0.88, CWS: 0.87
+};
+
 const sportsbookAliases = {
   fanatics: ["fanatics", "fanaticssportsbook", "fanatics_sportsbook", "fanatics sportsbook"],
   draftkings: ["draftkings", "draftkings_us", "draftkings sportsbook"],
@@ -1066,7 +1075,6 @@ function headToHeadFallbackContext(prop) {
 
 function noSeriesContext(prop, direction) {
   if (prop.seriesGames) return { penalty: 0, probabilityPenalty: 0, notes: [], scoreCap: 96 };
-
   const notes = ["No current-series sample; using recent form and opponent history"];
   const h2h = headToHeadFallbackContext(prop);
   const starterMarkets = ["player_points", "player_rebounds", "player_assists", "player_points_rebounds_assists", "player_points_assists", "player_points_rebounds", "player_rebounds_assists", "batter_total_bases", "batter_hits", "batter_runs", "batter_rbis", "batter_home_runs", "pitcher_strikeouts"];
@@ -1082,8 +1090,9 @@ function noSeriesContext(prop, direction) {
   const recentFormBacksRead = recentSupport >= 0.67 && recentEdge >= 0;
   const opponentHistoryBacksRead = h2h.games >= 2 && opponentSupport >= 0.6 && opponentEdge >= 0;
   const isPlayoffNoSeries = Boolean(prop.teamSituation?.isPlayoffGame);
-  let penalty = isPlayoffNoSeries ? 3 : 6;
-  let probabilityPenalty = isPlayoffNoSeries ? 0.015 : 0.03;
+  const isHRProp = prop.market === "batter_home_runs";
+  let penalty = isHRProp ? 2 : isPlayoffNoSeries ? 3 : 6;
+  let probabilityPenalty = isHRProp ? 0.01 : isPlayoffNoSeries ? 0.015 : 0.03;
   let scoreCap = isPlayoffNoSeries ? 94 : 92;
 
   if (recentFormBacksRead) {
@@ -1197,6 +1206,7 @@ function selectedLineQualityContext(prop, direction) {
 }
 
 function missRiskContext(prop, direction, game) {
+  if (prop.market === "batter_home_runs") return { penalty: 0, probabilityPenalty: 0, notes: [] };
   const logs = prop.seriesLogs || [];
   const values = logs.map((log) => logValueForMarket(log, prop.market)).filter((value) => Number.isFinite(value));
   const minutes = logs.map(numericLogMinutes).filter((value) => value !== null);
@@ -1268,6 +1278,33 @@ function missRiskContext(prop, direction, game) {
   }
 
   return { penalty, probabilityPenalty, notes };
+}
+
+function homeRunScoringContext(prop, game) {
+  if (prop.market !== "batter_home_runs") return { scoreBoost: 0, probabilityBoost: 0, scoreCap: 96, noSeriesPenaltyOverride: null, notes: [] };
+
+  const homeTeamAbbr = (game?.homeTeam || "").toUpperCase().replace(/\s+/g, "").slice(0, 3);
+  const parkFactor = parkHRFactors[homeTeamAbbr] || 1.0;
+  const parkBoostScore = Number(((parkFactor - 1.0) * 60).toFixed(1));
+  const parkBoostProbability = Number(((parkFactor - 1.0) * 0.08).toFixed(4));
+
+  const isStandardLine = Number(prop.line) === 0.5;
+  const scoreCap = isStandardLine ? 70 : 78;
+
+  const notes = [];
+  if (parkFactor > 1.05) notes.push("Park factor boost: hitter-friendly environment raises HR probability");
+  else if (parkFactor < 0.95) notes.push("Park factor penalty: pitcher-friendly park suppresses HR probability");
+  else notes.push("Park factor: neutral environment");
+
+  if (isStandardLine) notes.push("Standard anytime HR line (0.5): high variance prop, scoreCap adjusted accordingly");
+
+  return {
+    scoreBoost: parkBoostScore,
+    probabilityBoost: parkBoostProbability,
+    scoreCap,
+    noSeriesPenaltyOverride: 2,
+    notes
+  };
 }
 
 function agentAdjustment(agent, delta, probabilityDelta, note) {
@@ -1490,14 +1527,15 @@ function scoreCandidate(prop, game, forcedDirection = "") {
   const isLowTotal = gameTotal !== null && gameTotal < 215;
   const lowTotalPenalty = isLowTotal && direction === "Over" && lowTotalMarkets.includes(prop.market) ? 5 : 0;
   const lowTotalProbabilityPenalty = isLowTotal && direction === "Over" && lowTotalMarkets.includes(prop.market) ? 0.025 : 0;
+  const homeRunContext = prop.market === "batter_home_runs" ? homeRunScoringContext(prop, game) : { scoreBoost: 0, probabilityBoost: 0, scoreCap: 96, noSeriesPenaltyOverride: null, notes: [] };
   const missingSeriesLogs = !prop.seriesGames;
   const edgeScore = Math.max(0, directionalEdge) * 2.6 + Math.min(0, directionalEdge) * 1.2;
   const seriesEdgeScore = (Math.max(0, directionalSeriesEdge) * (isPressureGame ? 4.8 : 3.8) + Math.min(0, directionalSeriesEdge) * (isPressureGame ? 2.2 : 1.6)) * seriesWeight;
   const seasonH2HEdgeScore = (Math.max(0, directionalSeasonH2HEdge) * 1.2 + Math.min(0, directionalSeasonH2HEdge) * 0.6) * seasonH2HWeight;
-  const rawScore = 46 + edgeScore + seriesEdgeScore + seasonH2HEdgeScore + (directionalRecentHitRate - 0.5) * (isPressureGame ? 12 : 18) + (directionalSeriesHitRate - 0.5) * (isPressureGame ? 82 : 64) * seriesWeight + (directionalSeasonH2HHitRate - 0.5) * (isPressureGame ? 18 : 14) * seasonH2HWeight + seriesConviction + injuryScore + elimination.boost + pressure.boost + confirmedStarterBoost + restBoost + lineQuality.boost + agentScoreAdjustment - oddsPenalty - context.penalty - pressure.penalty - marketResistance.penalty - noSeries.penalty - lineQuality.penalty - missRisk.penalty - lowTotalPenalty;
-  const scoreCap = missingSeriesLogs ? noSeries.scoreCap : 96;
+  const rawScore = 46 + edgeScore + seriesEdgeScore + seasonH2HEdgeScore + (directionalRecentHitRate - 0.5) * (isPressureGame ? 12 : 18) + (directionalSeriesHitRate - 0.5) * (isPressureGame ? 82 : 64) * seriesWeight + (directionalSeasonH2HHitRate - 0.5) * (isPressureGame ? 18 : 14) * seasonH2HWeight + seriesConviction + injuryScore + elimination.boost + pressure.boost + confirmedStarterBoost + restBoost + homeRunContext.scoreBoost + lineQuality.boost + agentScoreAdjustment - oddsPenalty - context.penalty - pressure.penalty - marketResistance.penalty - noSeries.penalty - lineQuality.penalty - missRisk.penalty - lowTotalPenalty;
+  const scoreCap = missingSeriesLogs ? Math.min(noSeries.scoreCap, homeRunContext.scoreCap) : homeRunContext.scoreCap < 96 ? homeRunContext.scoreCap : 96;
   const edgeProbability = clamp(directionalBlendedEdge * 0.01, -0.05, 0.07);
-  const probability = clamp(directionalRecentHitRate * recentProbabilityWeight + directionalSeriesHitRate * seriesProbabilityWeight * seriesWeight + directionalSeasonH2HHitRate * h2hProbabilityWeight * seasonH2HWeight + 0.08 + edgeProbability + injuryScore / 290 + elimination.probabilityBoost + pressure.probabilityBoost + confirmedStarterProbabilityBoost + restProbabilityBoost + lineQuality.probabilityBoost + agentProbabilityAdjustment - context.probabilityPenalty - pressure.probabilityPenalty - marketResistance.probabilityPenalty - noSeries.probabilityPenalty - lineQuality.probabilityPenalty - missRisk.probabilityPenalty - lowTotalProbabilityPenalty, 0.26, 0.78);
+  const probability = clamp(directionalRecentHitRate * recentProbabilityWeight + directionalSeriesHitRate * seriesProbabilityWeight * seriesWeight + directionalSeasonH2HHitRate * h2hProbabilityWeight * seasonH2HWeight + 0.08 + edgeProbability + injuryScore / 290 + elimination.probabilityBoost + pressure.probabilityBoost + confirmedStarterProbabilityBoost + restProbabilityBoost + homeRunContext.probabilityBoost + lineQuality.probabilityBoost + agentProbabilityAdjustment - context.probabilityPenalty - pressure.probabilityPenalty - marketResistance.probabilityPenalty - noSeries.probabilityPenalty - lineQuality.probabilityPenalty - missRisk.probabilityPenalty - lowTotalProbabilityPenalty, 0.26, 0.78);
 
   return {
     ...prop,
@@ -1519,6 +1557,7 @@ function scoreCandidate(prop, game, forcedDirection = "") {
       ...(confirmedStarterBoost ? ["Confirmed starter boost with multiple teammates out"] : []),
       ...(restBoost ? ["Rest advantage: extra recovery day boosts star/starter over"] : []),
       ...(lowTotalPenalty ? ["Low game total environment: over scoring props penalized"] : []),
+      ...homeRunContext.notes,
       ...(forcedDirection && seriesDirection && direction !== seriesDirection ? ["Two-sided scan: series trend opposes this side"] : []),
       ...(!prop.seriesGames && h2h.games ? [`No current series: using ${h2h.source.toLowerCase()}`] : []),
       ...pressure.notes,
