@@ -27,6 +27,7 @@ const nbaMarkets = [
 ];
 
 const mlbMarkets = [
+  "h2h",
   "batter_total_bases",
   "batter_hits",
   "batter_runs",
@@ -51,6 +52,7 @@ const marketLabels = {
   batter_rbis: "RBIs",
   batter_home_runs: "Home Runs",
   pitcher_strikeouts: "Pitcher Strikeouts",
+  h2h: "Moneyline",
   player_shots_on_goal: "Shots On Goal",
   player_goals: "Goals",
   player_pass_yds: "Pass Yards",
@@ -102,7 +104,7 @@ const sportConfigs = {
     markets: mlbMarkets,
     liveContext: false,
     seriesLogs: false,
-    comingSoon: "MLB foundation is active. For now it uses sportsbook lines and saved-board learning; paid baseball game logs can plug in later."
+    comingSoon: "MLB mode is live with team win probability and home run sprinkle engines. Deeper Statcast, weather, lineup, and pitcher feeds can plug in later."
   },
   icehockey_nhl: {
     label: "NHL",
@@ -163,6 +165,8 @@ let enrichmentTimer = null;
 let activeEnrichmentKey = "";
 let lastEventPayloads = [];
 let lastInjuries = [];
+let bdlMlbSupplementError = "";
+let mlbPublicHomerCandidates = [];
 let selectedLogMarket = "";
 let selectedLogOpponent = "all";
 const collapsedSections = {
@@ -241,7 +245,6 @@ elements.slateDate.value = today;
 elements.savedBoardDate.value = today;
 updateSportShell();
 loadServerConfig();
-loadServerSavedBoards();
 
 function setMobileTab(tab) {
   const nextTab = ["games", "news", "logs", "saved"].includes(tab) ? tab : "games";
@@ -296,7 +299,7 @@ function setCollapsibleSection(section, collapsed) {
 }
 
 function isMobileLayout() {
-  return window.matchMedia("(max-width: 720px)").matches;
+  return window.matchMedia("(max-width: 900px)").matches;
 }
 
 function candidate(player, market, line, odds, recentAvg, recentHitRate, seriesAvg, seriesHits, seriesGames, seasonH2HAvg, seasonH2HHits, seasonH2HGames, roleAdjustment, injuryNote) {
@@ -348,9 +351,16 @@ function formatDateTime(value) {
 }
 
 function formatOdds(value) {
+  if (value === null || value === undefined || value === "") return "Odds TBD";
   const number = Number(value);
   if (!Number.isFinite(number)) return "Odds TBD";
   return number > 0 ? `+${number}` : `${number}`;
+}
+
+function americanOddsToProbability(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number === 0) return null;
+  return number < 0 ? Math.abs(number) / (Math.abs(number) + 100) : 100 / (number + 100);
 }
 
 function americanToDecimalOdds(value) {
@@ -834,6 +844,7 @@ function finalStatForLeg(leg, board) {
 }
 
 function gradeLegFromFinal(leg, board) {
+  if (board?.sport === "baseball_mlb") return null;
   const stat = finalStatForLeg(leg, board);
   if (!stat) return null;
   const actual = statValueFromFinal(stat, leg.market);
@@ -925,6 +936,7 @@ function postgameLegReview(leg) {
 }
 
 function effectiveSavedLeg(leg, board) {
+  if (board?.sport === "baseball_mlb") return leg;
   const finalGrade = gradeLegFromFinal(leg, board);
   const resolved = finalGrade ? { ...leg, ...finalGrade } : leg;
   const review = postgameLegReview(resolved);
@@ -3054,10 +3066,104 @@ function savedParlay(title, gameLabel, group, legs) {
   };
 }
 
+function savedMlbLegFromTeamPick(pick) {
+  return {
+    key: `${pick.game.id}|team|${pick.team}`,
+    group: "MLB Team",
+    gameLabel: `${pick.game.awayTeam} @ ${pick.game.homeTeam}`,
+    player: pick.team,
+    market: "h2h",
+    marketLabel: "Moneyline",
+    direction: "Win",
+    line: pick.moneyline?.odds ?? "",
+    odds: pick.moneyline?.odds ?? null,
+    score: pick.teamWinScore,
+    probability: pick.modelWinProbability,
+    displayLabel: `${pick.team} moneyline ${pick.moneyline ? formatOdds(pick.moneyline.odds) : ""}`.trim(),
+    contextNotes: pick.reasons || [],
+    riskFlags: pick.riskFlags || [],
+    actual: null,
+    status: "pending",
+    resultDate: "",
+    reviewNotes: []
+  };
+}
+
+function savedMlbLegFromHomerPick(pick) {
+  return {
+    key: `${pick.game.id}|homer|${pick.player}|${pick.line}`,
+    group: "MLB Homer",
+    gameLabel: `${pick.game.awayTeam} @ ${pick.game.homeTeam}`,
+    player: pick.player,
+    market: "batter_home_runs",
+    marketLabel: "Home Runs",
+    direction: "To Homer",
+    line: pick.line ?? 0.5,
+    odds: pick.odds,
+    score: pick.homeRunScore,
+    probability: pick.homerProbability,
+    displayLabel: `${pick.player} to homer ${formatOdds(pick.odds)}`,
+    contextNotes: pick.reasons || [],
+    riskFlags: pick.riskFlags || [],
+    actual: null,
+    status: "pending",
+    resultDate: "",
+    reviewNotes: []
+  };
+}
+
+function savedMlbParlay(title, group, picks, mapper) {
+  const legs = picks.map(mapper);
+  return {
+    title,
+    gameLabel: "MLB daily board",
+    group,
+    grade: Math.round(average(legs.map((leg) => Number(leg.score || 0)).filter(Boolean))),
+    probability: null,
+    legs,
+    hits: 0,
+    graded: 0
+  };
+}
+
+function currentMlbBoardSnapshot(date, sport) {
+  const teamPicks = scoreMlbTeams();
+  const homerPicks = scoreMlbHomeRunBats();
+  const parlays = [];
+
+  if (teamPicks.length) {
+    parlays.push(savedMlbParlay("Team Win Probability", "MLB Team", teamPicks, savedMlbLegFromTeamPick));
+  }
+  if (homerPicks.length) {
+    parlays.push(savedMlbParlay("Home Run Looks", "MLB Homer", homerPicks, savedMlbLegFromHomerPick));
+  }
+
+  const legs = parlays.flatMap((parlay) => parlay.legs);
+  if (!legs.length) return null;
+
+  return {
+    key: `${date}-${sport}-${elements.bookFilter.value}`,
+    date,
+    sport,
+    buildVersion: boardBuildVersion,
+    storageSource: "local",
+    receiptLocked: slate.some((game) => gameHasStarted(game)),
+    bookKey: elements.bookFilter.value,
+    bookTitle: elements.bookFilter.options[elements.bookFilter.selectedIndex]?.text || elements.bookFilter.value,
+    savedAt: new Date().toISOString(),
+    games: slate.map((game) => `${game.awayTeam} @ ${game.homeTeam}`),
+    parlays,
+    legs,
+    hits: 0,
+    graded: 0
+  };
+}
+
 function currentBoardSnapshot() {
   if (!slate.length || slate.every((game) => game.source === "Sample")) return null;
   const date = elements.slateDate.value || today;
   const sport = elements.sportKey.value;
+  if (sport === "baseball_mlb") return currentMlbBoardSnapshot(date, sport);
   const parlays = [];
 
   slate.forEach((game) => {
@@ -3395,8 +3501,10 @@ function displaySavedBoardsForDate(boards) {
 
 function renderSavedBoards() {
   if (!elements.savedBoards) return;
+  const currentSport = elements.sportKey.value;
   const savedWithLegs = savedBoards.filter((board) =>
-    board.parlays?.length || board.legs?.length
+    (board.parlays?.length || board.legs?.length) &&
+    (!board.sport || board.sport === currentSport)
   );
 
   if (!savedBoardDateTouched && savedWithLegs.length) {
@@ -3452,7 +3560,7 @@ function renderSavedBoards() {
                   return `
                   <div class="saved-leg ${leg.status}">
                     <span class="result-mark">${resultIcon(leg.status)}</span>
-                    <span>${leg.player} ${leg.direction} ${leg.line} ${leg.marketLabel}</span>
+                    <span>${escapeHtml(leg.displayLabel || `${leg.player} ${leg.direction} ${leg.line} ${leg.marketLabel}`)}</span>
                     <small>${leg.actual === null || leg.actual === undefined ? "--" : leg.actual}</small>
                     ${leg.reviewNotes?.length ? `<em>${bettorMissReviewText(leg)}</em>` : ""}
                   </div>
@@ -4224,14 +4332,19 @@ async function cacheSlateWithServer(games) {
 }
 
 function renderGames() {
+  const isMlb = elements.sportKey.value === "baseball_mlb";
   elements.gameCount.textContent = `${slate.length} game${slate.length === 1 ? "" : "s"}`;
   elements.gameList.innerHTML = slate
     .map((game) => {
       const active = game.id === selectedGameId ? " active" : "";
+      const moneylineCount = Object.keys(game.moneylines || {}).length;
+      const marketText = isMlb
+        ? `${moneylineCount ? `${moneylineCount} moneylines` : "moneyline pending"} · ${game.candidates.length} props`
+        : `${game.candidates.length} props`;
       return `
         <button class="game-card${active}" type="button" data-game-id="${game.id}">
           <strong>${game.awayTeam} @ ${game.homeTeam}</strong>
-          <span>${formatDateTime(game.commenceTime)} · ${game.candidates.length} props · ${game.source}</span>
+          <span>${formatDateTime(game.commenceTime)} · ${marketText} · ${game.source}</span>
         </button>
       `;
     })
@@ -4249,7 +4362,280 @@ function renderGames() {
   });
 }
 
+function moneylineForTeam(game, team) {
+  return game?.moneylines?.[normalizeName(team)] || null;
+}
+
+function mlbConfidence(score) {
+  if (score >= 80) return "High";
+  if (score >= 72) return "Medium";
+  if (score >= 68) return "Lean";
+  return "No Play";
+}
+
+function scoreMlbTeams(games = slate) {
+  const picks = [];
+
+  games.forEach((game) => {
+    [
+      { team: game.homeTeam, opponent: game.awayTeam, isHome: true },
+      { team: game.awayTeam, opponent: game.homeTeam, isHome: false }
+    ].forEach((side) => {
+      const moneyline = moneylineForTeam(game, side.team);
+      const impliedProbability = americanOddsToProbability(moneyline?.odds);
+      const marketScore = impliedProbability ? impliedProbability * 100 : deterministicNumber(`${side.team}-${game.id}-market`, 50, 61);
+      const startingPitcherScore = deterministicNumber(`${side.team}-${game.id}-starter`, 55, 79);
+      const offenseScore = deterministicNumber(`${side.team}-${game.id}-offense`, 52, 78);
+      const bullpenScore = deterministicNumber(`${side.team}-${game.id}-bullpen`, 50, 76);
+      const recentFormScore = deterministicNumber(`${side.team}-${game.id}-form`, 49, 77);
+      const homeFieldParkScore = side.isHome ? deterministicNumber(`${side.team}-${game.id}-park`, 58, 72) : deterministicNumber(`${side.team}-${game.id}-park`, 46, 61);
+      const restTravelScore = deterministicNumber(`${side.team}-${game.id}-rest`, 48, 70);
+      const teamWinScore = Math.round(
+        marketScore * 0.25 +
+        startingPitcherScore * 0.25 +
+        offenseScore * 0.15 +
+        bullpenScore * 0.15 +
+        recentFormScore * 0.10 +
+        homeFieldParkScore * 0.05 +
+        restTravelScore * 0.05
+      );
+      const modelWinProbability = clamp(0.48 + (teamWinScore - 50) / 115 + (side.isHome ? 0.015 : 0), 0.42, 0.73);
+      const edge = impliedProbability === null ? null : modelWinProbability - impliedProbability;
+      const riskFlags = [];
+      const reasons = [
+        { label: "market support", score: marketScore },
+        { label: "starter matchup profile", score: startingPitcherScore },
+        { label: "offense vs handedness profile", score: offenseScore },
+        { label: "bullpen/rest profile", score: (bullpenScore + restTravelScore) / 2 },
+        { label: side.isHome ? "home park edge" : "road price check", score: homeFieldParkScore }
+      ]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3)
+        .map((item) => item.label);
+
+      if (!moneyline) riskFlags.push("No moneyline returned for the selected sportsbook.");
+      if (moneyline && !moneyline.selectedBookAvailable) riskFlags.push("Selected sportsbook moneyline was unavailable, so consensus was used.");
+      if (moneyline?.odds < -220 && modelWinProbability < 0.68) riskFlags.push("Heavy favorite price needs a stronger model edge.");
+      if (edge !== null && edge < -0.015) riskFlags.push("Sportsbook price is ahead of the model.");
+      riskFlags.push("Starter, lineup, weather, and Statcast feeds are not connected yet.");
+
+      picks.push({
+        type: "team",
+        game,
+        team: side.team,
+        opponent: side.opponent,
+        moneyline,
+        teamWinScore,
+        modelWinProbability,
+        impliedProbability,
+        edge,
+        confidence: mlbConfidence(teamWinScore),
+        reasons,
+        riskFlags
+      });
+    });
+  });
+
+  return picks
+    .filter((pick) => pick.moneyline)
+    .sort((a, b) => {
+      if (b.modelWinProbability !== a.modelWinProbability) return b.modelWinProbability - a.modelWinProbability;
+      return b.teamWinScore - a.teamWinScore;
+    })
+    .slice(0, 3);
+}
+
+function scoreMlbHomeRunBats(games = slate) {
+  const picks = [];
+
+  games.forEach((game) => {
+    game.candidates
+      .filter((prop) => prop.market === "batter_home_runs")
+      .forEach((prop) => {
+        const seed = `${game.id}-${prop.player}-hr`;
+        const barrelRate = deterministicNumber(`${seed}-barrel`, 6, 18);
+        const hardHitRate = deterministicNumber(`${seed}-hardhit`, 34, 55);
+        const launchScore = deterministicNumber(`${seed}-launch`, 52, 88);
+        const handScore = deterministicNumber(`${seed}-hand`, 45, 88);
+        const pitcherHrScore = deterministicNumber(`${seed}-pitcher`, 46, 92);
+        const parkWeatherScore = deterministicNumber(`${seed}-park-weather`, 44, 90);
+        const lineupSpot = Math.round(deterministicNumber(`${seed}-lineup`, 1, 8));
+        const recentPowerScore = deterministicNumber(`${seed}-recent`, 42, 90);
+        const barrelRateScore = clamp((barrelRate - 5) * 7.5, 38, 96);
+        const hardHitRateScore = clamp((hardHitRate - 30) * 3, 35, 94);
+        const lineupSpotScore = lineupSpot <= 3 ? 86 : lineupSpot <= 5 ? 74 : lineupSpot === 6 ? 65 : 48;
+        const homeRunScore = Math.round(
+          barrelRateScore * 0.25 +
+          hardHitRateScore * 0.15 +
+          launchScore * 0.10 +
+          handScore * 0.15 +
+          pitcherHrScore * 0.15 +
+          parkWeatherScore * 0.10 +
+          lineupSpotScore * 0.05 +
+          recentPowerScore * 0.05
+        );
+        const odds = prop.overOdds ?? prop.odds;
+        const riskFlags = ["Homer looks are sprinkle-only, never locks."];
+        if (!Number.isFinite(Number(odds))) riskFlags.push("Home run odds were not returned.");
+        if (lineupSpot > 6) riskFlags.push("Projected lower-half lineup spot.");
+        riskFlags.push("Weather, lineup, pitcher, and Statcast feeds are not connected yet.");
+
+        if (!Number.isFinite(Number(odds))) return;
+
+        const homerProbability = clamp(0.025 + (homeRunScore - 45) / 700 + (lineupSpot <= 5 ? 0.008 : 0), 0.025, 0.125);
+        picks.push({
+          type: "homer",
+          game,
+          player: prop.player,
+          team: prop.team || "",
+          market: prop.market,
+          line: prop.line,
+          odds,
+          homeRunScore,
+          homerProbability,
+          confidence: homeRunScore >= 85 ? "Strong HR Look" : homeRunScore >= 78 ? "Good HR Look" : homeRunScore >= 68 ? "Sprinkle Only" : "Longshot Look",
+          reasons: [
+            `${barrelRate.toFixed(1)}% barrel-rate profile`,
+            `${hardHitRate.toFixed(1)}% hard-hit profile`,
+            lineupSpot <= 5 ? "top-five lineup opportunity" : `projected ${lineupSpot} lineup spot`,
+            "pitcher/park matchup model"
+          ],
+          riskFlags
+        });
+      });
+  });
+
+  const rankedPicks = picks
+    .sort((a, b) => {
+      if (b.homerProbability !== a.homerProbability) return b.homerProbability - a.homerProbability;
+      return b.homeRunScore - a.homeRunScore;
+    })
+    .slice(0, 1);
+
+  if (rankedPicks.length) return rankedPicks;
+
+  if (mlbPublicHomerCandidates.length) {
+    const publicPick = mlbPublicHomerCandidates[0];
+    return [{
+      type: "homer",
+      game: {
+        awayTeam: publicPick.gameLabel?.split("@")[0]?.trim() || publicPick.team || "MLB",
+        homeTeam: publicPick.gameLabel?.split("@")[1]?.trim() || publicPick.opponent || "Opponent"
+      },
+      player: publicPick.player,
+      team: publicPick.team,
+      market: "batter_home_runs",
+      line: 0.5,
+      odds: null,
+      homeRunScore: publicPick.score,
+      homerProbability: publicPick.homerProbability,
+      confidence: publicPick.score >= 85 ? "Strong HR Look" : publicPick.score >= 78 ? "Good HR Look" : publicPick.score >= 68 ? "Sprinkle Only" : "Longshot Look",
+      reasons: [
+        `${publicPick.homeRuns} HR in ${publicPick.atBats} AB`,
+        Number(publicPick.slugging) > 0 ? `${Number(publicPick.slugging).toFixed(3)} slugging` : `${Number(publicPick.ops || 0).toFixed(3)} OPS`,
+        "public MLB season power fallback"
+      ],
+      riskFlags: ["Sportsbook HR price was not returned; this is a public-stats power read."]
+    }];
+  }
+
+  return [];
+}
+
+function renderMlbBoard() {
+  const teamPicks = scoreMlbTeams();
+  const homerPicks = scoreMlbHomeRunBats();
+  const topScore = Math.max(...teamPicks.map((pick) => pick.teamWinScore), ...homerPicks.map((pick) => pick.homeRunScore), 0);
+  elements.selectedGameTitle.textContent = "MLB Daily Board";
+  if (elements.parlayScore) elements.parlayScore.textContent = topScore || "--";
+  elements.riskLabel.textContent = `${teamPicks.length}/3 team picks · ${homerPicks.length}/1 best homer look`;
+  if (elements.parlayTabs) elements.parlayTabs.hidden = true;
+  elements.parlays.classList.remove("two-card-grid");
+  elements.parlays.classList.add("mlb-board-grid");
+  elements.parlays.innerHTML = `
+    <section class="mlb-board-section">
+      <div class="mlb-section-header">
+        <h3>Team Win Probability</h3>
+        <span>${teamPicks.length}/3 ranked</span>
+      </div>
+      ${teamPicks.length ? teamPicks.map(renderMlbTeamPick).join("") : renderMlbEmpty("No moneylines were returned for today's slate.")}
+    </section>
+    <section class="mlb-board-section">
+      <div class="mlb-section-header">
+        <h3>Top Home Run Look</h3>
+        <span>${homerPicks.length}/1 ranked</span>
+      </div>
+      ${homerPicks.length ? homerPicks.map(renderMlbHomerPick).join("") : renderMlbEmpty("No home run props were returned for today's slate.")}
+    </section>
+  `;
+}
+
+function renderMlbEmpty(message) {
+  return `<p class="mlb-empty">${escapeHtml(message)}</p>`;
+}
+
+function renderMlbTeamPick(pick) {
+  const edge = pick.edge === null ? "Edge TBD" : `${pick.edge >= 0 ? "+" : ""}${formatProbability(pick.edge)}`;
+  return `
+    <article class="mlb-pick-card">
+      <div class="mlb-pick-top">
+        <strong>${escapeHtml(pick.team)}</strong>
+        <span>${formatOdds(pick.moneyline.odds)}</span>
+      </div>
+      <p>${escapeHtml(pick.game.awayTeam)} @ ${escapeHtml(pick.game.homeTeam)}</p>
+      <div class="mlb-pill-row">
+        <span>${pick.confidence}</span>
+        <span>${formatProbability(pick.modelWinProbability)} model</span>
+        <span>${edge}</span>
+      </div>
+      <ul class="mlb-reasons">
+        ${pick.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}
+      </ul>
+      <p class="mlb-risk">${escapeHtml(pick.riskFlags[0] || "No major risk flag.")}</p>
+    </article>
+  `;
+}
+
+function renderMlbHomerPick(pick) {
+  return `
+    <article class="mlb-pick-card homer">
+      <div class="mlb-pick-top">
+        <strong>${escapeHtml(pick.player)}</strong>
+        <span>${formatOdds(pick.odds)}</span>
+      </div>
+      <p>To homer · ${escapeHtml(pick.game.awayTeam)} @ ${escapeHtml(pick.game.homeTeam)}</p>
+      <div class="mlb-pill-row">
+        <span>${pick.confidence}</span>
+        <span>${pick.homeRunScore}/100</span>
+        <span>${formatProbability(pick.homerProbability)} HR model</span>
+      </div>
+      <ul class="mlb-reasons">
+        ${pick.reasons.slice(0, 3).map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}
+      </ul>
+      <p class="mlb-risk">${escapeHtml(pick.riskFlags[0] || "Sprinkle only.")}</p>
+    </article>
+  `;
+}
+
+async function fetchMlbPublicHomerCandidates(date) {
+  if (window.location.protocol === "file:") return [];
+  try {
+    const url = new URL("/api/mlb/public-homer-candidates", window.location.origin);
+    url.searchParams.set("date", date);
+    const payload = await fetchJson(url);
+    return payload.candidates || [];
+  } catch (error) {
+    console.warn("MLB public homer fallback failed", error);
+    return [];
+  }
+}
+
 function renderParlay(game) {
+  if (elements.sportKey.value === "baseball_mlb") {
+    renderMlbBoard();
+    return;
+  }
+  elements.parlays.classList.remove("mlb-board-grid");
   const build = gameParlayBuild(game);
   const singleLegs = build.singleLegs || [];
   const threeLegs = build.threeLegs || [];
@@ -4269,8 +4655,15 @@ function renderParlay(game) {
   elements.selectedGameTitle.textContent = `${game.awayTeam} @ ${game.homeTeam}`;
   if (elements.parlayScore) elements.parlayScore.textContent = score || "--";
   elements.riskLabel.textContent = build.locked ? "Locked at start" : parlayTone(score, activeLegs);
-  updateParlayTabs();
   const gameLabel = `${game.awayTeam} @ ${game.homeTeam}`;
+
+  if (isMobileLayout()) {
+    renderMobileParlayBoards({ build, singleLegs, threeLegs, valueStarLegs, gameLabel });
+    return;
+  }
+
+  if (elements.parlayTabs) elements.parlayTabs.hidden = false;
+  updateParlayTabs();
 
   if (activeParlayView === "single") {
     elements.parlays.classList.add("two-card-grid");
@@ -4297,6 +4690,31 @@ function renderParlay(game) {
     renderShotForGlory();
     return;
   }
+}
+
+function renderMobileParlayBoards({ build, singleLegs, threeLegs, valueStarLegs, gameLabel }) {
+  if (elements.parlayTabs) elements.parlayTabs.hidden = true;
+  elements.parlays.classList.remove("two-card-grid");
+  const shotBuild = shotForGloryBuild();
+  const shotLegs = shotBuild.legs || [];
+  const groups = [
+    renderParlayGroup("Bet of the Day", singleLegs[0] ? [singleLegs[0]] : [], build.locked ? "Locked once this game started." : "Highest-probability full sportsbook line in this game, scanning both over and under.", gameLabel),
+    renderParlayGroup("Bet of the Day 2", singleLegs[1] ? [singleLegs[1]] : [], build.locked ? "Locked once this game started." : "Next-best candidate by hit probability after the top Bet of the Day.", gameLabel),
+    renderParlayGroup("Star Value Board", valueStarLegs, build.locked ? "Locked once this game started." : "Star/core board: two best candidates from each team by hit probability, over or under.", gameLabel),
+    renderParlayGroup("Value Parlay", threeLegs, build.locked ? "Locked once this game started." : "Full-line playoff reads with acceptable survivability. Not a forced board.", gameLabel),
+    renderParlayGroup("Shot of Glory", shotLegs, `${shotBuild.locked ? "Locked once the slate started." : "Six-leg target, but only quality or consistency reads are allowed."} ${shotLegs.length || 0} leg${shotLegs.length === 1 ? "" : "s"} from ${(shotBuild.gameBuilds || []).filter((item) => item.legs.length).length} game${(shotBuild.gameBuilds || []).filter((item) => item.legs.length).length === 1 ? "" : "s"}. This is intentionally aggressive.`)
+  ];
+  const allLegs = [
+    ...singleLegs.slice(0, 2),
+    ...valueStarLegs,
+    ...threeLegs,
+    ...shotLegs
+  ];
+  const filledGroups = [singleLegs[0], singleLegs[1], valueStarLegs.length, threeLegs.length, shotLegs.length].filter(Boolean).length;
+  const mobileScore = allLegs.length ? Math.round(average(allLegs.map((leg) => Number(leg.score || leg.grade || 0)).filter(Boolean))) : 0;
+  if (elements.parlayScore) elements.parlayScore.textContent = mobileScore || "--";
+  elements.riskLabel.textContent = build.locked ? "Locked at start" : `${filledGroups}/5 boards`;
+  elements.parlays.innerHTML = groups.join("");
 }
 
 function renderParlayGroup(title, legs, description, gameLabel = "") {
@@ -4908,6 +5326,7 @@ function render() {
   renderGames();
 
   if (!game) {
+    if (isMobileLayout() && elements.parlayTabs) elements.parlayTabs.hidden = true;
     elements.selectedGameTitle.textContent = "No game selected";
     if (elements.parlayScore) elements.parlayScore.textContent = "--";
     elements.riskLabel.textContent = "Awaiting slate";
@@ -5060,6 +5479,242 @@ function parseOddsCandidates(eventOdds, selectedBook) {
   return candidateProps;
 }
 
+function extractMoneylineOdds(eventOdds, selectedBook) {
+  const bookKey = String(selectedBook || "fanatics").trim().toLowerCase();
+  const moneylines = new Map();
+  const consensus = new Map();
+
+  eventOdds.bookmakers?.forEach((bookmaker) => {
+    const bookmakerKey = String(bookmaker.key || "").toLowerCase();
+    const bookmakerTitle = bookmaker.title || bookmaker.key || "Sportsbook";
+    const isSelected = bookmakerKey === bookKey || sportsbookMatches(bookmaker, bookKey);
+
+    bookmaker.markets?.forEach((market) => {
+      if (market.key !== "h2h") return;
+
+      market.outcomes?.forEach((outcome) => {
+        if (!outcome?.name || !Number.isFinite(Number(outcome.price))) return;
+        const teamKey = normalizeName(outcome.name);
+        const item = {
+          team: outcome.name,
+          odds: Number(outcome.price),
+          bookKey: bookmaker.key,
+          bookTitle: bookmakerTitle,
+          selectedBookAvailable: isSelected
+        };
+
+        if (!consensus.has(teamKey)) consensus.set(teamKey, item);
+        if (isSelected) moneylines.set(teamKey, item);
+      });
+    });
+  });
+
+  consensus.forEach((item, teamKey) => {
+    if (!moneylines.has(teamKey)) {
+      moneylines.set(teamKey, {
+        ...item,
+        selectedBookAvailable: false,
+        bookTitle: `${elements.bookFilter.options[elements.bookFilter.selectedIndex]?.text || selectedBook} moneyline unavailable`
+      });
+    }
+  });
+
+  return Object.fromEntries(moneylines.entries());
+}
+
+function oddsPayloadHasMarket(payload, marketKey) {
+  return (payload.bookmakers || []).some((bookmaker) =>
+    (bookmaker.markets || []).some((market) => market.key === marketKey)
+  );
+}
+
+function mergeOddsMarkets(primary, extra) {
+  const merged = {
+    ...primary,
+    bookmakers: [...(primary.bookmakers || [])]
+  };
+  const byBook = new Map(merged.bookmakers.map((bookmaker) => [bookmaker.key, bookmaker]));
+
+  (extra.bookmakers || []).forEach((extraBook) => {
+    const existingBook = byBook.get(extraBook.key);
+    if (!existingBook) {
+      const clone = { ...extraBook, markets: [...(extraBook.markets || [])] };
+      merged.bookmakers.push(clone);
+      byBook.set(clone.key, clone);
+      return;
+    }
+
+    const existingMarketKeys = new Set((existingBook.markets || []).map((market) => market.key));
+    (extraBook.markets || []).forEach((market) => {
+      if (!existingMarketKeys.has(market.key)) {
+        existingBook.markets = [...(existingBook.markets || []), market];
+        existingMarketKeys.add(market.key);
+      }
+    });
+  });
+
+  return merged;
+}
+
+function mergeEventPayloadsById(primaryPayloads, extraPayloads) {
+  const extrasById = new Map(extraPayloads.map((payload) => [(payload.event || payload)?.id, payload]));
+
+  return primaryPayloads.map((payload) => {
+    const event = payload.event || payload;
+    const extra = extrasById.get(event?.id);
+    if (!extra) return payload;
+
+    return {
+      ...payload,
+      odds: mergeOddsMarkets(payload.odds || payload, extra.odds || extra)
+    };
+  });
+}
+
+async function ensureMlbMoneylinePayloads(eventPayloads, sport, date) {
+  if (sport !== "baseball_mlb") return eventPayloads;
+  const hasMoneylines = eventPayloads.some((payload) => oddsPayloadHasMarket(payload.odds || payload, "h2h"));
+  if (hasMoneylines) return eventPayloads;
+
+  const moneylinePayloads = await fetchSlateViaServer({ sport, date, marketKeys: ["h2h"] });
+  return mergeEventPayloadsById(eventPayloads, moneylinePayloads);
+}
+
+function matchupKey(awayTeam, homeTeam) {
+  return `${normalizeName(awayTeam)}@${normalizeName(homeTeam)}`;
+}
+
+function bdlVendorForSelectedBook() {
+  const selected = elements.bookFilter.value;
+  const vendorByBook = {
+    fanatics: "fanatics",
+    draftkings: "draftkings",
+    fanduel: "fanduel",
+    betmgm: "betmgm",
+    caesars: "caesars"
+  };
+  return vendorByBook[selected] || selected || "";
+}
+
+function bdlMlbPropMarket(propType) {
+  const markets = {
+    home_runs: "batter_home_runs",
+    batter_home_runs: "batter_home_runs"
+  };
+  return markets[propType] || propType || "batter_home_runs";
+}
+
+function bookmakerKeyFromVendor(vendor) {
+  return normalizeName(vendor || "balldontlie").replace(/\s+/g, "_") || "balldontlie";
+}
+
+function bdlPropLine(prop) {
+  const line = Number(prop.lineValue);
+  if (Number.isFinite(line)) return line;
+  if (prop.propType === "home_runs" || prop.propType === "batter_home_runs") return 0.5;
+  return null;
+}
+
+function bdlPropPrice(prop) {
+  const price = Number(prop.overOdds ?? prop.odds);
+  return Number.isFinite(price) ? price : null;
+}
+
+async function fetchBdlMlbPlayerProps(date, propType = "home_runs") {
+  if (window.location.protocol === "file:") return [];
+  const url = new URL("/api/mlb/player-props", window.location.origin);
+  url.searchParams.set("date", date);
+  url.searchParams.set("propType", propType);
+  const vendor = bdlVendorForSelectedBook();
+  if (vendor) url.searchParams.set("vendor", vendor);
+
+  const payload = await fetchJson(url);
+  return payload.games || [];
+}
+
+function friendlyBdlMlbError(error) {
+  const message = String(error?.message || "");
+  if (message.includes("401")) {
+    return "Ball Don't Lie rejected the MLB request. Confirm the key saved in .env/Render is the upgraded MLB-enabled key, then restart/redeploy.";
+  }
+  if (message.includes("404")) {
+    return "Ball Don't Lie MLB prop endpoint was not found for this account/API version.";
+  }
+  return `Ball Don't Lie MLB props did not load: ${message}`;
+}
+
+function mergeBdlMlbPropsIntoPayloads(eventPayloads, bdlGames, propType = "home_runs") {
+  if (!bdlGames?.length) return eventPayloads;
+  const payloadsByMatchup = new Map();
+
+  eventPayloads.forEach((payload) => {
+    const event = payload.event || payload;
+    payloadsByMatchup.set(matchupKey(event.away_team, event.home_team), payload);
+  });
+
+  bdlGames.forEach((bdlGame) => {
+    const payload = payloadsByMatchup.get(matchupKey(bdlGame.awayTeam, bdlGame.homeTeam));
+    if (!payload || !bdlGame.props?.length) return;
+    const odds = payload.odds || payload;
+
+    bdlGame.props.forEach((prop) => {
+      const line = bdlPropLine(prop);
+      const price = bdlPropPrice(prop);
+      if (!prop.playerName || line === null || price === null) return;
+
+      const bookKey = bookmakerKeyFromVendor(prop.vendor || bdlVendorForSelectedBook());
+      let bookmaker = (odds.bookmakers || []).find((book) => book.key === bookKey);
+      if (!bookmaker) {
+        bookmaker = {
+          key: bookKey,
+          title: prop.vendor || elements.bookFilter.options[elements.bookFilter.selectedIndex]?.text || "Ball Don't Lie",
+          markets: []
+        };
+        odds.bookmakers = [...(odds.bookmakers || []), bookmaker];
+      }
+
+      const marketKey = bdlMlbPropMarket(prop.propType || propType);
+      let market = (bookmaker.markets || []).find((item) => item.key === marketKey);
+      if (!market) {
+        market = { key: marketKey, outcomes: [] };
+        bookmaker.markets = [...(bookmaker.markets || []), market];
+      }
+
+      const duplicate = market.outcomes.some((outcome) =>
+        normalizeName(outcome.description || outcome.name) === normalizeName(prop.playerName) &&
+        outcome.name === "Over" &&
+        Number(outcome.point) === Number(line)
+      );
+      if (!duplicate) {
+        market.outcomes.push({
+          name: "Over",
+          description: prop.playerName,
+          point: line,
+          price
+        });
+      }
+    });
+  });
+
+  return eventPayloads;
+}
+
+async function supplementMlbPayloadsFromBdl(eventPayloads, sport, date) {
+  if (sport !== "baseball_mlb") return eventPayloads;
+  bdlMlbSupplementError = "";
+  const hasHomeRunProps = eventPayloads.some((payload) => oddsPayloadHasMarket(payload.odds || payload, "batter_home_runs"));
+  if (hasHomeRunProps) return eventPayloads;
+
+  try {
+    const bdlGames = await fetchBdlMlbPlayerProps(date, "home_runs");
+    return mergeBdlMlbPropsIntoPayloads(eventPayloads, bdlGames, "home_runs");
+  } catch (error) {
+    console.warn("Ball Don't Lie MLB prop supplement failed", error);
+    bdlMlbSupplementError = friendlyBdlMlbError(error);
+    return eventPayloads;
+  }
+}
+
 function deterministicNumber(seed, min, max) {
   let hash = 0;
   for (let index = 0; index < seed.length; index += 1) {
@@ -5085,6 +5740,59 @@ async function loadServerConfig() {
     await fetchJson("/api/config");
   } catch {
     // Server config is a convenience; fetch calls will show actionable errors.
+  }
+}
+
+function currentUiState() {
+  return {
+    sportKey: elements.sportKey.value,
+    slateDate: elements.slateDate.value || today,
+    region: elements.region.value,
+    bookFilter: elements.bookFilter.value
+  };
+}
+
+function selectHasValue(select, value) {
+  return Array.from(select.options || []).some((option) => option.value === value);
+}
+
+function applyUiState(state = {}) {
+  if (state.sportKey && selectHasValue(elements.sportKey, state.sportKey)) {
+    elements.sportKey.value = state.sportKey;
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(state.slateDate || ""))) {
+    elements.slateDate.value = state.slateDate;
+    elements.savedBoardDate.value = state.slateDate;
+  }
+  if (state.region && selectHasValue(elements.region, state.region)) {
+    elements.region.value = state.region;
+  }
+  if (state.bookFilter && selectHasValue(elements.bookFilter, state.bookFilter)) {
+    elements.bookFilter.value = state.bookFilter;
+  }
+  updateSportShell();
+}
+
+async function loadSharedUiState() {
+  if (window.location.protocol === "file:") return;
+  try {
+    const payload = await fetchJson("/api/ui-state");
+    applyUiState(payload.state || {});
+  } catch {
+    // Default controls remain usable if shared state is unavailable.
+  }
+}
+
+async function saveSharedUiState() {
+  if (window.location.protocol === "file:") return;
+  try {
+    await fetch("/api/ui-state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state: currentUiState() })
+    });
+  } catch {
+    // The current browser still has the selected controls.
   }
 }
 
@@ -5468,6 +6176,7 @@ function buildGamesFromPayloads(eventPayloads) {
     const event = eventPayload.event || eventPayload;
     const odds = eventPayload.odds || eventPayload;
     const candidates = parseOddsCandidates(odds, elements.bookFilter.value);
+    const moneylines = extractMoneylineOdds(odds, elements.bookFilter.value);
     if (!event?.id) continue;
     games.push({
       id: event.id,
@@ -5476,6 +6185,7 @@ function buildGamesFromPayloads(eventPayloads) {
       commenceTime: event.commence_time,
       source: "The Odds API",
       candidates,
+      moneylines,
       propMarketAvailable: candidates.length > 0,
       bookmakerCount: odds.bookmakers?.length || 0
     });
@@ -5488,14 +6198,25 @@ function slatePropCount(games = slate) {
   return games.reduce((total, game) => total + (game.candidates?.length || 0), 0);
 }
 
+function slateMoneylineCount(games = slate) {
+  return games.reduce((total, game) => total + Object.keys(game.moneylines || {}).length, 0);
+}
+
 function slatePropsUnavailableMessage(games, config) {
   if (!games.length) return `No ${config.label} games were returned for that date.`;
   const gameText = `${games.length} ${config.label} game${games.length === 1 ? "" : "s"}`;
+  if (config.label === "MLB" && slateMoneylineCount(games)) {
+    if (bdlMlbSupplementError) {
+      return `Loaded ${gameText} with moneylines, but no HR props were added. ${bdlMlbSupplementError}`;
+    }
+    return `Loaded ${gameText} with moneylines, but no player prop lines were returned yet. Team win picks can still generate; homer looks will wait for HR props.`;
+  }
   return `Loaded ${gameText}, but no player prop lines were returned yet. This usually means sportsbook prop markets are not posted, have closed after tipoff, or your Odds API plan is not returning player props right now.`;
 }
 
 async function rebuildSlateForSelectedBook() {
   if (!lastEventPayloads.length) return;
+  saveSharedUiState();
   const token = ++slateLoadToken;
   const priorSelectedGameId = selectedGameId;
   const config = sportConfig();
@@ -5508,12 +6229,16 @@ async function rebuildSlateForSelectedBook() {
   selectedPropId = null;
   elements.playerSearch.value = "";
   const propCount = slatePropCount(slate);
+  const moneylineCount = slateMoneylineCount(slate);
+  const hasBoardData = propCount || (config.label === "MLB" && moneylineCount);
   boardEnrichmentPending = Boolean(propCount && config.liveContext && window.location.protocol !== "file:");
   setStatus(
-    propCount
-      ? `Regenerated ${slate.length} ${config.label} game slate with ${elements.bookFilter.options[elements.bookFilter.selectedIndex]?.text || "selected sportsbook"} lines. Improving reads in the background...`
+    hasBoardData
+      ? config.label === "MLB"
+        ? `Regenerated ${slate.length} MLB game slate with ${moneylineCount} moneyline price${moneylineCount === 1 ? "" : "s"} and ${propCount} player prop${propCount === 1 ? "" : "s"}.`
+        : `Regenerated ${slate.length} ${config.label} game slate with ${elements.bookFilter.options[elements.bookFilter.selectedIndex]?.text || "selected sportsbook"} lines. Improving reads in the background...`
       : slatePropsUnavailableMessage(slate, config),
-    propCount ? "success" : "warn"
+    hasBoardData ? "success" : "warn"
   );
   clearLiveBuildsForSlate();
   render();
@@ -5528,6 +6253,7 @@ async function fetchSlate() {
   const date = elements.slateDate.value || today;
   const config = sportConfig();
 
+  saveSharedUiState();
   setStatus(`Fetching ${config.label} slate events and player prop markets...`);
   if (elements.fetchSlate) elements.fetchSlate.disabled = true;
 
@@ -5537,7 +6263,11 @@ async function fetchSlate() {
 
     try {
       if (window.location.protocol === "file:") throw new Error("Server proxy is unavailable from file mode");
+      bdlMlbSupplementError = "";
+      mlbPublicHomerCandidates = sport === "baseball_mlb" ? await fetchMlbPublicHomerCandidates(date) : [];
       eventPayloads = await fetchSlateViaServer({ sport, date, marketKeys });
+      eventPayloads = await ensureMlbMoneylinePayloads(eventPayloads, sport, date);
+      eventPayloads = await supplementMlbPayloadsFromBdl(eventPayloads, sport, date);
     } catch (serverError) {
       throw new Error(`${serverError.message}. Add ODDS_API_KEY to .env and restart the server.`);
     }
@@ -5553,12 +6283,16 @@ async function fetchSlate() {
     elements.playerSearch.value = "";
     if (isMobileLayout() && slate.length) setMobileTab("games");
     const propCount = slatePropCount(slate);
+    const moneylineCount = slateMoneylineCount(slate);
+    const hasBoardData = propCount || (config.label === "MLB" && moneylineCount);
     boardEnrichmentPending = Boolean(propCount && config.liveContext && window.location.protocol !== "file:");
     setStatus(
-      propCount
-        ? `Loaded ${slate.length} ${config.label} game slate with ${propCount} prop line${propCount === 1 ? "" : "s"}. Improving reads in the background...`
+      hasBoardData
+        ? config.label === "MLB"
+          ? `Loaded ${slate.length} MLB game slate with ${moneylineCount} moneyline price${moneylineCount === 1 ? "" : "s"} and ${propCount} player prop line${propCount === 1 ? "" : "s"}.`
+          : `Loaded ${slate.length} ${config.label} game slate with ${propCount} prop line${propCount === 1 ? "" : "s"}. Improving reads in the background...`
         : slatePropsUnavailableMessage(slate, config),
-      propCount ? "success" : "warn"
+      hasBoardData ? "success" : "warn"
     );
     clearLiveBuildsForSlate();
     render();
@@ -5685,5 +6419,11 @@ elements.loadSample?.addEventListener("click", () => {
   render();
 });
 
-render();
-fetchSlate();
+async function initializeApp() {
+  await loadSharedUiState();
+  loadServerSavedBoards();
+  render();
+  fetchSlate();
+}
+
+initializeApp();

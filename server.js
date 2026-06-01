@@ -8,6 +8,7 @@ const { promisify } = require("node:util");
 const root = __dirname;
 const execFileAsync = promisify(execFile);
 const savedBoardsFile = process.env.SAVED_BOARDS_FILE || path.join(root, ".saved-boards.json");
+const appStateFile = process.env.APP_STATE_FILE || path.join(root, ".app-state.json");
 
 loadEnvFile();
 
@@ -126,6 +127,283 @@ async function fetchJsonWithCurl(url, headers = {}, originalError) {
   }
 }
 
+async function fetchEventOdds({ sport, eventId, region, markets }) {
+  const oddsUrl = new URL(`https://api.the-odds-api.com/v4/sports/${sport}/events/${eventId}/odds`);
+  oddsUrl.searchParams.set("apiKey", oddsApiKey);
+  oddsUrl.searchParams.set("regions", region || "us");
+  oddsUrl.searchParams.set("markets", (markets?.length ? markets : defaultMarkets).join(","));
+  oddsUrl.searchParams.set("oddsFormat", "american");
+  oddsUrl.searchParams.set("dateFormat", "iso");
+  return fetchJson(oddsUrl);
+}
+
+function oddsPayloadHasMarket(payload, marketKey) {
+  return (payload.bookmakers || []).some((bookmaker) =>
+    (bookmaker.markets || []).some((market) => market.key === marketKey)
+  );
+}
+
+function mergeOddsPayloadMarkets(primary, extra) {
+  const merged = {
+    ...primary,
+    bookmakers: [...(primary.bookmakers || [])]
+  };
+  const byBook = new Map(merged.bookmakers.map((bookmaker) => [bookmaker.key, bookmaker]));
+
+  (extra.bookmakers || []).forEach((extraBook) => {
+    const existingBook = byBook.get(extraBook.key);
+    if (!existingBook) {
+      const clone = { ...extraBook, markets: [...(extraBook.markets || [])] };
+      merged.bookmakers.push(clone);
+      byBook.set(clone.key, clone);
+      return;
+    }
+
+    const existingMarketKeys = new Set((existingBook.markets || []).map((market) => market.key));
+    (extraBook.markets || []).forEach((market) => {
+      if (!existingMarketKeys.has(market.key)) {
+        existingBook.markets = [...(existingBook.markets || []), market];
+        existingMarketKeys.add(market.key);
+      }
+    });
+  });
+
+  return merged;
+}
+
+function appendArrayParam(url, key, values) {
+  values.forEach((value) => {
+    if (value !== undefined && value !== null && value !== "") url.searchParams.append(`${key}[]`, value);
+  });
+}
+
+async function fetchBdlMlbJson(url) {
+  const headerOptions = [
+    { Authorization: ballDontLieKey },
+    { Authorization: `Bearer ${ballDontLieKey}` },
+    { "X-API-Key": ballDontLieKey }
+  ];
+  let lastError = null;
+
+  for (const headers of headerOptions) {
+    try {
+      return await fetchJson(url, { headers });
+    } catch (error) {
+      lastError = error;
+      if (!String(error.message || "").includes("401")) throw error;
+    }
+  }
+
+  throw lastError || new Error("Ball Don't Lie MLB request failed");
+}
+
+async function fetchBdlMlbGames(date) {
+  const gamesUrl = new URL("https://api.balldontlie.io/mlb/v1/games");
+  gamesUrl.searchParams.append("dates[]", date);
+  gamesUrl.searchParams.set("per_page", "100");
+  const result = await fetchBdlMlbJson(gamesUrl);
+  return result.data || [];
+}
+
+async function fetchBdlMlbLineups(gameIds) {
+  if (!gameIds.length) return [];
+  const lineups = [];
+  let cursor = "";
+
+  do {
+    const lineupsUrl = new URL("https://api.balldontlie.io/mlb/v1/lineups");
+    appendArrayParam(lineupsUrl, "game_ids", gameIds);
+    lineupsUrl.searchParams.set("per_page", "100");
+    if (cursor) lineupsUrl.searchParams.set("cursor", cursor);
+    const result = await fetchBdlMlbJson(lineupsUrl);
+    lineups.push(...(result.data || []));
+    cursor = result.meta?.next_cursor || "";
+  } while (cursor);
+
+  return lineups;
+}
+
+async function fetchBdlMlbPlayerProps(gameId, propType, vendors = []) {
+  const propsUrl = new URL("https://api.balldontlie.io/mlb/v1/odds/player_props");
+  propsUrl.searchParams.set("game_id", gameId);
+  if (propType) propsUrl.searchParams.set("prop_type", propType);
+  appendArrayParam(propsUrl, "vendors", vendors);
+  const result = await fetchBdlMlbJson(propsUrl);
+  return result.data || [];
+}
+
+function bdlTeamName(team) {
+  if (!team) return "";
+  if (typeof team === "string") return team;
+  return team.display_name || team.full_name || team.name || team.abbreviation || "";
+}
+
+function bdlGameHomeTeam(game) {
+  return (
+    game.home_team_name ||
+    bdlTeamName(game.home_team) ||
+    bdlTeamName(game.homeTeam) ||
+    bdlTeamName(game.home)
+  );
+}
+
+function bdlGameAwayTeam(game) {
+  return (
+    game.away_team_name ||
+    bdlTeamName(game.away_team) ||
+    bdlTeamName(game.awayTeam) ||
+    bdlTeamName(game.away)
+  );
+}
+
+function firstFiniteNumber(...values) {
+  for (const value of values) {
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return null;
+}
+
+async function fetchBdlMlbPropsForDate({ date, propType = "home_runs", vendors = [] }) {
+  if (!ballDontLieKey) {
+    throw new Error("BALL_DONT_LIE_API_KEY is not configured on the server");
+  }
+
+  const games = await fetchBdlMlbGames(date);
+  const gameIds = games.map((game) => game.id).filter(Boolean);
+  const lineups = await fetchBdlMlbLineups(gameIds);
+  const playersById = new Map();
+
+  lineups.forEach((lineup) => {
+    if (!lineup.player?.id) return;
+    playersById.set(lineup.player.id, {
+      id: lineup.player.id,
+      fullName: lineup.player.full_name || `${lineup.player.first_name || ""} ${lineup.player.last_name || ""}`.trim(),
+      team: lineup.team?.display_name || lineup.player.team?.display_name || "",
+      battingOrder: lineup.batting_order || null,
+      isProbablePitcher: Boolean(lineup.is_probable_pitcher)
+    });
+  });
+
+  const gamesWithProps = [];
+  for (const game of games) {
+    const props = await fetchBdlMlbPlayerProps(game.id, propType, vendors);
+    gamesWithProps.push({
+      id: game.id,
+      homeTeam: bdlGameHomeTeam(game),
+      awayTeam: bdlGameAwayTeam(game),
+      date: game.date,
+      props: props.map((prop) => {
+        const player = playersById.get(prop.player_id) || {};
+        return {
+          id: prop.id,
+          playerId: prop.player_id,
+          playerName: player.fullName || `Player ${prop.player_id}`,
+          team: player.team || "",
+          battingOrder: player.battingOrder,
+          vendor: prop.vendor,
+          propType: prop.prop_type,
+          lineValue: firstFiniteNumber(prop.line_value, prop.line, prop.point),
+          odds: firstFiniteNumber(prop.market?.odds, prop.odds, prop.price, prop.american_odds),
+          overOdds: firstFiniteNumber(prop.market?.over_odds, prop.over_odds, prop.over_price),
+          underOdds: firstFiniteNumber(prop.market?.under_odds, prop.under_odds, prop.under_price),
+          market: prop.market,
+          updatedAt: prop.updated_at
+        };
+      })
+    });
+  }
+
+  return gamesWithProps;
+}
+
+function numericStatValue(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+async function fetchMlbPublicSchedule(date) {
+  const scheduleUrl = new URL("https://statsapi.mlb.com/api/v1/schedule");
+  scheduleUrl.searchParams.set("sportId", "1");
+  scheduleUrl.searchParams.set("date", date);
+  scheduleUrl.searchParams.set("hydrate", "team,probablePitcher");
+  const result = await fetchJson(scheduleUrl);
+  return (result.dates || []).flatMap((item) => item.games || []);
+}
+
+async function fetchMlbPublicRoster(teamId) {
+  const rosterUrl = new URL(`https://statsapi.mlb.com/api/v1/teams/${teamId}/roster`);
+  rosterUrl.searchParams.set("rosterType", "active");
+  rosterUrl.searchParams.set("hydrate", "person(stats(group=[hitting],type=[season]))");
+  const result = await fetchJson(rosterUrl);
+  return result.roster || [];
+}
+
+function hitterSeasonStats(player) {
+  const splits = player?.stats?.find((item) => item.group?.displayName === "hitting" || item.group?.displayName === "Hitting")?.splits || [];
+  return splits[0]?.stat || {};
+}
+
+function publicHomerScore(stats, lineupBoostSeed) {
+  const homeRuns = numericStatValue(stats.homeRuns);
+  const atBats = Math.max(1, numericStatValue(stats.atBats));
+  const slugging = numericStatValue(stats.slugging);
+  const ops = numericStatValue(stats.ops);
+  const isolatedPower = Math.max(0, slugging - numericStatValue(stats.avg));
+  const hrRateScore = Math.min(45, (homeRuns / atBats) * 900);
+  const powerScore = Math.min(30, slugging * 42 + isolatedPower * 25);
+  const opsScore = Math.min(15, ops * 14);
+  const lineupProxy = numericStatValue(lineupBoostSeed) % 10;
+  return Math.round(Math.max(30, Math.min(96, 25 + hrRateScore + powerScore + opsScore + lineupProxy)));
+}
+
+async function fetchMlbPublicHomerCandidates(date) {
+  const games = await fetchMlbPublicSchedule(date);
+  const candidates = [];
+
+  for (const game of games) {
+    const sides = [
+      { team: game.teams?.away?.team, opponent: game.teams?.home?.team },
+      { team: game.teams?.home?.team, opponent: game.teams?.away?.team }
+    ];
+
+    for (const side of sides) {
+      if (!side.team?.id) continue;
+      const roster = await fetchMlbPublicRoster(side.team.id);
+      roster
+        .filter((item) => item.position?.type !== "Pitcher")
+        .forEach((item) => {
+          const stats = hitterSeasonStats(item.person);
+          const atBats = numericStatValue(stats.atBats);
+          const homeRuns = numericStatValue(stats.homeRuns);
+          const slugging = numericStatValue(stats.slugging);
+          if (atBats < 25 || (!homeRuns && slugging < 0.38)) return;
+          const seed = String(item.person?.id || 0).split("").reduce((sum, char) => sum + Number(char || 0), 0);
+          const score = publicHomerScore(stats, seed);
+          const homerProbability = Math.min(0.125, Math.max(0.025, 0.025 + (score - 45) / 700));
+          candidates.push({
+            player: item.person?.fullName || item.person?.displayName || "",
+            team: side.team.name || "",
+            opponent: side.opponent?.name || "",
+            gameLabel: `${side.team.name || ""} @ ${side.opponent?.name || ""}`,
+            homeRuns,
+            atBats,
+            slugging,
+            ops: numericStatValue(stats.ops),
+            score,
+            homerProbability,
+            source: "MLB public season stats"
+          });
+        });
+    }
+  }
+
+  return candidates
+    .filter((candidate) => candidate.player)
+    .sort((a, b) => b.homerProbability - a.homerProbability || b.score - a.score)
+    .slice(0, 12);
+}
+
 function toOddsApiDateTime(date) {
   return date.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
@@ -158,16 +436,17 @@ async function fetchOddsSlate({ sport, date, region, markets }) {
   const eventPayloads = [];
 
   for (const event of (events || []).slice(0, 12)) {
-    const oddsUrl = new URL(`https://api.the-odds-api.com/v4/sports/${sport}/events/${event.id}/odds`);
-    oddsUrl.searchParams.set("apiKey", oddsApiKey);
-    oddsUrl.searchParams.set("regions", region || "us");
-    oddsUrl.searchParams.set("markets", (markets?.length ? markets : defaultMarkets).join(","));
-    oddsUrl.searchParams.set("oddsFormat", "american");
-    oddsUrl.searchParams.set("dateFormat", "iso");
+    let odds = await fetchEventOdds({ sport, eventId: event.id, region, markets });
+    const shouldEnsureMlbMoneylines = sport === "baseball_mlb" && (markets || []).includes("h2h") && !oddsPayloadHasMarket(odds, "h2h");
+
+    if (shouldEnsureMlbMoneylines) {
+      const moneylineOdds = await fetchEventOdds({ sport, eventId: event.id, region, markets: ["h2h"] });
+      odds = mergeOddsPayloadMarkets(odds, moneylineOdds);
+    }
 
     eventPayloads.push({
       event,
-      odds: await fetchJson(oddsUrl)
+      odds
     });
   }
 
@@ -679,6 +958,28 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (url.pathname === "/api/ui-state") {
+    if (req.method === "GET") {
+      json(res, 200, { state: await readAppState() });
+      return;
+    }
+
+    if (req.method === "POST") {
+      try {
+        const body = await readRequestBody(req);
+        const payload = JSON.parse(body || "{}");
+        const state = await writeAppState(payload.state || payload);
+        json(res, 200, { state });
+      } catch (error) {
+        json(res, 500, { error: error.message });
+      }
+      return;
+    }
+
+    json(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
   if (url.pathname === "/api/supabase-health") {
     try {
       const health = await supabaseHealth();
@@ -705,6 +1006,49 @@ async function handleApi(req, res, url) {
       });
     } catch (error) {
       json(res, oddsApiKey ? 502 : 400, { error: error.message, configured: Boolean(oddsApiKey) });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/mlb/player-props") {
+    const date = url.searchParams.get("date") || new Date().toISOString().slice(0, 10);
+    const propType = url.searchParams.get("propType") || url.searchParams.get("prop_type") || "home_runs";
+    const vendors = [
+      ...url.searchParams.getAll("vendors[]"),
+      ...url.searchParams.getAll("vendors"),
+      ...(url.searchParams.get("vendor") || "").split(",")
+    ]
+      .map((vendor) => vendor.trim())
+      .filter(Boolean);
+
+    try {
+      json(res, 200, {
+        configured: Boolean(ballDontLieKey),
+        games: await fetchBdlMlbPropsForDate({ date, propType, vendors })
+      });
+    } catch (error) {
+      json(res, ballDontLieKey ? 502 : 400, {
+        error: error.message,
+        configured: Boolean(ballDontLieKey),
+        games: []
+      });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/mlb/public-homer-candidates") {
+    const date = url.searchParams.get("date") || new Date().toISOString().slice(0, 10);
+    try {
+      json(res, 200, {
+        source: "MLB Stats API",
+        candidates: await fetchMlbPublicHomerCandidates(date)
+      });
+    } catch (error) {
+      json(res, 502, {
+        error: error.message,
+        source: "MLB Stats API",
+        candidates: []
+      });
     }
     return;
   }
@@ -864,6 +1208,40 @@ function readRequestBody(req) {
     req.on("end", () => resolve(body));
     req.on("error", reject);
   });
+}
+
+function cleanAppState(payload = {}) {
+  const allowedSports = new Set(["basketball_nba", "basketball_wnba", "baseball_mlb", "icehockey_nhl", "americanfootball_nfl"]);
+  const allowedRegions = new Set(["us", "us2", "uk", "eu"]);
+  const allowedBooks = new Set(["fanatics", "draftkings", "fanduel", "betmgm", "caesars"]);
+  const today = new Date().toISOString().slice(0, 10);
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(payload.slateDate || "")) ? String(payload.slateDate) : today;
+  const sportKey = allowedSports.has(payload.sportKey) ? payload.sportKey : "basketball_nba";
+  const region = allowedRegions.has(payload.region) ? payload.region : "us";
+  const bookFilter = allowedBooks.has(payload.bookFilter) ? payload.bookFilter : "fanatics";
+
+  return {
+    sportKey,
+    slateDate: date,
+    region,
+    bookFilter,
+    updatedAt: payload.updatedAt || new Date().toISOString()
+  };
+}
+
+async function readAppState() {
+  try {
+    const raw = await fs.readFile(appStateFile, "utf8");
+    return cleanAppState(JSON.parse(raw));
+  } catch {
+    return cleanAppState({});
+  }
+}
+
+async function writeAppState(payload) {
+  const state = cleanAppState({ ...payload, updatedAt: new Date().toISOString() });
+  await fs.writeFile(appStateFile, JSON.stringify(state, null, 2));
+  return state;
 }
 
 function normalizeSlateRows(payload) {
