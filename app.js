@@ -596,9 +596,7 @@ function pressureGameContext(prop, direction, game) {
   }
 
   const propTeam = propTeamName(prop, game);
-  const pistonsCavsGame = sameTeamName(game?.homeTeam, "Detroit Pistons") && sameTeamName(game?.awayTeam, "Cleveland Cavaliers") ||
-    sameTeamName(game?.homeTeam, "Cleveland Cavaliers") && sameTeamName(game?.awayTeam, "Detroit Pistons");
-  const opponentForcedTurnovers = Number(prop.teamSituation?.opponentForcedTurnoversLastGame || (pistonsCavsGame && sameTeamName(propTeam, "Cleveland Cavaliers") ? 20 : 0));
+  const opponentForcedTurnovers = Number(prop.teamSituation?.opponentForcedTurnoversLastGame || 0);
   if (opponentForcedTurnovers >= 18) {
     if (prop.market === "player_assists") {
       penalty += 3;
@@ -6306,7 +6304,9 @@ async function fetchSlate() {
         clearLiveBuildsForSlate();
         render();
         upsertCurrentBoard();
-      }).catch(() => {});
+      }).catch((err) => {
+        setStatus(`Could not fetch injuries: ${err.message}`, "warn");
+      });
       if (propCount) enrichSlateInBackground(token, "load");
       if (!propCount) boardEnrichmentPending = false;
     }

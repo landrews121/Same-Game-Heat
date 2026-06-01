@@ -35,3 +35,16 @@ create index if not exists slate_props_slate_date_idx on slate_props (slate_date
 create index if not exists slate_props_player_name_idx on slate_props (player_name);
 create index if not exists player_game_logs_player_name_idx on player_game_logs (player_name);
 create index if not exists saved_boards_slate_date_idx on saved_boards (slate_date);
+
+alter table player_game_logs enable row level security;
+alter table slate_props enable row level security;
+alter table saved_boards enable row level security;
+
+create policy "service_role_all_player_game_logs" on player_game_logs
+  for all to service_role using (true) with check (true);
+
+create policy "service_role_all_slate_props" on slate_props
+  for all to service_role using (true) with check (true);
+
+create policy "service_role_all_saved_boards" on saved_boards
+  for all to service_role using (true) with check (true);

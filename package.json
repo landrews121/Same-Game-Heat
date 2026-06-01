@@ -6,9 +6,12 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "PORT=4000 node server.js"
+    "dev": "PORT=4000 nodemon server.js"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
   }
 }

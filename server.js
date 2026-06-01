@@ -433,21 +433,26 @@ async function fetchOddsSlate({ sport, date, region, markets }) {
   eventUrl.searchParams.set("commenceTimeTo", to);
 
   const events = await fetchJson(eventUrl);
+  const eventList = (events || []).slice(0, 12);
+  const concurrency = 3;
   const eventPayloads = [];
 
-  for (const event of (events || []).slice(0, 12)) {
-    let odds = await fetchEventOdds({ sport, eventId: event.id, region, markets });
-    const shouldEnsureMlbMoneylines = sport === "baseball_mlb" && (markets || []).includes("h2h") && !oddsPayloadHasMarket(odds, "h2h");
+  for (let i = 0; i < eventList.length; i += concurrency) {
+    const batch = eventList.slice(i, i + concurrency);
+    const results = await Promise.all(
+      batch.map(async (event) => {
+        let odds = await fetchEventOdds({ sport, eventId: event.id, region, markets });
+        const shouldEnsureMlbMoneylines = sport === "baseball_mlb" && (markets || []).includes("h2h") && !oddsPayloadHasMarket(odds, "h2h");
 
-    if (shouldEnsureMlbMoneylines) {
-      const moneylineOdds = await fetchEventOdds({ sport, eventId: event.id, region, markets: ["h2h"] });
-      odds = mergeOddsPayloadMarkets(odds, moneylineOdds);
-    }
+        if (shouldEnsureMlbMoneylines) {
+          const moneylineOdds = await fetchEventOdds({ sport, eventId: event.id, region, markets: ["h2h"] });
+          odds = mergeOddsPayloadMarkets(odds, moneylineOdds);
+        }
 
-    eventPayloads.push({
-      event,
-      odds
-    });
+        return { event, odds };
+      })
+    );
+    eventPayloads.push(...results);
   }
 
   return eventPayloads;
@@ -578,7 +583,11 @@ async function getCachedPlayerLogs(player, season, scope = "series") {
   const id = `${normalize(player)}-${season}-${scope}`;
   try {
     const rows = await supabaseRequest(`player_game_logs?id=eq.${encodeURIComponent(id)}&select=*`);
-    return rows?.[0] || null;
+    const row = rows?.[0] || null;
+    if (!row) return null;
+    const age = Date.now() - new Date(row.updated_at).getTime();
+    if (age > 12 * 60 * 60 * 1000) return null;
+    return row;
   } catch {
     return null;
   }
@@ -1286,9 +1295,16 @@ async function serveStatic(req, res, url) {
   try {
     const file = await fs.readFile(filePath);
     const ext = path.extname(filePath);
+    const isHtml = ext === ".html";
+    const isVersioned = url.searchParams.has("v");
+    const cacheControl = isHtml
+      ? "no-store"
+      : isVersioned
+        ? "public, max-age=31536000, immutable"
+        : "public, max-age=300";
     res.writeHead(200, {
       "Content-Type": mimeTypes[ext] || "application/octet-stream",
-      "Cache-Control": "no-store, max-age=0"
+      "Cache-Control": cacheControl
     });
     res.end(file);
   } catch {
