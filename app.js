@@ -1589,7 +1589,7 @@ function selectUniqueLegs(legs, count = Infinity, options = {}) {
 
   for (const leg of legs) {
     const isMlbMarket = leg.market?.startsWith("batter_") || leg.market?.startsWith("pitcher_");
-    const dedupKey = isMlbMarket ? `${leg.player}|${leg.market}` : leg.player;
+    const dedupKey = isMlbMarket ? `${normalizeName(leg.player)}|${leg.market}` : normalizeName(leg.player);
     if (usedPlayers.has(dedupKey)) continue;
     if (!options.allowMultipleAssists && leg.market === "player_assists" && usedMarkets.get("player_assists")) continue;
     if (!options.allowMultipleThreeOvers && leg.market === "player_threes" && leg.direction === "Over" && usedMarkets.get("player_threes_over")) continue;
@@ -2060,6 +2060,13 @@ function buildMixedTeamParlay(game, usedLegs = []) {
   if (playoffEngineActive()) {
     return buildPlayoffValueParlay(game, usedLegs);
   }
+  if (elements.sportKey.value === "baseball_mlb") {
+    const pool = excludeUsedLegs(
+      scoredLegPool(game).filter((leg) => !leg.excluded).sort((a, b) => b.score - a.score),
+      usedLegs
+    );
+    return selectUniqueLegs(pool, 3, { allowMultipleAssists: true, game });
+  }
   const reserve = reserveLegPool(game, "three");
   const pool = excludeUsedLegs([...reserve, ...consistencyLegPool(game, "three", reserve)], usedLegs);
   const homeKey = normalizedTeamName(game.homeTeam);
@@ -2436,6 +2443,13 @@ function bestLegForEachPlayer(legs) {
 }
 
 function buildStarValueParlay(game, usedLegs = []) {
+  if (!playoffEngineActive() && elements.sportKey.value === "baseball_mlb") {
+    const pool = excludeUsedLegs(
+      scoredLegPool(game).filter((leg) => !leg.excluded).sort((a, b) => b.score - a.score),
+      usedLegs
+    );
+    return selectUniqueLegs(pool, 4, { allowMultipleAssists: true, game });
+  }
   const primaryPool = playoffEngineActive() ? playoffFullLineCandidatePool(game, "Star Value Engine") : reserveLegPool(game, "three");
   const fallbackPool = playoffEngineActive()
     ? relaxedFullLinePool(game, "Star Value Fallback", "star")
@@ -4689,9 +4703,36 @@ async function fetchMlbPublicHomerCandidates(date) {
   }
 }
 
+function getBestHRLegs(game, count = 4) {
+  const hrCandidates = (game?.candidates || []).filter((prop) => prop.market === "batter_home_runs" && !prop.excluded);
+  const scored = hrCandidates.flatMap((prop) => scorePropSides(prop, game)).filter((leg) => leg.direction === "Over");
+  const byPlayer = new Map();
+  scored.sort((a, b) => b.probability - a.probability).forEach((leg) => {
+    const key = normalizeName(leg.player);
+    if (!byPlayer.has(key)) byPlayer.set(key, leg);
+  });
+  return Array.from(byPlayer.values()).slice(0, count);
+}
+
 function renderParlay(game) {
-  if (elements.sportKey.value === "baseball_mlb") {
+  if (elements.sportKey.value === "baseball_mlb" && activeParlayView !== "three") {
     renderMlbBoard();
+    return;
+  }
+  if (elements.sportKey.value === "baseball_mlb" && activeParlayView === "three") {
+    elements.parlays.classList.remove("mlb-board-grid");
+    elements.parlays.classList.add("two-card-grid");
+    if (elements.parlayTabs) elements.parlayTabs.hidden = false;
+    updateParlayTabs();
+    const gameLabel = game ? `${game.awayTeam} @ ${game.homeTeam}` : "";
+    const hrLegs = game ? getBestHRLegs(game) : [];
+    const valueStarLegs = game ? buildStarValueParlay(game) : [];
+    elements.selectedGameTitle.textContent = game ? gameLabel : "MLB Board";
+    if (elements.riskLabel) elements.riskLabel.textContent = `${hrLegs.length} HR prop${hrLegs.length === 1 ? "" : "s"} · park-adjusted`;
+    elements.parlays.innerHTML = [
+      renderParlayGroup("Star Value Board", valueStarLegs, "Top MLB props for this game ranked by score.", gameLabel),
+      renderParlayGroup("Home Run Board", hrLegs, "All anytime HR props on this game ranked by park-adjusted probability.", gameLabel)
+    ].join("");
     return;
   }
   elements.parlays.classList.remove("mlb-board-grid");
