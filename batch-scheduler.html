@@ -7,6 +7,24 @@
     <link rel="stylesheet" href="batch-scheduler.css" />
   </head>
   <body>
+    <section id="loginScreen" class="login-screen">
+      <form id="loginForm" class="login-card">
+        <p class="eyebrow">PepsiCo Bottling Co.</p>
+        <h1>Batch Run Tracker</h1>
+        <label>
+          User Name
+          <input id="loginName" type="text" autocomplete="username" required />
+        </label>
+        <label>
+          PIN
+          <input id="loginPin" type="password" inputmode="numeric" autocomplete="current-password" required />
+        </label>
+        <button type="submit" class="primary-button">Sign In</button>
+        <p class="login-hint">Master setup: master / 0000</p>
+        <p id="loginStatus" class="login-status"></p>
+      </form>
+    </section>
+
     <main class="app-shell">
       <header class="topbar">
         <div>
@@ -14,6 +32,8 @@
           <h1>Batch Run Tracker</h1>
         </div>
         <div class="topbar-actions">
+          <span id="currentUserLabel" class="user-pill">Not signed in</span>
+          <button id="logoutButton" type="button" class="secondary-button">Sign Out</button>
           <button id="exportCsv" type="button" class="icon-button" title="Export schedule CSV" aria-label="Export schedule CSV">CSV</button>
           <button id="clearWeek" type="button" class="danger-button">Clear Week</button>
         </div>
@@ -43,54 +63,27 @@
           <section class="tool-section">
             <div class="section-heading">
               <h2>Import Rows</h2>
-              <span id="weekLabel">CSV or pasted table</span>
+              <span id="weekLabel">CSV, Excel, or pasted table</span>
             </div>
             <label class="file-drop compact-drop">
-              <input id="scheduleCsv" type="file" accept=".csv,text/csv" />
-              <span>Upload schedule CSV</span>
+              <input id="scheduleCsv" type="file" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+              <span>Upload schedule CSV or Excel</span>
             </label>
             <textarea id="importText" placeholder="Line,Product,Planned Units&#10;1,Pepsi 20oz,120&#10;2,Diet Pepsi 20oz,84"></textarea>
             <button id="importRows" type="button" class="primary-button">Import / Update Schedule</button>
           </section>
 
-          <section class="tool-section">
-            <div class="section-heading">
-              <h2>Add Item</h2>
-              <span>Manual entry</span>
-            </div>
-            <form id="scheduleForm" class="stacked-form">
-              <label>
-                Line
-                <input id="lineInput" type="text" placeholder="Line 1" />
-              </label>
-              <label>
-                Product
-                <input id="productInput" type="text" placeholder="Product / package" required />
-              </label>
-              <label>
-                Planned Units
-                <input id="plannedInput" type="number" min="1" step="1" placeholder="0" required />
-              </label>
-              <button type="submit" class="primary-button">Add to Schedule</button>
-            </form>
-          </section>
-        </aside>
-
-        <section class="main-panel">
-          <section class="entry-panel">
+          <section class="tool-section record-section">
             <div class="section-heading">
               <h2>Record Made Units</h2>
               <span>Every entry is logged</span>
             </div>
             <form id="productionForm" class="production-form">
               <label>
-                Batcher
-                <input id="batcherInput" type="text" placeholder="Name" required />
+                Order Number
+                <input id="orderInput" type="text" inputmode="numeric" autocomplete="off" placeholder="Type order number" required />
               </label>
-              <label>
-                Schedule Item
-                <select id="itemSelect" required></select>
-              </label>
+              <div id="orderDetails" class="order-details">Order details will appear here.</div>
               <label>
                 Units Made
                 <input id="madeInput" type="number" min="1" step="1" placeholder="0" required />
@@ -102,6 +95,29 @@
               <button type="submit" class="primary-button">Record Units</button>
             </form>
           </section>
+
+          <section id="adminPanel" class="tool-section admin-only hidden">
+            <div class="section-heading">
+              <h2>Batcher Accounts</h2>
+              <span>Master only</span>
+            </div>
+            <form id="createUserForm" class="stacked-form">
+              <label>
+                User Name
+                <input id="newUserName" type="text" autocomplete="off" required />
+              </label>
+              <label>
+                PIN
+                <input id="newUserPin" type="password" inputmode="numeric" autocomplete="new-password" required />
+              </label>
+              <button type="submit" class="primary-button">Create Batcher</button>
+              <p id="createUserStatus" class="form-status"></p>
+            </form>
+            <div id="userList" class="user-list"></div>
+          </section>
+        </aside>
+
+        <section class="main-panel">
 
           <section class="schedule-panel">
             <div class="section-heading">
@@ -142,12 +158,28 @@
             </div>
           </section>
 
-          <section class="log-panel">
-            <div class="section-heading">
-              <h2>Audit Log</h2>
-              <button id="clearLog" type="button" class="secondary-button">Clear Log</button>
+          <section class="activity-panel">
+            <div class="activity-tabs" role="tablist" aria-label="Activity views">
+              <button type="button" class="activity-tab active" data-activity-tab="audit" role="tab" aria-selected="true">Audit Log</button>
+              <button type="button" class="activity-tab" data-activity-tab="changes" role="tab" aria-selected="false">Schedule Changes</button>
             </div>
-            <div id="auditLog" class="audit-log"></div>
+
+            <div id="auditPanel" class="activity-view">
+              <div class="section-heading">
+                <h2>Audit Log</h2>
+                <button id="clearLog" type="button" class="secondary-button">Clear Log</button>
+              </div>
+              <div id="auditLog" class="audit-log"></div>
+            </div>
+
+            <div id="changesPanel" class="activity-view hidden">
+              <div class="section-heading">
+                <h2>Schedule Changes</h2>
+                <span id="changeSummaryLabel">Latest upload</span>
+              </div>
+              <div id="changeSummary" class="change-summary"></div>
+              <div id="changeDetails" class="change-details"></div>
+            </div>
           </section>
         </section>
       </section>
