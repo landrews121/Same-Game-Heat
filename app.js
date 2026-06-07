@@ -69,6 +69,82 @@ const parkHRFactors = {
   WSH: 0.91, TB: 0.90, OAK: 0.89, TOR: 0.88, CWS: 0.87
 };
 
+// ─── 2026 NBA Finals: NYK vs SAS preloaded series data ───────────────────────
+// Games 1–2 (Finals) + NBA Cup Championship (Dec 16 2025) — same matchup.
+// Used to seed seriesLogs immediately without waiting on ESPN API population.
+const FINALS_2026_SERIES_LOGS = {
+  "jalen brunson": [
+    { date: "Jun 5",  sortDate: "2026-06-05", opponent: "SAS", min: "39", pts: 20, reb: 4, ast: 6, threes: "--", result: "W", score: "105-104", seasonType: "NBA Finals" },
+    { date: "Jun 3",  sortDate: "2026-06-03", opponent: "SAS", min: "41", pts: 30, reb: 5, ast: 7, threes: "--", result: "W", score: "105-95",  seasonType: "NBA Finals" },
+    { date: "Dec 16", sortDate: "2025-12-16", opponent: "SAS", min: "36", pts: 25, reb: 4, ast: 8, threes: "--", result: "W", score: "124-113", seasonType: "NBA Cup" }
+  ],
+  "karl-anthony towns": [
+    { date: "Jun 5",  sortDate: "2026-06-05", opponent: "SAS", min: "40", pts: 21, reb: 13, ast: 2, threes: "--", result: "W", score: "105-104", seasonType: "NBA Finals" },
+    { date: "Jun 3",  sortDate: "2026-06-03", opponent: "SAS", min: "38", pts: 18, reb: 11, ast: 3, threes: "--", result: "W", score: "105-95",  seasonType: "NBA Finals" },
+    { date: "Dec 16", sortDate: "2025-12-16", opponent: "SAS", min: "36", pts: 22, reb: 10, ast: 4, threes: "--", result: "W", score: "124-113", seasonType: "NBA Cup" }
+  ],
+  "mikal bridges": [
+    { date: "Jun 5",  sortDate: "2026-06-05", opponent: "SAS", min: "40", pts: 20, reb: 6, ast: 6, threes: "--", result: "W", score: "105-104", seasonType: "NBA Finals" },
+    { date: "Jun 3",  sortDate: "2026-06-03", opponent: "SAS", min: "39", pts: 17, reb: 5, ast: 4, threes: "--", result: "W", score: "105-95",  seasonType: "NBA Finals" }
+  ],
+  "og anunoby": [
+    { date: "Jun 5",  sortDate: "2026-06-05", opponent: "SAS", min: "38", pts: 17, reb: 5, ast: 2, threes: "--", result: "W", score: "105-104", seasonType: "NBA Finals" },
+    { date: "Jun 3",  sortDate: "2026-06-03", opponent: "SAS", min: "37", pts: 15, reb: 6, ast: 2, threes: "--", result: "W", score: "105-95",  seasonType: "NBA Finals" },
+    { date: "Dec 16", sortDate: "2025-12-16", opponent: "SAS", min: "37", pts: 28, reb: 7, ast: 3, threes: "--", result: "W", score: "124-113", seasonType: "NBA Cup" }
+  ],
+  "victor wembanyama": [
+    { date: "Jun 5",  sortDate: "2026-06-05", opponent: "NYK", min: "41", pts: 29, reb: 9,  ast: 3, threes: "--", result: "L", score: "104-105", seasonType: "NBA Finals" },
+    { date: "Jun 3",  sortDate: "2026-06-03", opponent: "NYK", min: "40", pts: 26, reb: 12, ast: 4, threes: "--", result: "L", score: "95-105",  seasonType: "NBA Finals" },
+    { date: "Dec 16", sortDate: "2025-12-16", opponent: "NYK", min: "38", pts: 31, reb: 11, ast: 5, threes: "--", result: "L", score: "113-124", seasonType: "NBA Cup" }
+  ],
+  "de'aaron fox": [
+    { date: "Jun 5",  sortDate: "2026-06-05", opponent: "NYK", min: "39", pts: 20, reb: 4, ast: 6, threes: "--", result: "L", score: "104-105", seasonType: "NBA Finals" },
+    { date: "Jun 3",  sortDate: "2026-06-03", opponent: "NYK", min: "37", pts: 14, reb: 4, ast: 7, threes: "--", result: "L", score: "95-105",  seasonType: "NBA Finals" },
+    { date: "Dec 16", sortDate: "2025-12-16", opponent: "NYK", min: "36", pts: 18, reb: 5, ast: 7, threes: "--", result: "L", score: "113-124", seasonType: "NBA Cup" }
+  ],
+  "dylan harper": [
+    { date: "Jun 5",  sortDate: "2026-06-05", opponent: "NYK", min: "34", pts: 15, reb: 3, ast: 4, threes: "--", result: "L", score: "104-105", seasonType: "NBA Finals" }
+  ],
+  "stephon castle": [
+    { date: "Dec 16", sortDate: "2025-12-16", opponent: "NYK", min: "34", pts: 22, reb: 6, ast: 10, threes: "--", result: "L", score: "113-124", seasonType: "NBA Cup" }
+  ]
+};
+
+// Team-level Finals situation seeds
+const FINALS_2026_TEAM_SITUATIONS = {
+  NYK: {
+    wins: 2, opponentWins: 0, winsNeeded: 4,
+    seriesSummary: "NYK leads 2-0",
+    isPlayoffGame: true, isEliminationGame: false, facingElimination: false,
+    isGame7: false, isFinals: true,
+    gameImportanceScore: 8,
+    momentumMultiplier: 1.15,
+    opponentForcedTurnoversLastGame: 1.12
+  },
+  SAS: {
+    wins: 0, opponentWins: 2, winsNeeded: 4,
+    seriesSummary: "SAS trails 0-2",
+    isPlayoffGame: true, isEliminationGame: false, facingElimination: false,
+    isGame7: false, isFinals: true,
+    gameImportanceScore: 8,
+    momentumMultiplier: 0.85,
+    opponentForcedTurnoversLastGame: 0.96
+  }
+};
+
+function isFinalsMatchup(game) {
+  if (!game) return false;
+  return (sameTeamName(game.homeTeam, "New York Knicks") || sameTeamName(game.homeTeam, "Knicks")) &&
+    (sameTeamName(game.awayTeam, "San Antonio Spurs") || sameTeamName(game.awayTeam, "Spurs")) ||
+    (sameTeamName(game.awayTeam, "New York Knicks") || sameTeamName(game.awayTeam, "Knicks")) &&
+    (sameTeamName(game.homeTeam, "San Antonio Spurs") || sameTeamName(game.homeTeam, "Spurs"));
+}
+
+function finalsPreloadedLogs(playerName) {
+  return FINALS_2026_SERIES_LOGS[normalizeName(playerName)] || null;
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 const sportsbookAliases = {
   fanatics: ["fanatics", "fanaticssportsbook", "fanatics_sportsbook", "fanatics sportsbook"],
   draftkings: ["draftkings", "draftkings_us", "draftkings sportsbook"],
@@ -1528,14 +1604,19 @@ function scoreCandidate(prop, game, forcedDirection = "") {
   const lowTotalPenalty = isLowTotal && direction === "Over" && lowTotalMarkets.includes(prop.market) ? 5 : 0;
   const lowTotalProbabilityPenalty = isLowTotal && direction === "Over" && lowTotalMarkets.includes(prop.market) ? 0.025 : 0;
   const homeRunContext = prop.market === "batter_home_runs" ? homeRunScoringContext(prop, game) : { scoreBoost: 0, probabilityBoost: 0, scoreCap: 96, noSeriesPenaltyOverride: null, notes: [] };
+  const momentumMultiplier = Number(prop.teamSituation?.momentumMultiplier || 1.0);
+  const momentumScoreBoost = game?.isFinals && isStarOrStarter && direction === "Over" && momentumMultiplier > 1.0 ? (momentumMultiplier - 1.0) * 20 : 0;
+  const momentumScorePenalty = game?.isFinals && isStarOrStarter && direction === "Over" && momentumMultiplier < 1.0 ? (1.0 - momentumMultiplier) * 14 : 0;
+  const momentumProbabilityBoost = game?.isFinals && isStarOrStarter && direction === "Over" && momentumMultiplier > 1.0 ? (momentumMultiplier - 1.0) * 0.06 : 0;
+  const momentumProbabilityPenalty = game?.isFinals && isStarOrStarter && direction === "Over" && momentumMultiplier < 1.0 ? (1.0 - momentumMultiplier) * 0.04 : 0;
   const missingSeriesLogs = !prop.seriesGames;
   const edgeScore = Math.max(0, directionalEdge) * 2.6 + Math.min(0, directionalEdge) * 1.2;
   const seriesEdgeScore = (Math.max(0, directionalSeriesEdge) * (isPressureGame ? 4.8 : 3.8) + Math.min(0, directionalSeriesEdge) * (isPressureGame ? 2.2 : 1.6)) * seriesWeight;
   const seasonH2HEdgeScore = (Math.max(0, directionalSeasonH2HEdge) * 1.2 + Math.min(0, directionalSeasonH2HEdge) * 0.6) * seasonH2HWeight;
-  const rawScore = 46 + edgeScore + seriesEdgeScore + seasonH2HEdgeScore + (directionalRecentHitRate - 0.5) * (isPressureGame ? 12 : 18) + (directionalSeriesHitRate - 0.5) * (isPressureGame ? 82 : 64) * seriesWeight + (directionalSeasonH2HHitRate - 0.5) * (isPressureGame ? 18 : 14) * seasonH2HWeight + seriesConviction + injuryScore + elimination.boost + pressure.boost + confirmedStarterBoost + restBoost + homeRunContext.scoreBoost + lineQuality.boost + agentScoreAdjustment - oddsPenalty - context.penalty - pressure.penalty - marketResistance.penalty - noSeries.penalty - lineQuality.penalty - missRisk.penalty - lowTotalPenalty;
+  const rawScore = 46 + edgeScore + seriesEdgeScore + seasonH2HEdgeScore + (directionalRecentHitRate - 0.5) * (isPressureGame ? 12 : 18) + (directionalSeriesHitRate - 0.5) * (isPressureGame ? 82 : 64) * seriesWeight + (directionalSeasonH2HHitRate - 0.5) * (isPressureGame ? 18 : 14) * seasonH2HWeight + seriesConviction + injuryScore + elimination.boost + pressure.boost + confirmedStarterBoost + restBoost + homeRunContext.scoreBoost + momentumScoreBoost + lineQuality.boost + agentScoreAdjustment - oddsPenalty - context.penalty - pressure.penalty - marketResistance.penalty - noSeries.penalty - lineQuality.penalty - missRisk.penalty - lowTotalPenalty - momentumScorePenalty;
   const scoreCap = missingSeriesLogs ? Math.min(noSeries.scoreCap, homeRunContext.scoreCap) : homeRunContext.scoreCap < 96 ? homeRunContext.scoreCap : 96;
   const edgeProbability = clamp(directionalBlendedEdge * 0.01, -0.05, 0.07);
-  const probability = clamp(directionalRecentHitRate * recentProbabilityWeight + directionalSeriesHitRate * seriesProbabilityWeight * seriesWeight + directionalSeasonH2HHitRate * h2hProbabilityWeight * seasonH2HWeight + 0.08 + edgeProbability + injuryScore / 290 + elimination.probabilityBoost + pressure.probabilityBoost + confirmedStarterProbabilityBoost + restProbabilityBoost + homeRunContext.probabilityBoost + lineQuality.probabilityBoost + agentProbabilityAdjustment - context.probabilityPenalty - pressure.probabilityPenalty - marketResistance.probabilityPenalty - noSeries.probabilityPenalty - lineQuality.probabilityPenalty - missRisk.probabilityPenalty - lowTotalProbabilityPenalty, 0.26, 0.78);
+  const probability = clamp(directionalRecentHitRate * recentProbabilityWeight + directionalSeriesHitRate * seriesProbabilityWeight * seriesWeight + directionalSeasonH2HHitRate * h2hProbabilityWeight * seasonH2HWeight + 0.08 + edgeProbability + injuryScore / 290 + elimination.probabilityBoost + pressure.probabilityBoost + confirmedStarterProbabilityBoost + restProbabilityBoost + homeRunContext.probabilityBoost + momentumProbabilityBoost + lineQuality.probabilityBoost + agentProbabilityAdjustment - context.probabilityPenalty - pressure.probabilityPenalty - marketResistance.probabilityPenalty - noSeries.probabilityPenalty - lineQuality.probabilityPenalty - missRisk.probabilityPenalty - lowTotalProbabilityPenalty - momentumProbabilityPenalty, 0.26, 0.78);
 
   return {
     ...prop,
@@ -1556,6 +1637,8 @@ function scoreCandidate(prop, game, forcedDirection = "") {
       ...elimination.notes,
       ...(confirmedStarterBoost ? ["Confirmed starter boost with multiple teammates out"] : []),
       ...(restBoost ? ["Rest advantage: extra recovery day boosts star/starter over"] : []),
+      ...(momentumScoreBoost ? ["Series momentum: NYK 2-0 in Finals — team riding a wave"] : []),
+      ...(momentumScorePenalty ? ["Series momentum: SAS down 0-2, late-game execution issues flagged"] : []),
       ...(lowTotalPenalty ? ["Low game total environment: over scoring props penalized"] : []),
       ...homeRunContext.notes,
       ...(forcedDirection && seriesDirection && direction !== seriesDirection ? ["Two-sided scan: series trend opposes this side"] : []),
@@ -4208,6 +4291,22 @@ async function fetchGameNews(game, options = {}) {
 function applyGameContext(game, news) {
   if (!game) return;
 
+  // Inject 2026 Finals situation for NYK vs SAS before ESPN data arrives
+  if (isFinalsMatchup(game)) {
+    game.isFinals = true;
+    const nykIsHome = sameTeamName(game.homeTeam, "New York Knicks") || sameTeamName(game.homeTeam, "Knicks");
+    game.candidates.forEach((prop) => {
+      const teamName = propTeamName(prop, game);
+      const isNyk = sameTeamName(teamName, "New York Knicks") || sameTeamName(teamName, "Knicks");
+      const situation = isNyk ? FINALS_2026_TEAM_SITUATIONS.NYK : FINALS_2026_TEAM_SITUATIONS.SAS;
+      prop.teamSituation = {
+        ...(prop.teamSituation || {}),
+        ...situation,
+        isHome: isNyk ? nykIsHome : !nykIsHome
+      };
+    });
+  }
+
   const gameInjuries = (news.injuries || [])
     .map((injury) => ({
       team: injury.team || "",
@@ -4378,6 +4477,10 @@ function renderGameNews(game) {
 }
 
 async function fetchWebSeriesLogs(playerName, scope = "series", options = {}) {
+  const preloaded = scope === "series" && finalsPreloadedLogs(playerName);
+  if (preloaded) {
+    return { logs: preloaded, source: "2026 NBA Finals preloaded", team: null };
+  }
   const url = new URL("/api/series-logs", window.location.origin);
   url.searchParams.set("player", playerName);
   url.searchParams.set("date", elements.slateDate.value || today);
