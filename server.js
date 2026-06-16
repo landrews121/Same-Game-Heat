@@ -59,33 +59,6 @@ function json(res, status, payload) {
   res.end(JSON.stringify(payload));
 }
 
-function normalize(value) {
-  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-
-function playerName(player) {
-  return player?.displayName || `${player?.firstName || player?.first_name || ""} ${player?.lastName || player?.last_name || ""}`.trim();
-}
-
-function playerTeam(player) {
-  const team = player?.teamRelationships?.find((relationship) => relationship.type === "team")?.core || player?.team || null;
-  if (!team) return null;
-  return {
-    id: team.id || "",
-    abbreviation: team.abbreviation || "",
-    displayName: team.displayName || team.name || ""
-  };
-}
-
-function bestPlayer(items, query) {
-  const target = normalize(query);
-  return (
-    items.find((item) => normalize(playerName(item)) === target) ||
-    items.find((item) => normalize(playerName(item)).includes(target) || target.includes(normalize(playerName(item)))) ||
-    items[0] ||
-    null
-  );
-}
 
 async function fetchJson(url, options = {}) {
   const headers = {
@@ -469,88 +442,6 @@ async function fetchBallDontLieInjuries() {
   return { configured: true, injuries: result.data || [] };
 }
 
-function statValueByKey(keys = [], stats = [], key) {
-  const index = keys.indexOf(key);
-  return index >= 0 ? stats[index] : "";
-}
-
-function madeThrees(value) {
-  const made = String(value || "").split("-")[0];
-  const number = Number(made);
-  return Number.isFinite(number) ? number : null;
-}
-
-function eventTeams(event) {
-  const competitors = event?.competitions?.[0]?.competitors || [];
-  const home = competitors.find((item) => item.homeAway === "home");
-  const away = competitors.find((item) => item.homeAway === "away");
-  return {
-    home: home?.team?.displayName || event?.home_team || "",
-    away: away?.team?.displayName || event?.away_team || ""
-  };
-}
-
-function boxscorePlayerStats(summary, event) {
-  const teams = eventTeams(event);
-  const gameLabel = `${teams.away} @ ${teams.home}`;
-  const eventDate = event?.date ? event.date.slice(0, 10) : "";
-
-  return (summary.boxscore?.players || []).flatMap((teamBox) => {
-    const team = teamBox.team?.displayName || teamBox.team?.abbreviation || "";
-    return (teamBox.statistics || []).flatMap((group) => {
-      const keys = group.keys || [];
-      return (group.athletes || [])
-        .filter((item) => !item.didNotPlay && item.stats?.length)
-        .map((item) => {
-          const player = item.athlete?.displayName || item.displayName || "";
-          const stats = item.stats || [];
-          return {
-            eventId: event?.id || "",
-            date: eventDate,
-            gameLabel,
-            homeTeam: teams.home,
-            awayTeam: teams.away,
-            team,
-            player,
-            min: statValueByKey(keys, stats, "minutes") || "--",
-            pts: Number(statValueByKey(keys, stats, "points")),
-            reb: Number(statValueByKey(keys, stats, "rebounds")),
-            ast: Number(statValueByKey(keys, stats, "assists")),
-            threes: madeThrees(statValueByKey(keys, stats, "threePointFieldGoalsMade-threePointFieldGoalsAttempted"))
-          };
-        });
-    });
-  }).filter((item) => item.player);
-}
-
-async function finalStatsForDate(dateValue) {
-  const dateKey = String(dateValue || new Date().toISOString().slice(0, 10)).replace(/-/g, "");
-  const scoreboardUrl = new URL("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard");
-  scoreboardUrl.searchParams.set("dates", dateKey);
-  const scoreboard = await fetchJson(scoreboardUrl);
-  const finalEvents = (scoreboard.events || []).filter((event) => event.status?.type?.completed);
-  const stats = [];
-
-  for (const event of finalEvents) {
-    const summaryUrl = new URL("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary");
-    summaryUrl.searchParams.set("event", event.id);
-    const summary = await fetchJson(summaryUrl);
-    stats.push(...boxscorePlayerStats(summary, event));
-  }
-
-  return {
-    date: dateValue,
-    games: finalEvents.map((event) => {
-      const teams = eventTeams(event);
-      return {
-        id: event.id,
-        gameLabel: `${teams.away} @ ${teams.home}`,
-        status: event.status?.type?.description || "Final"
-      };
-    }),
-    stats
-  };
-}
 
 function supabaseEnabled() {
   return Boolean(supabaseUrl && supabaseKey);
@@ -578,44 +469,6 @@ async function supabaseRequest(pathname, options = {}) {
   return response.json();
 }
 
-async function getCachedPlayerLogs(player, season, scope = "series") {
-  if (!supabaseEnabled()) return null;
-  const id = `${normalize(player)}-${season}-${scope}`;
-  try {
-    const rows = await supabaseRequest(`player_game_logs?id=eq.${encodeURIComponent(id)}&select=*`);
-    const row = rows?.[0] || null;
-    if (!row) return null;
-    const age = Date.now() - new Date(row.updated_at).getTime();
-    if (age > 12 * 60 * 60 * 1000) return null;
-    return row;
-  } catch {
-    return null;
-  }
-}
-
-async function cachePlayerLogs({ player, espnId, season, source, logs, scope = "series" }) {
-  if (!supabaseEnabled()) return;
-  const id = `${normalize(player)}-${season}-${scope}`;
-  try {
-    await supabaseRequest("player_game_logs?on_conflict=id", {
-      method: "POST",
-      headers: { Prefer: "resolution=merge-duplicates" },
-      body: JSON.stringify([
-        {
-          id,
-          player_name: player,
-          espn_id: espnId,
-          season,
-          source,
-          logs,
-          updated_at: new Date().toISOString()
-        }
-      ])
-    });
-  } catch {
-    // Supabase cache is optional; ESPN data should still render.
-  }
-}
 
 async function cacheSlateProps(props) {
   if (!supabaseEnabled() || !props.length) return;
@@ -646,7 +499,7 @@ async function cacheSavedBoard(board) {
         {
           id: board.key,
           slate_date: board.date,
-          sport_key: board.sport || "basketball_nba",
+          sport_key: board.sport || "baseball_mlb",
           payload: board,
           updated_at: new Date().toISOString()
         }
@@ -725,7 +578,7 @@ async function supabaseHealth() {
     };
   }
 
-  const tables = ["saved_boards", "slate_props", "player_game_logs"];
+  const tables = ["saved_boards", "slate_props"];
   const checks = [];
 
   for (const table of tables) {
@@ -746,216 +599,6 @@ async function supabaseHealth() {
   };
 }
 
-async function espnPlayerSearch(query) {
-  const url = new URL("https://site.web.api.espn.com/apis/common/v3/search");
-  url.searchParams.set("region", "us");
-  url.searchParams.set("lang", "en");
-  url.searchParams.set("query", query);
-  url.searchParams.set("limit", "10");
-  url.searchParams.set("mode", "prefix");
-  url.searchParams.set("type", "player");
-  const data = await fetchJson(url);
-  const nbaItems = (data.items || []).filter((item) => {
-    const text = JSON.stringify(item).toLowerCase();
-    return text.includes('"nba"') || text.includes("national basketball association");
-  });
-  return bestPlayer(nbaItems.length ? nbaItems : data.items || [], query);
-}
-
-function seasonYear(dateValue) {
-  const date = dateValue ? new Date(`${dateValue}T00:00:00`) : new Date();
-  return date.getMonth() >= 9 ? date.getFullYear() + 1 : date.getFullYear();
-}
-
-function statAt(event, index) {
-  return event?.stats?.[index] ?? "--";
-}
-
-function parseThreePointers(value) {
-  const made = String(value || "").split("-")[0];
-  return made || "--";
-}
-
-function espnLogEvent(data, event, index, seasonTypeName) {
-  const meta = data.events?.[event.eventId] || {};
-  return {
-    date: meta.gameDate ? new Date(meta.gameDate).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : `Game ${index + 1}`,
-    sortDate: meta.gameDate || "",
-    opponent: meta.opponent?.abbreviation || meta.opponent?.displayName || "Opponent",
-    min: statAt(event, 0),
-    pts: statAt(event, 13),
-    reb: statAt(event, 7),
-    ast: statAt(event, 8),
-    threes: parseThreePointers(statAt(event, 3)),
-    result: meta.gameResult || "",
-    score: meta.score || "",
-    seasonType: seasonTypeName || "",
-    source: "ESPN"
-  };
-}
-
-async function espnSeriesLogs(playerId, season, scope = "series") {
-  const url = new URL(`https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${playerId}/gamelog`);
-  url.searchParams.set("region", "us");
-  url.searchParams.set("lang", "en");
-  url.searchParams.set("season", season);
-  const data = await fetchJson(url);
-
-  if (scope === "all") {
-    return (data.seasonTypes || [])
-      .filter((seasonType) => !/pre/i.test(seasonType.displayName || seasonType.name || ""))
-      .flatMap((seasonType) => {
-        const eventCategory = seasonType?.categories?.find((category) => category.type === "event" && category.events?.length) || seasonType?.categories?.find((category) => category.events?.length);
-        return (eventCategory?.events || []).map((event, index) => espnLogEvent(data, event, index, seasonType.displayName || seasonType.name || ""));
-      })
-      .sort((a, b) => new Date(b.sortDate || 0) - new Date(a.sortDate || 0));
-  }
-
-  const postseason = (data.seasonTypes || []).find((type) => /post/i.test(type.displayName || "")) || data.seasonTypes?.[0];
-  const eventCategory = postseason?.categories?.find((category) => category.type === "event" && category.events?.length) || postseason?.categories?.find((category) => category.events?.length);
-  const events = eventCategory?.events || [];
-
-  return events.map((event, index) => espnLogEvent(data, event, index, postseason?.displayName || postseason?.name || ""));
-}
-
-function espnDate(dateValue) {
-  const date = dateValue ? new Date(`${dateValue}T00:00:00`) : new Date();
-  return date.toISOString().slice(0, 10).replace(/-/g, "");
-}
-
-function espnTeamNames(competitor) {
-  const team = competitor?.team || {};
-  return [team.displayName, team.shortDisplayName, team.name, team.abbreviation, team.location].filter(Boolean);
-}
-
-function eventMatchesTeam(event, teamName) {
-  const target = normalize(teamName);
-  return event?.competitions?.[0]?.competitors?.some((competitor) =>
-    espnTeamNames(competitor).some((name) => {
-      const candidate = normalize(name);
-      return candidate && (candidate === target || candidate.includes(target) || target.includes(candidate));
-    })
-  );
-}
-
-function gameTeamSituations(event) {
-  const competition = event?.competitions?.[0] || {};
-  const competitors = competition.competitors || [];
-  const series = competition.series || {};
-  const winsNeeded = series.totalCompetitions ? Math.floor(series.totalCompetitions / 2) + 1 : 4;
-  const isPlayoffGame = Boolean(series.summary || series.totalCompetitions || (series.competitors || []).length);
-  const allWins = (series.competitors || []).map((item) => Number(item.wins || 0));
-  const isGame7 = isPlayoffGame && allWins.length >= 2 && allWins.every((wins) => wins === winsNeeded - 1);
-
-  return competitors.map((competitor) => {
-    const seriesEntry = (series.competitors || []).find((item) => String(item.id) === String(competitor.id));
-    const wins = Number(seriesEntry?.wins || 0);
-    const opponentWins = Math.max(
-      0,
-      ...(series.competitors || [])
-        .filter((item) => String(item.id) !== String(competitor.id))
-        .map((item) => Number(item.wins || 0))
-    );
-    const facingElimination = opponentWins === winsNeeded - 1 && wins < winsNeeded;
-    const isEliminationGame = isGame7 || facingElimination || wins === winsNeeded - 1;
-    const gameImportanceScore = isGame7 ? 10 : facingElimination ? 8 : isPlayoffGame ? 5 : 0;
-
-    return {
-      id: competitor.team?.id || competitor.id || "",
-      name: competitor.team?.displayName || "",
-      abbreviation: competitor.team?.abbreviation || "",
-      isHome: competitor.homeAway === "home",
-      wins,
-      opponentWins,
-      winsNeeded,
-      seriesSummary: series.summary || competitor.record || "",
-      facingElimination,
-      isPlayoffGame,
-      isEliminationGame,
-      isGame7,
-      gameImportanceScore
-    };
-  });
-}
-
-async function espnGameSummary({ home, away, date }) {
-  const scoreboardUrl = new URL("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard");
-  scoreboardUrl.searchParams.set("dates", espnDate(date));
-  const scoreboard = await fetchJson(scoreboardUrl);
-  const event = (scoreboard.events || []).find((item) => eventMatchesTeam(item, home) && eventMatchesTeam(item, away));
-
-  if (!event?.id) {
-    return { event: null, news: [], injuries: [], starters: [] };
-  }
-
-  const summaryUrl = new URL("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary");
-  summaryUrl.searchParams.set("event", event.id);
-  const summary = await fetchJson(summaryUrl);
-  const competitors = event.competitions?.[0]?.competitors || [];
-  const teamTerms = [
-    home,
-    away,
-    ...competitors.flatMap((competitor) => espnTeamNames(competitor))
-  ];
-
-  return {
-    event: {
-      id: event.id,
-      name: event.name || event.shortName || `${away} @ ${home}`,
-      status: event.status?.type?.description || ""
-    },
-    teams: gameTeamSituations(event),
-    news: extractGameNews(summary, teamTerms),
-    injuries: extractGameInjuries(summary),
-    starters: extractStarters(summary)
-  };
-}
-
-function extractGameNews(summary, terms = []) {
-  const items = Array.isArray(summary.news) ? summary.news : summary.news?.articles || summary.news?.items || [];
-  const normalizedTerms = [...new Set(terms.map(normalize).filter((term) => term.length >= 3))];
-  return items
-    .map((item) => ({
-      headline: item.headline || item.title || "",
-      description: item.description || item.story || ""
-    }))
-    .filter((item) => {
-      if (!item.headline) return false;
-      const text = normalize(`${item.headline} ${item.description}`);
-      return normalizedTerms.some((term) => text.includes(term));
-    })
-    .slice(0, 5);
-}
-
-function extractGameInjuries(summary) {
-  return (summary.injuries || [])
-    .flatMap((team) => {
-      const teamName = team.team?.displayName || team.team?.abbreviation || "";
-      return (team.injuries || team.athletes || []).map((injury) => ({
-        team: teamName,
-        player: injury.athlete?.displayName || injury.displayName || injury.name || "",
-        status: injury.status || injury.type || injury.detail || injury.description || ""
-      }));
-    })
-    .filter((item) => item.player)
-    .slice(0, 12);
-}
-
-function extractStarters(summary) {
-  return (summary.boxscore?.players || [])
-    .map((team) => {
-      const teamName = team.team?.displayName || team.team?.abbreviation || "";
-      const starters = (team.statistics || [])
-        .flatMap((group) => group.athletes || [])
-        .filter((item) => item.starter || /starter/i.test(item.position?.displayName || item.position?.abbreviation || ""))
-        .map((item) => item.athlete?.displayName || item.displayName || "")
-        .filter(Boolean)
-        .slice(0, 5);
-
-      return { team: teamName, starters };
-    })
-    .filter((item) => item.starters.length);
-}
 
 async function handleApi(req, res, url) {
   if (url.pathname === "/api/config") {
@@ -1000,7 +643,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/slate") {
-    const sport = url.searchParams.get("sport") || "basketball_nba";
+    const sport = url.searchParams.get("sport") || "baseball_mlb";
     const date = url.searchParams.get("date") || new Date().toISOString().slice(0, 10);
     const region = url.searchParams.get("region") || "us";
     const markets = (url.searchParams.get("markets") || "")
@@ -1071,16 +714,6 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (url.pathname === "/api/final-stats") {
-    const date = url.searchParams.get("date") || new Date().toISOString().slice(0, 10);
-    try {
-      json(res, 200, await finalStatsForDate(date));
-    } catch (error) {
-      json(res, 502, { error: error.message, date, stats: [] });
-    }
-    return;
-  }
-
   if (url.pathname === "/api/saved-boards") {
     if (req.method === "GET") {
       try {
@@ -1129,79 +762,7 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (url.pathname === "/api/game-news") {
-    const home = url.searchParams.get("home");
-    const away = url.searchParams.get("away");
-    const date = url.searchParams.get("date");
-
-    if (!home || !away) {
-      json(res, 400, { error: "Missing game teams" });
-      return;
-    }
-
-    try {
-      json(res, 200, await espnGameSummary({ home, away, date }));
-    } catch (error) {
-      json(res, 502, { error: error.message });
-    }
-    return;
-  }
-
-  if (url.pathname !== "/api/series-logs") {
-    json(res, 404, { error: "Unknown API route" });
-    return;
-  }
-
-  const player = url.searchParams.get("player");
-  const date = url.searchParams.get("date");
-  const scope = url.searchParams.get("scope") === "all" ? "all" : "series";
-
-  if (!player) {
-    json(res, 400, { error: "Missing player name" });
-    return;
-  }
-
-  try {
-    const season = seasonYear(date);
-    const cached = await getCachedPlayerLogs(player, season, scope);
-    if (cached?.logs?.length) {
-      json(res, 200, {
-        player: cached.player_name,
-        espnId: cached.espn_id,
-        team: null,
-        source: `${cached.source} cache`,
-        scope,
-        logs: cached.logs
-      });
-      return;
-    }
-
-    const espnPlayer = await espnPlayerSearch(player);
-    if (!espnPlayer?.id) {
-      json(res, 404, { error: `No ESPN NBA player match for ${player}` });
-      return;
-    }
-
-    const logs = await espnSeriesLogs(espnPlayer.id, String(season), scope);
-    await cachePlayerLogs({
-      player: playerName(espnPlayer),
-      espnId: espnPlayer.id,
-      season,
-      source: scope === "all" ? "ESPN all opponents" : "ESPN",
-      logs,
-      scope
-    });
-    json(res, 200, {
-      player: playerName(espnPlayer),
-      espnId: espnPlayer.id,
-      team: playerTeam(espnPlayer),
-      source: scope === "all" ? "ESPN all opponents" : "ESPN",
-      scope,
-      logs
-    });
-  } catch (error) {
-    json(res, 502, { error: error.message });
-  }
+  json(res, 404, { error: "Unknown API route" });
 }
 
 function readRequestBody(req) {
@@ -1220,12 +781,12 @@ function readRequestBody(req) {
 }
 
 function cleanAppState(payload = {}) {
-  const allowedSports = new Set(["basketball_nba", "basketball_wnba", "baseball_mlb", "icehockey_nhl", "americanfootball_nfl"]);
+  const allowedSports = new Set(["baseball_mlb"]);
   const allowedRegions = new Set(["us", "us2", "uk", "eu"]);
   const allowedBooks = new Set(["fanatics", "draftkings", "fanduel", "betmgm", "caesars"]);
   const today = new Date().toISOString().slice(0, 10);
   const date = /^\d{4}-\d{2}-\d{2}$/.test(String(payload.slateDate || "")) ? String(payload.slateDate) : today;
-  const sportKey = allowedSports.has(payload.sportKey) ? payload.sportKey : "basketball_nba";
+  const sportKey = allowedSports.has(payload.sportKey) ? payload.sportKey : "baseball_mlb";
   const region = allowedRegions.has(payload.region) ? payload.region : "us";
   const bookFilter = allowedBooks.has(payload.bookFilter) ? payload.bookFilter : "fanatics";
 
@@ -1255,7 +816,7 @@ async function writeAppState(payload) {
 
 function normalizeSlateRows(payload) {
   const slateDate = payload.slateDate;
-  const sportKey = payload.sportKey || "basketball_nba";
+  const sportKey = payload.sportKey || "baseball_mlb";
   const games = payload.games || [];
   const rows = [];
 

@@ -3,40 +3,26 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Same Game Heat</title>
-    <meta name="description" content="Build same-game parlays with heat-mapped player props, series logs, and live odds." />
-    <meta property="og:title" content="Same Game Heat" />
-    <meta property="og:description" content="Build same-game parlays with heat-mapped player props, series logs, and live odds." />
+    <title>Same Game Heat · MLB</title>
+    <meta name="description" content="MLB Betting Intelligence — Daily Team Win Probability, Home Run Predictor, and Pitcher Props." />
+    <meta property="og:title" content="Same Game Heat · MLB" />
+    <meta property="og:description" content="MLB Betting Intelligence — Daily Team Win Probability, Home Run Predictor, and Pitcher Props." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="Same Game Heat" />
-    <meta name="twitter:description" content="Build same-game parlays with heat-mapped player props, series logs, and live odds." />
-    <link rel="stylesheet" href="styles.css?v=v86-mobile-board-stack" />
+    <meta name="twitter:title" content="Same Game Heat · MLB" />
+    <meta name="twitter:description" content="MLB Betting Intelligence — Daily Team Win Probability, Home Run Predictor, and Pitcher Props." />
+    <link rel="stylesheet" href="styles.css?v=v87-mlb-phase1" />
   </head>
   <body>
     <main id="appShell" class="app-shell" data-mobile-tab="games">
       <section class="app-header">
         <div>
           <p class="eyebrow">Same Game Heat</p>
-          <h1>Same Game Heat</h1>
-        </div>
-        <div class="league-tabs">
-          <button type="button" class="active" data-sport-target="basketball_nba">NBA</button>
-          <button type="button" data-sport-target="baseball_mlb">MLB</button>
+          <h1>MLB Betting Intelligence</h1>
         </div>
       </section>
 
       <section class="setup-panel panel">
-        <label>
-          Sport
-          <select id="sportKey">
-            <option value="basketball_nba">NBA</option>
-            <option value="basketball_wnba">WNBA</option>
-            <option value="baseball_mlb">MLB</option>
-            <option value="icehockey_nhl">NHL</option>
-            <option value="americanfootball_nfl">NFL</option>
-          </select>
-        </label>
         <label>
           Slate Date
           <input id="slateDate" type="date" />
@@ -60,23 +46,25 @@
             <option value="caesars">Caesars</option>
           </select>
         </label>
+        <!-- Hidden sport selector kept for API compatibility -->
+        <input id="sportKey" type="hidden" value="baseball_mlb" />
       </section>
 
-      <p id="sportReadiness" class="sport-readiness">NBA mode is live. MLB is scaffolded for sportsbook-line testing.</p>
-      <p id="status" class="status">Loading today’s slate and building boards...</p>
+      <p id="sportReadiness" class="sport-readiness">MLB Intelligence Platform — Team Win Probability · Home Run Board · Pitcher Props</p>
+      <p id="status" class="status">Loading today's MLB slate...</p>
 
       <section class="workspace">
         <aside class="panel slate-panel">
           <nav class="mobile-tabs section-tabs" aria-label="Sections">
             <button type="button" class="active" data-tab="games" aria-selected="true">Games</button>
-            <button type="button" data-tab="news" aria-selected="false">LineUp/News</button>
+            <button type="button" data-tab="news" aria-selected="false">Lineups</button>
             <button type="button" data-tab="logs" aria-selected="false">Player Logs</button>
             <button type="button" data-tab="saved" aria-selected="false">Saved</button>
           </nav>
 
           <section class="left-tab-panel games-panel">
             <div class="section-heading">
-              <h2>Games</h2>
+              <h2>Today's Games</h2>
               <span id="gameCount" class="pill">0 games</span>
             </div>
             <div id="gameList" class="game-list"></div>
@@ -95,9 +83,9 @@
 
           <section class="left-tab-panel context-panel">
             <div class="section-heading">
-              <h2>Player Series Game Logs</h2>
+              <h2>Player Logs</h2>
               <div class="heading-actions">
-                <span class="muted">Web search, sportsbook lines, logs</span>
+                <span class="muted">Recent form, sportsbook lines</span>
                 <button id="togglePlayerLogs" class="collapse-toggle" type="button" aria-expanded="true" aria-controls="playerLogsBody">Hide</button>
               </div>
             </div>
@@ -108,7 +96,7 @@
                   <input id="playerSearch" type="search" list="playerOptions" placeholder="Type a player name" autocomplete="off" />
                   <datalist id="playerOptions"></datalist>
                 </label>
-                <button id="searchPlayer" class="secondary-button lookup-button" type="button">Web Search</button>
+                <button id="searchPlayer" class="secondary-button lookup-button" type="button">Search</button>
               </div>
               <div id="playerContext" class="adjustments-empty">Select a game, then type a player name to inspect context.</div>
               <div id="candidateGuide" class="candidate-guide"></div>
@@ -132,27 +120,27 @@
         <section class="results-column">
           <section class="top-strip">
             <div>
-              <p class="eyebrow">Selected Game</p>
+              <p class="eyebrow">MLB Daily Board</p>
               <h2 id="selectedGameTitle">No game selected</h2>
             </div>
           </section>
 
           <section id="parlayCard" class="panel parlay-card">
             <div class="section-heading">
-              <h2>Game Parlays</h2>
+              <h2>MLB Analysis</h2>
               <span id="riskLabel" class="pill">Awaiting slate</span>
             </div>
-            <nav id="parlayTabs" class="parlay-tabs" aria-label="Parlay boards">
+            <nav id="parlayTabs" class="parlay-tabs" aria-label="Parlay boards" hidden>
               <button type="button" class="active" data-parlay-view="single" aria-selected="true">Bet of the Day</button>
               <button type="button" data-parlay-view="three" aria-selected="false">Value</button>
               <button type="button" data-parlay-view="glory" aria-selected="false">Shot of Glory</button>
             </nav>
-            <div id="parlays" class="legs-empty">Fetch or load a slate to generate parlays.</div>
+            <div id="parlays" class="legs-empty">Fetch a slate to generate the MLB board.</div>
           </section>
         </section>
       </section>
     </main>
 
-    <script src="app.js?v=v86-mobile-board-stack"></script>
+    <script src="app.js?v=v87-mlb-phase1"></script>
   </body>
 </html>
