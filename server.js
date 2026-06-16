@@ -305,15 +305,22 @@ async function fetchMlbPublicSchedule(date) {
 }
 
 async function fetchMlbPublicRoster(teamId) {
+  const season = new Date().getFullYear();
   const rosterUrl = new URL(`https://statsapi.mlb.com/api/v1/teams/${teamId}/roster`);
   rosterUrl.searchParams.set("rosterType", "active");
-  rosterUrl.searchParams.set("hydrate", "person(stats(group=[hitting],type=[season]))");
+  rosterUrl.searchParams.set("hydrate", `person(stats(group=[hitting],type=[season],season=${season}))`);
   const result = await fetchJson(rosterUrl);
   return result.roster || [];
 }
 
 function hitterSeasonStats(player) {
-  const splits = player?.stats?.find((item) => item.group?.displayName === "hitting" || item.group?.displayName === "Hitting")?.splits || [];
+  const stats = player?.stats || [];
+  // MLB Stats API may use "hitting", "Hitting", or the group type may differ by endpoint
+  const hittingGroup = stats.find((item) => {
+    const name = (item.group?.displayName || item.group?.type || "").toLowerCase();
+    return name === "hitting";
+  });
+  const splits = hittingGroup?.splits || [];
   return splits[0]?.stat || {};
 }
 

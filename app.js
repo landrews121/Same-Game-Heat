@@ -3143,7 +3143,7 @@ function renderMlbBoard() {
         <h3>Top Home Run Look</h3>
         <span>${homerPicks.length}/1 ranked</span>
       </div>
-      ${homerPicks.length ? homerPicks.map(renderMlbHomerPick).join("") : renderMlbEmpty("No home run props were returned for today's slate.")}
+      ${homerPicks.length ? homerPicks.map(renderMlbHomerPick).join("") : renderMlbEmpty(bdlMlbSupplementError ? `No HR props: ${bdlMlbSupplementError}` : "No home run props were returned for today's slate.")}
     </section>
   `;
 }
@@ -4185,11 +4185,22 @@ function mergeBdlMlbPropsIntoPayloads(eventPayloads, bdlGames, propType = "home_
   return eventPayloads;
 }
 
+function oddsPayloadHasValidHrOdds(payload) {
+  return (payload.bookmakers || []).some((bookmaker) =>
+    (bookmaker.markets || []).some((market) =>
+      market.key === "batter_home_runs" &&
+      (market.outcomes || []).some((outcome) => Number.isFinite(Number(outcome.price)))
+    )
+  );
+}
+
 async function supplementMlbPayloadsFromBdl(eventPayloads, sport, date) {
   if (sport !== "baseball_mlb") return eventPayloads;
   bdlMlbSupplementError = "";
-  const hasHomeRunProps = eventPayloads.some((payload) => oddsPayloadHasMarket(payload.odds || payload, "batter_home_runs"));
-  if (hasHomeRunProps) return eventPayloads;
+  // Only skip BDL if Odds API returned HR props with at least one valid price.
+  // A market key with all-null prices still needs the BDL supplement.
+  const hasValidHrProps = eventPayloads.some((payload) => oddsPayloadHasValidHrOdds(payload.odds || payload));
+  if (hasValidHrProps) return eventPayloads;
 
   try {
     const bdlGames = await fetchBdlMlbPlayerProps(date, "home_runs");
