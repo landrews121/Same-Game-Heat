@@ -4380,9 +4380,22 @@ async function fetchJson(url, options = {}) {
   const response = await fetch(url, options);
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`${response.status} ${response.statusText}: ${text.slice(0, 140)}`);
+    // Reverse proxy (nginx / Render / Fly) returns HTML on 502/503/504 — server is down
+    if (text.trimStart().startsWith("<")) {
+      throw new Error(
+        `Server offline or unreachable (HTTP ${response.status}). ` +
+        `Make sure node server.js is running and the port is accessible.`
+      );
+    }
+    // Our own server returns { error: "..." } JSON
+    try {
+      const body = JSON.parse(text);
+      if (body?.error) throw new Error(body.error);
+    } catch (parseErr) {
+      if (parseErr.message && parseErr.message !== "Unexpected token") throw parseErr;
+    }
+    throw new Error(`HTTP ${response.status}: ${text.slice(0, 140)}`);
   }
-
   return response.json();
 }
 
@@ -4913,7 +4926,12 @@ async function fetchSlate() {
       eventPayloads = await ensureMlbMoneylinePayloads(eventPayloads, sport, date);
       eventPayloads = await supplementMlbPayloadsFromBdl(eventPayloads, sport, date);
     } catch (serverError) {
-      throw new Error(`${serverError.message}. Add ODDS_API_KEY to .env and restart the server.`);
+      const msg = serverError.message || "Unknown server error";
+      // Only append the API-key hint when the server itself says the key is missing
+      const hint = /ODDS_API_KEY|not configured/i.test(msg)
+        ? " Add ODDS_API_KEY to .env and restart the server."
+        : "";
+      throw new Error(`${msg}${hint}`);
     }
 
     lastEventPayloads = eventPayloads;

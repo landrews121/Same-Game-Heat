@@ -17,13 +17,7 @@ const supabaseUrl = process.env.SUPABASE_URL || "";
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const oddsApiKey = process.env.ODDS_API_KEY || process.env.THE_ODDS_API_KEY || "";
 const ballDontLieKey = process.env.BALL_DONT_LIE_API_KEY || process.env.BDL_API_KEY || "";
-const defaultMarkets = [
-  "player_points",
-  "player_rebounds",
-  "player_assists",
-  "player_threes",
-  "player_points_rebounds_assists"
-];
+const defaultMarkets = ["h2h"];
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
