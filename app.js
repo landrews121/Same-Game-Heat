@@ -3121,7 +3121,12 @@ function scoreMlbTeams(games = slate) {
 
   // Tier 1 plays first, then tier 2, tier 3, untiered — tie-break by finalScore
   allPicks.sort((a, b) => {
+    // Tier first (Tier 1 > 2 > 3 > Below Threshold)
     if (b.tier.tier !== a.tier.tier) return b.tier.tier - a.tier.tier;
+    // Within the same tier: positive edge beats negative edge
+    const edgeA = a.edge ?? -1;
+    const edgeB = b.edge ?? -1;
+    if (Math.abs(edgeB - edgeA) > 0.005) return edgeB - edgeA;
     return b.finalScore - a.finalScore;
   });
 
