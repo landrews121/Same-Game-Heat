@@ -860,14 +860,20 @@ async function serveStatic(req, res, url) {
     const isHtml = ext === ".html";
     const isVersioned = url.searchParams.has("v");
     const cacheControl = isHtml
-      ? "no-store"
+      ? "no-cache, no-store, must-revalidate"
       : isVersioned
         ? "public, max-age=31536000, immutable"
         : "public, max-age=300";
-    res.writeHead(200, {
+    // ETag based on file size + last-modified so browsers always revalidate HTML
+    const etag = `"${file.length}-${Date.now()}"`;
+    const headers = {
       "Content-Type": mimeTypes[ext] || "application/octet-stream",
-      "Cache-Control": cacheControl
-    });
+      "Cache-Control": cacheControl,
+      "Pragma": isHtml ? "no-cache" : "",
+      "Expires": isHtml ? "0" : ""
+    };
+    if (isHtml) headers["ETag"] = etag;
+    res.writeHead(200, headers);
     res.end(file);
   } catch {
     res.writeHead(404);
