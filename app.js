@@ -2999,8 +2999,9 @@ function scoreMlbMoneylineConfidence(game, side) {
     travelRest      * ML_WEIGHTS.travelRest
   ) / (1 - ML_WEIGHTS.marketEdge);
 
-  const prelimWinProb = clamp(0.48 + (prelim - 50) / 115 + (side.isHome ? 0.015 : 0), 0.42, 0.73);
-  const rawEdge = impliedProbability === null ? 0 : prelimWinProb - impliedProbability;
+  const prelimAnchor  = impliedProbability ?? 0.50;
+  const prelimWinProb = clamp(prelimAnchor + ((prelim - 65) / 350) + (side.isHome ? 0.01 : 0), 0.10, 0.90);
+  const rawEdge = impliedProbability === null ? 0 : prelimWinProb - prelimAnchor;
 
   // Market edge: 60 = neutral; climbs when model leads the market
   const marketEdge = impliedProbability === null
@@ -3041,7 +3042,12 @@ function scoreMlbMoneylineConfidence(game, side) {
   const totalPenalty = disqualifiers.reduce((sum, d) => sum + d.penalty, 0);
   const finalScore   = clamp(baseScore - totalPenalty, 0, 100);
 
-  const modelWinProbability = clamp(0.48 + (finalScore - 50) / 115 + (side.isHome ? 0.015 : 0), 0.42, 0.73);
+  // Win probability is anchored to the market implied probability.
+  // The model components can shift it by at most ±8 pp — the market is
+  // a strong prior and we never override it by more than a small adjustment.
+  const marketAnchor    = impliedProbability ?? 0.50;
+  const modelAdjustment = ((finalScore - 65) / 350) + (side.isHome ? 0.01 : 0);
+  const modelWinProbability = clamp(marketAnchor + modelAdjustment, 0.10, 0.90);
   const edge    = impliedProbability === null ? null : modelWinProbability - impliedProbability;
   const edgePct = edge ?? 0;
   const tier    = mlbMoneylineTier(finalScore, edgePct);
