@@ -49,6 +49,26 @@ const parkHRFactors = {
   WSH: 0.91, TB: 0.90, OAK: 0.89, TOR: 0.88, CWS: 0.87
 };
 
+// ── Moneyline Confidence Engine ──────────────────────────────────
+// Weights must sum to 1.0
+const ML_WEIGHTS = {
+  startingPitcher: 0.30,
+  bullpen:         0.20,
+  offense:         0.15,
+  recentForm:      0.10,
+  homeField:       0.05,
+  weather:         0.05,
+  travelRest:      0.05,
+  marketEdge:      0.10
+};
+
+// Tier thresholds: score × edge
+function mlbMoneylineTier(score, edge) {
+  if (score >= 85 && edge >= 0.07) return { tier: 1, label: "Tier 1 · Elite Play" };
+  if (score >= 80 && edge >= 0.05) return { tier: 2, label: "Tier 2 · Strong Play" };
+  if (score >= 75 && edge >= 0.03) return { tier: 3, label: "Tier 3 · Playable Edge" };
+  return { tier: 0, label: "Below Threshold" };
+}
 
 const sportsbookAliases = {
   fanatics: ["fanatics", "fanaticssportsbook", "fanatics_sportsbook", "fanatics sportsbook"],
@@ -2951,76 +2971,162 @@ function mlbConfidence(score) {
   return "No Play";
 }
 
+// Full moneyline confidence scorer for one side of a game
+function scoreMlbMoneylineConfidence(game, side) {
+  const seed = `${side.team}-${game.id}`;
+  const moneyline = moneylineForTeam(game, side.team);
+  const impliedProbability = americanOddsToProbability(moneyline?.odds);
+
+  // ── Component scores (0–100) ────────────────────────────────
+  const startingPitcher = deterministicNumber(`${seed}-starter`, 55, 90);
+  const bullpen         = deterministicNumber(`${seed}-bullpen`,  50, 88);
+  const offense         = deterministicNumber(`${seed}-offense`,  52, 85);
+  const recentForm      = deterministicNumber(`${seed}-form`,     49, 83);
+  const weather         = deterministicNumber(`${seed}-weather`,  56, 95);
+  const travelRest      = deterministicNumber(`${seed}-rest`,     50, 80);
+  const homeField       = side.isHome
+    ? deterministicNumber(`${seed}-park`, 58, 78)
+    : deterministicNumber(`${seed}-park`, 44, 62);
+
+  // Preliminary score without marketEdge (used to derive model win prob)
+  const prelim = (
+    startingPitcher * ML_WEIGHTS.startingPitcher +
+    bullpen         * ML_WEIGHTS.bullpen +
+    offense         * ML_WEIGHTS.offense +
+    recentForm      * ML_WEIGHTS.recentForm +
+    homeField       * ML_WEIGHTS.homeField +
+    weather         * ML_WEIGHTS.weather +
+    travelRest      * ML_WEIGHTS.travelRest
+  ) / (1 - ML_WEIGHTS.marketEdge);
+
+  const prelimWinProb = clamp(0.48 + (prelim - 50) / 115 + (side.isHome ? 0.015 : 0), 0.42, 0.73);
+  const rawEdge = impliedProbability === null ? 0 : prelimWinProb - impliedProbability;
+
+  // Market edge: 60 = neutral; climbs when model leads the market
+  const marketEdge = impliedProbability === null
+    ? deterministicNumber(`${seed}-market`, 55, 72)
+    : clamp(60 + rawEdge * 300, 30, 95);
+
+  // ── Vegas Respect ────────────────────────────────────────────
+  // Track ticket/money distribution and line movement
+  const moneyPctAgainst = deterministicNumber(`${seed}-money-pct`, 0.28, 0.78);
+  const lineMove        = deterministicNumber(`${seed}-line-move`,  -6,   9);
+  const vegasIsAgainst  = moneyPctAgainst > 0.80 || lineMove < -2.5;
+
+  // ── Base score ───────────────────────────────────────────────
+  const baseScore = Math.round(
+    startingPitcher * ML_WEIGHTS.startingPitcher +
+    bullpen         * ML_WEIGHTS.bullpen +
+    offense         * ML_WEIGHTS.offense +
+    recentForm      * ML_WEIGHTS.recentForm +
+    homeField       * ML_WEIGHTS.homeField +
+    weather         * ML_WEIGHTS.weather +
+    travelRest      * ML_WEIGHTS.travelRest +
+    marketEdge      * ML_WEIGHTS.marketEdge
+  );
+
+  // ── Disqualifiers ────────────────────────────────────────────
+  const disqualifiers = [];
+  if (deterministicNumber(`${seed}-ace-scratch`,   0, 1) > 0.92)
+    disqualifiers.push({ label: "Ace pitcher scratched",      penalty: 25 });
+  if (deterministicNumber(`${seed}-hitter-out`,    0, 1) > 0.87)
+    disqualifiers.push({ label: "Key hitter missing",         penalty: 10 });
+  if (deterministicNumber(`${seed}-bp-tired`,      0, 1) > 0.87)
+    disqualifiers.push({ label: "Bullpen overworked",         penalty: 10 });
+  if (deterministicNumber(`${seed}-weather-sev`,   0, 1) > 0.95)
+    disqualifiers.push({ label: "Severe weather",             penalty: 15 });
+  if (vegasIsAgainst)
+    disqualifiers.push({ label: "Sharp money against this side", penalty: 10 });
+
+  const totalPenalty = disqualifiers.reduce((sum, d) => sum + d.penalty, 0);
+  const finalScore   = clamp(baseScore - totalPenalty, 0, 100);
+
+  const modelWinProbability = clamp(0.48 + (finalScore - 50) / 115 + (side.isHome ? 0.015 : 0), 0.42, 0.73);
+  const edge    = impliedProbability === null ? null : modelWinProbability - impliedProbability;
+  const edgePct = edge ?? 0;
+  const tier    = mlbMoneylineTier(finalScore, edgePct);
+
+  // ── Blowout Predictor ────────────────────────────────────────
+  const runDiff     = deterministicNumber(`${seed}-rundiff`, -60,  90);
+  const qsRate      = deterministicNumber(`${seed}-qs`,      0.38, 0.72);
+  const winAsFav    = deterministicNumber(`${seed}-fav-win`, 0.50, 0.78);
+  const blowoutScore = Math.round(
+    clamp((runDiff + 60) / 150 * 100, 0, 100) * 0.30 +
+    qsRate * 100 * 0.25 +
+    bullpen       * 0.25 +
+    winAsFav * 100 * 0.20
+  );
+
+  // ── Component breakdown (for bar chart) ─────────────────────
+  const components = [
+    { key: "startingPitcher", label: "SP",      score: startingPitcher },
+    { key: "bullpen",         label: "Bullpen", score: bullpen },
+    { key: "offense",         label: "Offense", score: offense },
+    { key: "recentForm",      label: "Form",    score: recentForm },
+    { key: "homeField",       label: side.isHome ? "Home" : "Road", score: homeField },
+    { key: "weather",         label: "Weather", score: weather },
+    { key: "travelRest",      label: "Rest",    score: travelRest },
+    { key: "marketEdge",      label: "Market",  score: marketEdge }
+  ];
+
+  const topReasons = [...components]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3)
+    .map((c) => `${c.label.toLowerCase()} advantage`);
+
+  const riskFlags = [];
+  if (!moneyline) riskFlags.push("No moneyline returned for selected sportsbook.");
+  if (moneyline && !moneyline.selectedBookAvailable) riskFlags.push("Using consensus odds — selected book unavailable.");
+  if (moneyline?.odds < -220 && modelWinProbability < 0.68) riskFlags.push("Heavy favorite price without a strong model edge.");
+  if (edge !== null && edge < -0.015) riskFlags.push("Market is ahead of the model on this side.");
+  riskFlags.push("Starter, lineup, weather, and Statcast feeds not yet connected.");
+
+  return {
+    type: "team",
+    game,
+    team: side.team,
+    opponent: side.opponent,
+    isHome: side.isHome,
+    moneyline,
+    finalScore,
+    modelWinProbability,
+    impliedProbability,
+    edge,
+    tier,
+    blowoutScore,
+    components,
+    vegasRespect: {
+      moneyPctAgainst: Math.round(moneyPctAgainst * 100),
+      lineMove: lineMove > 0 ? `+${lineMove.toFixed(1)}` : lineMove.toFixed(1),
+      isAgainst: vegasIsAgainst
+    },
+    disqualifiers,
+    reasons: topReasons,
+    riskFlags
+  };
+}
+
 function scoreMlbTeams(games = slate) {
-  const picks = [];
+  const allPicks = [];
 
   games.forEach((game) => {
     [
       { team: game.homeTeam, opponent: game.awayTeam, isHome: true },
       { team: game.awayTeam, opponent: game.homeTeam, isHome: false }
     ].forEach((side) => {
-      const moneyline = moneylineForTeam(game, side.team);
-      const impliedProbability = americanOddsToProbability(moneyline?.odds);
-      const marketScore = impliedProbability ? impliedProbability * 100 : deterministicNumber(`${side.team}-${game.id}-market`, 50, 61);
-      const startingPitcherScore = deterministicNumber(`${side.team}-${game.id}-starter`, 55, 79);
-      const offenseScore = deterministicNumber(`${side.team}-${game.id}-offense`, 52, 78);
-      const bullpenScore = deterministicNumber(`${side.team}-${game.id}-bullpen`, 50, 76);
-      const recentFormScore = deterministicNumber(`${side.team}-${game.id}-form`, 49, 77);
-      const homeFieldParkScore = side.isHome ? deterministicNumber(`${side.team}-${game.id}-park`, 58, 72) : deterministicNumber(`${side.team}-${game.id}-park`, 46, 61);
-      const restTravelScore = deterministicNumber(`${side.team}-${game.id}-rest`, 48, 70);
-      const teamWinScore = Math.round(
-        marketScore * 0.25 +
-        startingPitcherScore * 0.25 +
-        offenseScore * 0.15 +
-        bullpenScore * 0.15 +
-        recentFormScore * 0.10 +
-        homeFieldParkScore * 0.05 +
-        restTravelScore * 0.05
-      );
-      const modelWinProbability = clamp(0.48 + (teamWinScore - 50) / 115 + (side.isHome ? 0.015 : 0), 0.42, 0.73);
-      const edge = impliedProbability === null ? null : modelWinProbability - impliedProbability;
-      const riskFlags = [];
-      const reasons = [
-        { label: "market support", score: marketScore },
-        { label: "starter matchup profile", score: startingPitcherScore },
-        { label: "offense vs handedness profile", score: offenseScore },
-        { label: "bullpen/rest profile", score: (bullpenScore + restTravelScore) / 2 },
-        { label: side.isHome ? "home park edge" : "road price check", score: homeFieldParkScore }
-      ]
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 3)
-        .map((item) => item.label);
-
-      if (!moneyline) riskFlags.push("No moneyline returned for the selected sportsbook.");
-      if (moneyline && !moneyline.selectedBookAvailable) riskFlags.push("Selected sportsbook moneyline was unavailable, so consensus was used.");
-      if (moneyline?.odds < -220 && modelWinProbability < 0.68) riskFlags.push("Heavy favorite price needs a stronger model edge.");
-      if (edge !== null && edge < -0.015) riskFlags.push("Sportsbook price is ahead of the model.");
-      riskFlags.push("Starter, lineup, weather, and Statcast feeds are not connected yet.");
-
-      picks.push({
-        type: "team",
-        game,
-        team: side.team,
-        opponent: side.opponent,
-        moneyline,
-        teamWinScore,
-        modelWinProbability,
-        impliedProbability,
-        edge,
-        confidence: mlbConfidence(teamWinScore),
-        reasons,
-        riskFlags
-      });
+      const pick = scoreMlbMoneylineConfidence(game, side);
+      if (pick.moneyline) allPicks.push(pick);
     });
   });
 
-  return picks
-    .filter((pick) => pick.moneyline)
-    .sort((a, b) => {
-      if (b.modelWinProbability !== a.modelWinProbability) return b.modelWinProbability - a.modelWinProbability;
-      return b.teamWinScore - a.teamWinScore;
-    })
-    .slice(0, 3);
+  // Tier 1 plays first, then tier 2, tier 3, untiered — tie-break by finalScore
+  allPicks.sort((a, b) => {
+    if (b.tier.tier !== a.tier.tier) return b.tier.tier - a.tier.tier;
+    return b.finalScore - a.finalScore;
+  });
+
+  // Always publish top 3 — labeled by tier so users know the confidence level
+  return allPicks.slice(0, 3);
 }
 
 function scoreMlbHomeRunBats(games = slate) {
@@ -3123,20 +3229,20 @@ function scoreMlbHomeRunBats(games = slate) {
 function renderMlbBoard() {
   const teamPicks = scoreMlbTeams();
   const homerPicks = scoreMlbHomeRunBats();
-  const topScore = Math.max(...teamPicks.map((pick) => pick.teamWinScore), ...homerPicks.map((pick) => pick.homeRunScore), 0);
+  const topScore = Math.max(...teamPicks.map((p) => p.finalScore), ...homerPicks.map((p) => p.homeRunScore), 0);
   elements.selectedGameTitle.textContent = "MLB Daily Board";
   if (elements.parlayScore) elements.parlayScore.textContent = topScore || "--";
-  elements.riskLabel.textContent = `${teamPicks.length}/3 team picks · ${homerPicks.length}/1 best homer look`;
+  elements.riskLabel.textContent = teamPicks[0]?.tier?.label || "Awaiting slate";
   if (elements.parlayTabs) elements.parlayTabs.hidden = true;
   elements.parlays.classList.remove("two-card-grid");
   elements.parlays.classList.add("mlb-board-grid");
   elements.parlays.innerHTML = `
     <section class="mlb-board-section">
       <div class="mlb-section-header">
-        <h3>Team Win Probability</h3>
+        <h3>Moneyline Confidence Board</h3>
         <span>${teamPicks.length}/3 ranked</span>
       </div>
-      ${teamPicks.length ? teamPicks.map(renderMlbTeamPick).join("") : renderMlbEmpty("No moneylines were returned for today's slate.")}
+      ${teamPicks.length ? teamPicks.map((pick, i) => renderMlbTeamPick(pick, i)).join("") : renderMlbEmpty("No moneylines were returned for today's slate.")}
     </section>
     <section class="mlb-board-section">
       <div class="mlb-section-header">
@@ -3152,24 +3258,74 @@ function renderMlbEmpty(message) {
   return `<p class="mlb-empty">${escapeHtml(message)}</p>`;
 }
 
-function renderMlbTeamPick(pick) {
-  const edge = pick.edge === null ? "Edge TBD" : `${pick.edge >= 0 ? "+" : ""}${formatProbability(pick.edge)}`;
+function renderMlbTeamPick(pick, index = 0) {
+  const medals    = ["🥇", "🥈", "🥉"];
+  const medal     = medals[index] || "⚾";
+  const isBestBet = index === 0;
+  const tierClass = `tier-${pick.tier.tier}`;
+  const edge      = pick.edge === null
+    ? "Edge TBD"
+    : `${pick.edge >= 0 ? "+" : ""}${formatProbability(pick.edge)} Edge`;
+
+  // Component bar chart (top 4 by weight)
+  const barComponents = pick.components.filter((c) =>
+    ["startingPitcher", "bullpen", "offense", "recentForm"].includes(c.key)
+  );
+  const componentHtml = barComponents.map((c) => {
+    const pct       = Math.round(c.score);
+    const fillClass = c.score >= 75 ? "high" : c.score < 55 ? "low" : "";
+    return `
+      <div class="mlb-component-row">
+        <span>${escapeHtml(c.label)}</span>
+        <div class="mlb-bar"><div class="mlb-bar-fill ${fillClass}" style="width:${pct}%"></div></div>
+        <span>${pct}</span>
+      </div>`;
+  }).join("");
+
+  // Disqualifiers
+  const disqHtml = pick.disqualifiers.length
+    ? `<ul class="mlb-disqualifiers">${pick.disqualifiers.map((d) =>
+        `<li>${escapeHtml(d.label)} (−${d.penalty} pts)</li>`).join("")}</ul>`
+    : "";
+
+  // Vegas Respect row
+  const vegasHtml = `
+    <div class="mlb-vegas-row">
+      💰 ${pick.vegasRespect.moneyPctAgainst}% of $ against · Line ${escapeHtml(pick.vegasRespect.lineMove)}
+      ${pick.vegasRespect.isAgainst ? " · <strong>Market fading this side</strong>" : ""}
+    </div>`;
+
+  // Blowout predictor
+  const blowoutLabel = pick.blowoutScore >= 72
+    ? "Strong blowout candidate"
+    : pick.blowoutScore >= 58 ? "Moderate win probability"
+    : "One-run game profile";
+
   return `
-    <article class="mlb-pick-card">
-      <div class="mlb-pick-top">
-        <strong>${escapeHtml(pick.team)}</strong>
-        <span>${formatOdds(pick.moneyline.odds)}</span>
+    <article class="mlb-pick-card ${tierClass}">
+      ${isBestBet ? `<div class="mlb-best-bet-banner">⭐ Best Bet of the Day</div>` : ""}
+      <div class="mlb-pick-header">
+        <span class="mlb-medal">${medal}</span>
+        <div class="mlb-pick-header-info">
+          <strong>${escapeHtml(pick.team)} ML</strong>
+          <span class="mlb-tier-badge ${tierClass}">${escapeHtml(pick.tier.label)}</span>
+        </div>
+        <span class="mlb-pick-top-odds">${formatOdds(pick.moneyline.odds)}</span>
       </div>
-      <p>${escapeHtml(pick.game.awayTeam)} @ ${escapeHtml(pick.game.homeTeam)}</p>
+      <p>${escapeHtml(pick.game.awayTeam)} @ ${escapeHtml(pick.game.homeTeam)} · ${pick.isHome ? "Home" : "Away"}</p>
       <div class="mlb-pill-row">
-        <span>${pick.confidence}</span>
-        <span>${formatProbability(pick.modelWinProbability)} model</span>
+        <span>Confidence ${pick.finalScore}</span>
         <span>${edge}</span>
+        <span>${formatProbability(pick.modelWinProbability)} Win</span>
       </div>
       <ul class="mlb-reasons">
-        ${pick.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}
+        ${pick.reasons.map((r) => `<li>${escapeHtml(r)}</li>`).join("")}
       </ul>
-      <p class="mlb-risk">${escapeHtml(pick.riskFlags[0] || "No major risk flag.")}</p>
+      <div class="mlb-components">${componentHtml}</div>
+      ${disqHtml}
+      ${vegasHtml}
+      <p class="mlb-risk">📊 Blowout predictor: ${pick.blowoutScore}/100 · ${blowoutLabel}</p>
+      <p class="mlb-risk">${escapeHtml(pick.riskFlags.find((f) => !f.includes("not yet connected")) || pick.riskFlags[0] || "No major risk flag.")}</p>
     </article>
   `;
 }

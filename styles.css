@@ -941,6 +941,125 @@ select:focus {
   padding: 8px;
 }
 
+/* ── MLB Tier system ──────────────────────────────────────────── */
+.mlb-pick-card.tier-1 { border-left-color: #c8960c; }
+.mlb-pick-card.tier-2 { border-left-color: var(--accent); }
+.mlb-pick-card.tier-3 { border-left-color: #2a9d5c; }
+.mlb-pick-card.tier-0 { border-left-color: #aaa; }
+
+.mlb-best-bet-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #fff8e1, #fffde8);
+  border: 1px solid #f0c040;
+  padding: 6px 10px;
+  font-size: 0.78rem;
+  font-weight: 900;
+  color: #7c5c00;
+  letter-spacing: 0.02em;
+}
+
+.mlb-pick-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.mlb-medal {
+  font-size: 1.35rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.mlb-pick-header-info {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.mlb-pick-header-info strong {
+  font-size: 1rem;
+  color: var(--ink);
+}
+.mlb-pick-top-odds {
+  font-weight: 950;
+  color: var(--accent-deep);
+  white-space: nowrap;
+  font-size: 1rem;
+}
+
+.mlb-tier-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 0.66rem;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  width: fit-content;
+}
+.mlb-tier-badge.tier-1 { background: #fff8e1; color: #7c5c00;           border: 1px solid #f0c040; }
+.mlb-tier-badge.tier-2 { background: #e8f1ff; color: var(--accent-deep); border: 1px solid #b0c8f0; }
+.mlb-tier-badge.tier-3 { background: #eafaf1; color: #176942;            border: 1px solid #a3d9b8; }
+.mlb-tier-badge.tier-0 { background: #f0f0f0; color: #666;               border: 1px solid #ccc; }
+
+/* Component bar chart */
+.mlb-components {
+  display: grid;
+  gap: 5px;
+}
+.mlb-component-row {
+  display: grid;
+  grid-template-columns: 3rem 1fr 2.2rem;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.mlb-bar {
+  background: #e8ecf5;
+  border-radius: 999px;
+  height: 6px;
+  overflow: hidden;
+}
+.mlb-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.35s ease;
+}
+.mlb-bar-fill.high { background: #2a9d5c; }
+.mlb-bar-fill.low  { background: #e05050; }
+
+/* Vegas Respect row */
+.mlb-vegas-row {
+  font-size: 0.76rem;
+  color: var(--muted);
+  padding: 5px 8px;
+  background: #f5f7fb;
+  border-radius: 6px;
+  line-height: 1.4;
+}
+.mlb-vegas-row strong { color: #b84040; }
+
+/* Disqualifiers */
+.mlb-disqualifiers {
+  display: grid;
+  gap: 3px;
+  padding: 0;
+  list-style: none;
+  margin: 0;
+}
+.mlb-disqualifiers li {
+  font-size: 0.76rem;
+  color: #b84040;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.mlb-disqualifiers li::before { content: "⚠"; font-size: 0.7rem; }
+
 .slip-subline {
   display: flex;
   align-items: center;
