@@ -2615,9 +2615,10 @@ select:focus {
   background: var(--surface);
 }
 
-.nri-ticket.nri-pass {
-  border-left-color: #aaa;
-}
+.nri-ticket.nri-strong   { border-left-color: #c8960c; }
+.nri-ticket.nri-playable { border-left-color: #2a9d5c; }
+.nri-ticket.nri-lean     { border-left-color: var(--accent); }
+.nri-ticket.nri-pass     { border-left-color: #aaa; }
 
 .nri-header {
   display: flex;
@@ -2639,8 +2640,10 @@ select:focus {
   letter-spacing: 0.04em;
 }
 
-.nri-rec.nri-bet  { background: #d4edda; color: #155724; border: 1px solid #a3d9b8; }
-.nri-rec.nri-pass { background: #f0f0f0; color: #666;    border: 1px solid #ccc; }
+.nri-rec.nri-strong   { background: #fff8e1; color: #7c5c00; border: 1px solid #f0c040; }
+.nri-rec.nri-playable { background: #d4edda; color: #155724; border: 1px solid #a3d9b8; }
+.nri-rec.nri-lean     { background: #e8f1ff; color: var(--accent-deep); border: 1px solid #b0c8f0; }
+.nri-rec.nri-pass     { background: #f0f0f0; color: #666; border: 1px solid #ccc; }
 
 .nri-meta {
   display: flex;
@@ -2706,6 +2709,20 @@ select:focus {
 .nri-leg-prob.high { color: #2a9d5c; }
 .nri-leg-prob.mid  { color: #555; }
 .nri-leg-prob.low  { color: #e05050; }
+
+.nri-leg-score {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  min-width: 40px;
+  text-align: right;
+}
+
+.nri-reasons {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin: 4px 0 0;
+  font-style: italic;
+}
 
 .nri-disclaimer {
   font-size: 0.74rem;
