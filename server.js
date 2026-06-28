@@ -407,7 +407,11 @@ async function fetchOddsSlate({ sport, date, region, markets }) {
   eventUrl.searchParams.set("commenceTimeTo", to);
 
   const events = await fetchJson(eventUrl);
-  const eventList = (events || []).slice(0, 12);
+  if (!Array.isArray(events)) {
+    const detail = events?.message || events?.error || JSON.stringify(events).slice(0, 120);
+    throw new Error(`Odds API returned an error: ${detail}`);
+  }
+  const eventList = events.slice(0, 12);
   const concurrency = 3;
   const eventPayloads = [];
 
