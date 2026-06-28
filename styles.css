@@ -2730,3 +2730,58 @@ select:focus {
   margin-top: 4px;
   opacity: 0.75;
 }
+
+/* ── Home Run Board v2 ──────────────────────────────────────────────────────── */
+
+.hr-provisional {
+  font-size: 0.82rem;
+  color: #b26a00;
+  background: #fff8e1;
+  border-left: 3px solid #f0c040;
+  padding: 6px 10px;
+  border-radius: 4px;
+  margin-bottom: 10px;
+}
+
+.hr-warning {
+  font-size: 0.80rem;
+  color: #b26a00;
+  margin: 4px 0 0;
+}
+
+.hr-edge {
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background: var(--surface-2, #f4f4f4);
+}
+
+.hr-edge.edge-pos { background: #e6f9ec; color: #1a6630; }
+.hr-edge.edge-neg { background: #fde8e8; color: #8b1c1c; }
+
+.hr-bench-details {
+  margin-top: 10px;
+  font-size: 0.84rem;
+}
+
+.hr-bench-details summary {
+  cursor: pointer;
+  color: var(--muted);
+  user-select: none;
+  padding: 4px 0;
+}
+
+.hr-bench-list {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hr-bench-card {
+  opacity: 0.78;
+  border-left-color: var(--border) !important;
+}
+
+.hr-bench-card:hover { opacity: 1; }
