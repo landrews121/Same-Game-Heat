@@ -2603,3 +2603,113 @@ select:focus {
     grid-template-columns: 1fr;
   }
 }
+
+/* ── No Run Inning Board ─────────────────────────────────────────────────── */
+
+.nri-ticket {
+  border: 1px solid var(--border);
+  border-left: 4px solid #2a9d5c;
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  background: var(--surface);
+}
+
+.nri-ticket.nri-pass {
+  border-left-color: #aaa;
+}
+
+.nri-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.nri-subtitle {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.nri-rec {
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 12px;
+  letter-spacing: 0.04em;
+}
+
+.nri-rec.nri-bet  { background: #d4edda; color: #155724; border: 1px solid #a3d9b8; }
+.nri-rec.nri-pass { background: #f0f0f0; color: #666;    border: 1px solid #ccc; }
+
+.nri-meta {
+  display: flex;
+  gap: 14px;
+  font-size: 0.84rem;
+  margin-bottom: 12px;
+  color: var(--text-muted);
+}
+
+.nri-meta strong { color: var(--text); }
+
+.nri-legs { display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
+
+.nri-game-block {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--bg);
+}
+
+.nri-pair-header {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.nri-leg {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+
+.nri-leg:last-child { border-bottom: none; }
+
+.nri-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #e8f1ff;
+  color: var(--accent-deep);
+  border: 1px solid #b0c8f0;
+  white-space: nowrap;
+}
+
+.nri-leg-match {
+  flex: 1;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.nri-leg-prob {
+  font-weight: 700;
+  font-size: 0.88rem;
+}
+
+.nri-leg-prob.high { color: #2a9d5c; }
+.nri-leg-prob.mid  { color: #555; }
+.nri-leg-prob.low  { color: #e05050; }
+
+.nri-disclaimer {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+  opacity: 0.75;
+}
