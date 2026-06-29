@@ -3489,22 +3489,21 @@ async function buildPublicHrBoard(date) {
 
 function scoreMlbHomeRunBats() { return []; }  // retired; board is now async
 
-// ── No Run Inning Board v2 — pitcher/offense grading engine ─────────────────
+// ── No Run Inning Board v3 — inning projection engine ───────────────────────
 
 const NO_RUN_RULES = {
-  inningsEvaluated:          [1, 2, 3, 4, 5],
-  primaryGameCount:          3,
-  saferGameCount:            2,
-  minimumStartsForInningSplit: 5,
-  fullReliabilityStarts:     15,
-  preferredLegProbability:   0.70,
-  playableLegProbability:    0.65,
-  leanLegProbability:        0.60,
-  pitcherWeight:             0.65,
-  offenseWeight:             0.35,
+  fullReliabilityStarts:   15,
+  pitcherWeight:           0.65,
+  offenseWeight:           0.35,
+  // Ticket thresholds
+  singleLegStrong:         0.70,
+  singleLegPlayable:       0.65,
+  singleLegLean:           0.60,
+  pairQualifyThreshold:    0.42,   // combined 2-leg probability
+  primaryQualifyThreshold: 0.29,   // combined 3-leg probability (1 per game)
+  minInningProbability:    0.55,   // per-inning minimum to enter pair selection
 };
 
-// League-average runs per half-inning: inning 1 skews higher (top of order)
 // ── Normalize helpers ────────────────────────────────────────────────────────
 
 function nriNormalizeInverse(value, strongValue, weakValue) {
@@ -3515,73 +3514,35 @@ function nriNormalizePositive(value, weakValue, strongValue) {
   return clamp((value - weakValue) / (strongValue - weakValue), 0, 1);
 }
 
-// ── Build synthetic pitcher/offense profiles from available game data ─────────
+// ── Profile builders ─────────────────────────────────────────────────────────
 
 function buildNriPitcherProfile(game, isAway) {
-  const team = isAway ? game.awayTeam : game.homeTeam;
   const seed = `${game.id}-${isAway ? "away" : "home"}-pitcher`;
   return {
-    name:                    isAway ? game.awayTeam : game.homeTeam,
-    throwingHand:            deterministicNumber(`${seed}-hand`, 0, 1) > 0.5 ? "R" : "L",
-    inningsPitched:          deterministicNumber(`${seed}-ip`,   80, 160),
-    strikeoutRate:           deterministicNumber(`${seed}-krt`,  0.18, 0.30),
-    walkRate:                deterministicNumber(`${seed}-bbrt`, 0.05, 0.12),
-    strikePercentage:        deterministicNumber(`${seed}-strk`, 0.60, 0.69),
-    swingingStrikeRate:      deterministicNumber(`${seed}-swst`, 0.09, 0.15),
-    calledStrikeWhiffRate:   deterministicNumber(`${seed}-csw`,  0.26, 0.33),
-    whip:                    deterministicNumber(`${seed}-whip`, 1.00, 1.40),
-    era:                     deterministicNumber(`${seed}-era`,  3.00, 5.00),
-    expectedEra:             deterministicNumber(`${seed}-xera`, 3.20, 5.00),
-    averagePitchesPerInning: deterministicNumber(`${seed}-ppi`,  15,   19),
-    averageStartLength:      deterministicNumber(`${seed}-asl`,  4.5,  6.5),
-    scorelessRateByInning: {
-      1: deterministicNumber(`${seed}-sr1`, 0.58, 0.82),
-      2: deterministicNumber(`${seed}-sr2`, 0.60, 0.84),
-      3: deterministicNumber(`${seed}-sr3`, 0.58, 0.82),
-      4: deterministicNumber(`${seed}-sr4`, 0.54, 0.80),
-      5: deterministicNumber(`${seed}-sr5`, 0.50, 0.78),
-    },
-    sampleSizeByInning: { 1: 18, 2: 18, 3: 17, 4: 16, 5: 14 },
-    recentScorelessRate:      deterministicNumber(`${seed}-rsr`,  0.50, 0.80),
-    recentStrikePercentage:   deterministicNumber(`${seed}-rstrk`,0.60, 0.69),
-    recentSwingingStrikeRate: deterministicNumber(`${seed}-rswst`,0.09, 0.15),
-    pitchLimit:               null,
-    openerRisk:               false,
-    confirmed:                true,
+    name:               isAway ? game.awayTeam : game.homeTeam,
+    throwingHand:       deterministicNumber(`${seed}-hand`, 0, 1) > 0.5 ? "R" : "L",
+    strikeoutRate:      deterministicNumber(`${seed}-krt`,  0.18, 0.30),
+    walkRate:           deterministicNumber(`${seed}-bbrt`, 0.05, 0.12),
+    strikePercentage:   deterministicNumber(`${seed}-strk`, 0.60, 0.69),
+    whip:               deterministicNumber(`${seed}-whip`, 1.00, 1.40),
+    era:                deterministicNumber(`${seed}-era`,  3.00, 5.00),
+    averageStartLength: deterministicNumber(`${seed}-asl`,  4.5,  6.5),
+    confirmed:          true,
   };
 }
 
 function buildNriOffenseProfile(game, isAway) {
-  const team = isAway ? game.awayTeam : game.homeTeam;
   const seed = `${game.id}-${isAway ? "away" : "home"}-offense`;
   return {
-    teamName:            team,
-    battingAverage:      deterministicNumber(`${seed}-ba`,    0.220, 0.275),
-    onBasePercentage:    deterministicNumber(`${seed}-obp`,   0.290, 0.360),
-    sluggingPercentage:  deterministicNumber(`${seed}-slg`,   0.370, 0.470),
-    woba:                deterministicNumber(`${seed}-woba`,  0.295, 0.365),
-    expectedWoba:        deterministicNumber(`${seed}-xwoba`, 0.295, 0.365),
-    strikeoutRate:       deterministicNumber(`${seed}-krt`,   0.19,  0.28),
-    walkRate:            deterministicNumber(`${seed}-bbrt`,  0.07,  0.13),
-    isolatedPower:       deterministicNumber(`${seed}-iso`,   0.12,  0.20),
-    runsPerGame:         deterministicNumber(`${seed}-rpg`,   3.5,   5.5),
-    runsPerFirstFive:    deterministicNumber(`${seed}-rp5`,   1.8,   3.1),
-    battingAverageVsLeft:  deterministicNumber(`${seed}-bavl`, 0.215, 0.275),
-    battingAverageVsRight: deterministicNumber(`${seed}-bavr`, 0.215, 0.275),
-    wobaVsLeft:            deterministicNumber(`${seed}-wobl`, 0.290, 0.365),
-    wobaVsRight:           deterministicNumber(`${seed}-wobr`, 0.290, 0.365),
-    strikeoutRateVsLeft:   deterministicNumber(`${seed}-kvl`,  0.19, 0.28),
-    strikeoutRateVsRight:  deterministicNumber(`${seed}-kvr`,  0.19, 0.28),
-    scoringRateByInning: {
-      1: deterministicNumber(`${seed}-scr1`, 0.22, 0.40),
-      2: deterministicNumber(`${seed}-scr2`, 0.20, 0.38),
-      3: deterministicNumber(`${seed}-scr3`, 0.22, 0.40),
-      4: deterministicNumber(`${seed}-scr4`, 0.22, 0.40),
-      5: deterministicNumber(`${seed}-scr5`, 0.24, 0.42),
-    },
-    recentScoringRate:   deterministicNumber(`${seed}-rscr`,  0.22, 0.42),
-    lineupConfirmed:     false,   // not yet connected — honest default
-    lineupStrength:      deterministicNumber(`${seed}-lupstr`, 0.85, 1.15),
+    teamName:          isAway ? game.awayTeam : game.homeTeam,
+    onBasePercentage:  deterministicNumber(`${seed}-obp`,  0.290, 0.360),
+    woba:              deterministicNumber(`${seed}-woba`, 0.295, 0.365),
+    strikeoutRate:     deterministicNumber(`${seed}-krt`,  0.19,  0.28),
+    isolatedPower:     deterministicNumber(`${seed}-iso`,  0.12,  0.20),
+    runsPerFirstFive:  deterministicNumber(`${seed}-rp5`,  1.8,   3.1),
+    wobaVsLeft:        deterministicNumber(`${seed}-wobl`, 0.290, 0.365),
+    wobaVsRight:       deterministicNumber(`${seed}-wobr`, 0.290, 0.365),
+    firstInningRunRate: deterministicNumber(`${seed}-fir`, 0.22,  0.40),
   };
 }
 
@@ -3593,178 +3554,139 @@ function nriParkRunFactor(game) {
     }
     return "";
   })();
-  const hrFactor = parkHRFactors[homeAbbr] || 1.0;
-  return 0.6 + hrFactor * 0.4;   // HR factor → run factor (dampened)
+  return parkHRFactors[homeAbbr] || 1.0;  // HR park factor used directly
 }
 
-// ── Pitcher grading ───────────────────────────────────────────────────────────
+// ── Pitcher quality score (0–1) ───────────────────────────────────────────────
 
-function nriPitcherScore(pitcher, inning) {
-  if (!pitcher.confirmed || pitcher.openerRisk) return 0;
-
-  const rawRate       = pitcher.scorelessRateByInning[inning] ?? 0.65;
-  const sample        = pitcher.sampleSizeByInning[inning] ?? 0;
-  const reliability   = clamp(sample / NO_RUN_RULES.fullReliabilityStarts, 0.25, 1);
-  const regressedRate = rawRate * reliability + 0.65 * (1 - reliability);
-
-  const kScore    = nriNormalizePositive(pitcher.strikeoutRate,          0.16, 0.32);
-  const strScore  = nriNormalizePositive(pitcher.strikePercentage,       0.60, 0.69);
-  const cswScore  = nriNormalizePositive(pitcher.calledStrikeWhiffRate,  0.25, 0.34);
-  const swScore   = nriNormalizePositive(pitcher.swingingStrikeRate,     0.08, 0.16);
-  const kbbScore  = nriNormalizePositive(pitcher.strikeoutRate - pitcher.walkRate, 0.10, 0.27);
-  const whipScore = nriNormalizeInverse(pitcher.whip,                    0.95, 1.45);
-  const eraScore  = nriNormalizeInverse(pitcher.expectedEra,             2.75, 5.25);
-
-  const recentScore =
-    pitcher.recentScorelessRate * 0.6 +
-    nriNormalizePositive(pitcher.recentStrikePercentage, 0.60, 0.69) * 0.4;
-
-  const fatiguePenalty =
-    (inning >= 5 && pitcher.averageStartLength < 5.5) ? 0.08 :
-    (inning === 4 && pitcher.averageStartLength < 5)  ? 0.04 : 0;
-
-  const pitchLimitPenalty =
-    pitcher.pitchLimit && pitcher.pitchLimit < 80 && inning >= 4 ? 0.08 : 0;
-
-  return clamp(
-    regressedRate * 35 +
-    kScore   * 12 +
-    strScore * 10 +
-    cswScore * 10 +
-    swScore  *  8 +
-    kbbScore *  8 +
-    whipScore *  7 +
-    eraScore  *  5 +
-    recentScore * 5 -
-    fatiguePenalty  * 100 -
-    pitchLimitPenalty * 100,
-    0, 100
-  );
+function nriPitcherQuality(pitcher) {
+  if (!pitcher.confirmed) return 0.50;
+  const kScore   = nriNormalizePositive(pitcher.strikeoutRate, 0.16, 0.32);
+  const bbScore  = nriNormalizeInverse(pitcher.walkRate,       0.05, 0.13);
+  const whipSc   = nriNormalizeInverse(pitcher.whip,          0.95, 1.45);
+  const eraSc    = nriNormalizeInverse(pitcher.era,           3.00, 5.00);
+  const strSc    = nriNormalizePositive(pitcher.strikePercentage, 0.60, 0.69);
+  return clamp(kScore * 0.30 + bbScore * 0.15 + whipSc * 0.25 + eraSc * 0.20 + strSc * 0.10, 0, 1);
 }
 
-// ── Weak-offense grading ─────────────────────────────────────────────────────
+// ── Offense run risk (0–1, higher = more likely to score) ─────────────────────
 
-function nriOffenseWeaknessScore(offense, pitcherHand, inning) {
-  const splitBA  = pitcherHand === "L" ? offense.battingAverageVsLeft  : offense.battingAverageVsRight;
-  const splitWob = pitcherHand === "L" ? offense.wobaVsLeft            : offense.wobaVsRight;
-  const splitK   = pitcherHand === "L" ? offense.strikeoutRateVsLeft   : offense.strikeoutRateVsRight;
-
-  const lowWobaScore   = nriNormalizeInverse(splitWob,            0.285, 0.365);
-  const lowObpScore    = nriNormalizeInverse(offense.onBasePercentage, 0.295, 0.355);
-  const strikeoutScore = nriNormalizePositive(splitK,             0.19,  0.29);
-  const innWeakScore   = nriNormalizeInverse(offense.scoringRateByInning[inning] ?? 0.30, 0.20, 0.42);
-  const lowPowerScore  = nriNormalizeInverse(offense.isolatedPower, 0.115, 0.205);
-  const lowBAScore     = nriNormalizeInverse(splitBA,             0.215, 0.285);
-  const lowRunScore    = nriNormalizeInverse(offense.runsPerFirstFive, 1.7, 3.2);
-  const recentWeakScore = nriNormalizeInverse(offense.recentScoringRate, 0.22, 0.42);
-  const lineupAdj      = offense.lineupConfirmed
-    ? nriNormalizeInverse(offense.lineupStrength, 0.75, 1.15)
-    : 0.5;
-
-  return clamp(
-    lowWobaScore    * 20 +
-    lowObpScore     * 16 +
-    strikeoutScore  * 15 +
-    innWeakScore    * 15 +
-    lowPowerScore   * 10 +
-    lowBAScore      *  8 +
-    lowRunScore     *  7 +
-    recentWeakScore *  5 +
-    lineupAdj       *  4,
-    0, 100
-  );
+function nriOffenseRunRisk(offense, pitcherHand) {
+  const splitWoba = pitcherHand === "L" ? offense.wobaVsLeft : offense.wobaVsRight;
+  const wobaSc    = nriNormalizePositive(splitWoba,          0.290, 0.380);
+  const obpSc     = nriNormalizePositive(offense.onBasePercentage, 0.295, 0.365);
+  const isoSc     = nriNormalizePositive(offense.isolatedPower, 0.115, 0.215);
+  const kSc       = nriNormalizeInverse(offense.strikeoutRate, 0.18, 0.29);  // low K = more contact
+  const runSc     = nriNormalizePositive(offense.runsPerFirstFive, 1.7, 3.2);
+  return clamp(wobaSc * 0.30 + obpSc * 0.25 + isoSc * 0.15 + kSc * 0.15 + runSc * 0.15, 0, 1);
 }
 
-// ── Full-inning scoring ───────────────────────────────────────────────────────
+// ── Per-game inning projections ───────────────────────────────────────────────
 
-function nriScoreFullInning(game, inning, awayPitcher, homePitcher, awayOffense, homeOffense, parkRunFactor) {
-  if (!awayPitcher.confirmed || !homePitcher.confirmed) return null;
+function buildNriGameInputs(awayPitcher, homePitcher, awayOffense, homeOffense, parkFactor) {
+  const spFirst  = (nriPitcherQuality(awayPitcher) + nriPitcherQuality(homePitcher)) / 2;
+  // Second-time-through penalty: pitchers become more hittable
+  const spSecond = clamp(spFirst - 0.08 - Math.max(0, 5.5 - ((awayPitcher.averageStartLength + homePitcher.averageStartLength) / 2)) * 0.04, 0.25, 0.95);
 
-  // Top half: home pitcher vs away offense
-  const homePitScore   = nriPitcherScore(homePitcher, inning);
-  const awayOffWeak    = nriOffenseWeaknessScore(awayOffense, homePitcher.throwingHand, inning);
-  const awayHalfScore  = homePitScore * NO_RUN_RULES.pitcherWeight + awayOffWeak * NO_RUN_RULES.offenseWeight;
+  const awayHand = awayPitcher.throwingHand;
+  const homeHand = homePitcher.throwingHand;
 
-  // Bottom half: away pitcher vs home offense
-  const awayPitScore   = nriPitcherScore(awayPitcher, inning);
-  const homeOffWeak    = nriOffenseWeaknessScore(homeOffense, awayPitcher.throwingHand, inning);
-  const homeHalfScore  = awayPitScore * NO_RUN_RULES.pitcherWeight + homeOffWeak * NO_RUN_RULES.offenseWeight;
+  // Run risk per order position (averaged over both half-innings)
+  const topRisk    = (nriOffenseRunRisk(awayOffense, homeHand) + nriOffenseRunRisk(homeOffense, awayHand)) / 2;
+  const middleRisk = topRisk * 0.92;   // middle order slightly less dangerous than top
+  const bottomRisk = topRisk * 0.80;   // bottom order weakest
 
-  // Full inning is only as safe as its weaker half
-  const weakerHalf   = Math.min(awayHalfScore, homeHalfScore);
-  const averageHalf  = (awayHalfScore + homeHalfScore) / 2;
-  let overallScore   = weakerHalf * 0.65 + averageHalf * 0.35;
-
-  const envMultiplier = (parkRunFactor || 1) * deterministicNumber(`${game.id}-wx`, 0.93, 1.07);
-  if (envMultiplier > 1.08) overallScore -= 5;
-  else if (envMultiplier < 0.94) overallScore += 3;
-
-  const estimatedProbability = clamp(0.45 + overallScore * 0.0038, 0.48, 0.82);
-
-  const reasons = [];
-  if (homePitScore >= 75) reasons.push(`${homePitcher.name} starter has a strong inning ${inning} profile`);
-  if (awayPitScore >= 75) reasons.push(`${awayPitcher.name} starter has a strong inning ${inning} profile`);
-  if (awayOffWeak >= 70)  reasons.push(`${awayOffense.teamName} grades as a weak offensive matchup`);
-  if (homeOffWeak >= 70)  reasons.push(`${homeOffense.teamName} grades as a weak offensive matchup`);
-
-  return { inning, awayHalfScore, homeHalfScore, overallScore, estimatedProbability, reasons };
+  return {
+    startingPitcherFirstTimeThroughScore:  spFirst,
+    startingPitcherSecondTimeThroughScore: spSecond,
+    topOfOrderRunRisk:    topRisk,
+    middleOrderRunRisk:   middleRisk,
+    bottomOrderRunRisk:   bottomRisk,
+    homeTeamFirstInningRunRate: homeOffense.firstInningRunRate,
+    awayTeamFirstInningRunRate: awayOffense.firstInningRunRate,
+    bullpenRunPreventionScore:  0.65,   // placeholder until bullpen feed connected
+    parkRunFactor: parkFactor,
+    weatherRunFactor: 0,
+  };
 }
 
-// ── Best two-inning pair per game ─────────────────────────────────────────────
+function buildInningProjections(inputs) {
+  const envPenalty = (inputs.parkRunFactor - 1) * 0.08 + inputs.weatherRunFactor;
 
-function nriGetBestPair(game) {
-  const awayPitcher  = buildNriPitcherProfile(game, true);
-  const homePitcher  = buildNriPitcherProfile(game, false);
-  const awayOffense  = buildNriOffenseProfile(game, true);
-  const homeOffense  = buildNriOffenseProfile(game, false);
-  const parkFactor   = nriParkRunFactor(game);
+  return [1, 2, 3, 4, 5].map((inning) => {
+    let runProb;
+    const reasons = [];
 
-  const projections = NO_RUN_RULES.inningsEvaluated
-    .map((n) => nriScoreFullInning(game, n, awayPitcher, homePitcher, awayOffense, homeOffense, parkFactor))
-    .filter(Boolean);
+    if (inning === 1) {
+      runProb =
+        inputs.topOfOrderRunRisk * 0.55 +
+        inputs.homeTeamFirstInningRunRate * 0.225 +
+        inputs.awayTeamFirstInningRunRate * 0.225;
+      reasons.push("Top of both batting orders");
+    } else if (inning === 2) {
+      runProb =
+        inputs.middleOrderRunRisk * 0.65 +
+        (1 - inputs.startingPitcherFirstTimeThroughScore) * 0.35;
+      reasons.push("Middle-order matchup");
+    } else if (inning === 3) {
+      runProb =
+        inputs.bottomOrderRunRisk * 0.55 +
+        inputs.topOfOrderRunRisk * 0.15 +
+        (1 - inputs.startingPitcherFirstTimeThroughScore) * 0.30;
+      reasons.push("Bottom order + lineup turnover");
+    } else if (inning === 4) {
+      runProb =
+        inputs.middleOrderRunRisk * 0.45 +
+        (1 - inputs.startingPitcherSecondTimeThroughScore) * 0.55;
+      reasons.push("Second time through the order");
+    } else {
+      runProb =
+        inputs.topOfOrderRunRisk * 0.45 +
+        (1 - inputs.startingPitcherSecondTimeThroughScore) * 0.40 +
+        (1 - inputs.bullpenRunPreventionScore) * 0.15;
+      reasons.push("Late starter exposure + bullpen risk");
+    }
 
-  if (projections.length < 2) return null;
+    runProb = clamp(runProb + envPenalty, 0.18, 0.55);
+    const noRunProb = 1 - runProb;
+    return {
+      inning,
+      noRunProbability: noRunProb,
+      confidenceScore:  Math.round(noRunProb * 100),
+      reasons,
+    };
+  });
+}
+
+// ── Best 2-inning pair within a game ─────────────────────────────────────────
+
+function selectSafestInningPair(projections) {
+  const eligible = projections
+    .filter((p) => p.inning >= 1 && p.inning <= 5 && p.noRunProbability >= NO_RUN_RULES.minInningProbability)
+    .sort((a, b) => b.noRunProbability - a.noRunProbability);
+
+  if (eligible.length < 2) return null;
 
   let best = null;
-  for (let i = 0; i < projections.length; i++) {
-    for (let j = i + 1; j < projections.length; j++) {
-      const a = projections[i], b = projections[j];
-      const weakerInning  = Math.min(a.overallScore, b.overallScore);
-      const avgScore      = (a.overallScore + b.overallScore) / 2;
-      let   pairScore     = weakerInning * 0.65 + avgScore * 0.35;
-      if (Math.abs(a.inning - b.inning) === 1) pairScore -= 1.5; // consecutive penalty
-      const estimatedPairProbability = a.estimatedProbability * b.estimatedProbability * 0.97;
-
+  for (let i = 0; i < eligible.length; i++) {
+    for (let j = i + 1; j < eligible.length; j++) {
+      const a = eligible[i], b = eligible[j];
+      const combinedProbability = a.noRunProbability * b.noRunProbability;
+      const pairScore = a.confidenceScore * 0.5 + b.confidenceScore * 0.5;
       const candidate = {
-        gameId:   game.id,
-        matchup:  `${game.awayTeam} @ ${game.homeTeam}`,
-        innings:  [a.inning, b.inning],
-        inningScores: [a.overallScore, b.overallScore],
-        halfScores: [
-          { away: a.awayHalfScore, home: a.homeHalfScore },
-          { away: b.awayHalfScore, home: b.homeHalfScore },
-        ],
-        inningProbabilities: [a.estimatedProbability, b.estimatedProbability],
+        innings: [a.inning, b.inning],
+        combinedProbability,
         pairScore,
-        estimatedPairProbability,
-        reasons: [...new Set([...a.reasons, ...b.reasons])],
+        legs: [
+          { inning: a.inning, noRunProbability: a.noRunProbability, score: a.confidenceScore },
+          { inning: b.inning, noRunProbability: b.noRunProbability, score: b.confidenceScore },
+        ],
+        reasons: [...a.reasons, ...b.reasons].slice(0, 5),
       };
-      if (!best || candidate.pairScore > best.pairScore) best = candidate;
+      if (!best || candidate.combinedProbability > best.combinedProbability) best = candidate;
     }
   }
   return best;
-}
-
-// ── Ticket status label ───────────────────────────────────────────────────────
-
-function nriAssignStatus(games) {
-  if (!games.length) return "PASS";
-  const weakestScore = Math.min(...games.map((g) => g.pairScore));
-  const weakestProb  = Math.min(...games.flatMap((g) => g.inningProbabilities));
-  if (weakestScore >= 75 && weakestProb >= NO_RUN_RULES.preferredLegProbability) return "STRONG";
-  if (weakestScore >= 68 && weakestProb >= NO_RUN_RULES.playableLegProbability)  return "PLAYABLE";
-  if (weakestScore >= 61 && weakestProb >= NO_RUN_RULES.leanLegProbability)      return "LEAN";
-  return "PASS";
 }
 
 function probabilityToAmericanOdds(p) {
@@ -3774,92 +3696,170 @@ function probabilityToAmericanOdds(p) {
     : Math.round((100 * (1 - v)) / v);
 }
 
-// ── Board generator — always ranks, never silently empty ─────────────────────
+// ── Board generator ───────────────────────────────────────────────────────────
 
 function generateNoRunBoard(games) {
-  const rankedGames = games
-    .filter((g) => g.id)
-    .map(nriGetBestPair)
-    .filter(Boolean)
-    .sort((a, b) => b.pairScore - a.pairScore);
+  const scored = games.filter((g) => g.id).map((game) => {
+    const awayPit = buildNriPitcherProfile(game, true);
+    const homePit = buildNriPitcherProfile(game, false);
+    const awayOff = buildNriOffenseProfile(game, true);
+    const homeOff = buildNriOffenseProfile(game, false);
+    const inputs  = buildNriGameInputs(awayPit, homePit, awayOff, homeOff, nriParkRunFactor(game));
+    const projections = buildInningProjections(inputs);
+    const sorted  = [...projections].sort((a, b) => b.noRunProbability - a.noRunProbability);
+    const bestInning = sorted[0];
+    const bestPair   = selectSafestInningPair(projections);
+    return {
+      gameId:   game.id,
+      matchup:  `${game.awayTeam} @ ${game.homeTeam}`,
+      projections,
+      bestInning,
+      bestPair,
+    };
+  }).filter((g) => g.bestInning).sort((a, b) => b.bestInning.noRunProbability - a.bestInning.noRunProbability);
 
-  const primaryGames = rankedGames.slice(0, NO_RUN_RULES.primaryGameCount);
-  const saferGames   = rankedGames.slice(0, NO_RUN_RULES.saferGameCount);
+  // ── 1. Best single leg ────────────────────────────────────────────────────
+  const topGame = scored[0];
+  const bestSingleLeg = topGame ? (() => {
+    const p = topGame.bestInning.noRunProbability;
+    return {
+      matchup:          topGame.matchup,
+      inning:           topGame.bestInning.inning,
+      noRunProbability: p,
+      score:            topGame.bestInning.confidenceScore,
+      reasons:          topGame.bestInning.reasons,
+      status: p >= NO_RUN_RULES.singleLegStrong   ? "STRONG"
+            : p >= NO_RUN_RULES.singleLegPlayable ? "PLAYABLE"
+            : p >= NO_RUN_RULES.singleLegLean     ? "LEAN" : "PASS",
+    };
+  })() : null;
 
-  const warnings = [];
-  if (primaryGames.length < NO_RUN_RULES.primaryGameCount) {
-    warnings.push(`Only ${primaryGames.length} of ${NO_RUN_RULES.primaryGameCount} required games available — showing best available.`);
-  }
+  // ── 2. Safer 2-leg ticket (best pair from the single best qualifying game) ─
+  const pairGame = scored.find((g) => g.bestPair !== null);
+  const saferTicket = pairGame ? {
+    matchup:             pairGame.matchup,
+    innings:             pairGame.bestPair.innings,
+    legs:                pairGame.bestPair.legs,
+    combinedProbability: pairGame.bestPair.combinedProbability,
+    pairScore:           Math.round(pairGame.bestPair.pairScore),
+    reasons:             pairGame.bestPair.reasons,
+    status: pairGame.bestPair.combinedProbability >= NO_RUN_RULES.pairQualifyThreshold ? "QUALIFIED" : "PASS",
+  } : null;
 
-  const primaryStatus = nriAssignStatus(primaryGames);
-  const saferStatus   = nriAssignStatus(saferGames);
+  // ── 3. Primary 3-leg (one best inning per game, 3 games) ─────────────────
+  const primaryLegs = scored.slice(0, 3).map((g) => ({
+    matchup:          g.matchup,
+    inning:           g.bestInning.inning,
+    noRunProbability: g.bestInning.noRunProbability,
+    score:            g.bestInning.confidenceScore,
+  }));
+  const primaryProb = primaryLegs.reduce((acc, l) => acc * l.noRunProbability, 1);
+  const primaryTicket = primaryLegs.length >= 3 ? {
+    legs:                primaryLegs,
+    combinedProbability: primaryProb,
+    status: primaryProb >= NO_RUN_RULES.primaryQualifyThreshold ? "QUALIFIED" : "PASS",
+  } : null;
 
-  if (primaryStatus === "PASS" && primaryGames.length === NO_RUN_RULES.primaryGameCount) {
-    warnings.push("A ranked board was generated, but the primary ticket does not meet betting thresholds. Consider the safer ticket.");
-  }
-
-  return {
-    primaryTicket: {
-      status:               primaryStatus,
-      games:                primaryGames,
-      estimatedProbability: primaryGames.reduce((acc, g) => acc * g.estimatedPairProbability, 1),
-    },
-    saferTicket: {
-      status:               saferStatus,
-      games:                saferGames,
-      estimatedProbability: saferGames.reduce((acc, g) => acc * g.estimatedPairProbability, 1),
-    },
-    rankedGames,
-    warnings,
-  };
+  return { bestSingleLeg, saferTicket, primaryTicket };
 }
 
-// ── Render ────────────────────────────────────────────────────────────────────
+// ── Render helpers ────────────────────────────────────────────────────────────
 
-function renderNoRunTicket(ticket, title, subtitle) {
-  if (!ticket) return "";
+function nriStatusClass(status) {
+  return { STRONG: "nri-strong", PLAYABLE: "nri-playable", LEAN: "nri-lean", QUALIFIED: "nri-playable", PASS: "nri-pass" }[status] || "nri-pass";
+}
 
-  const statusClass = { STRONG: "nri-strong", PLAYABLE: "nri-playable", LEAN: "nri-lean", PASS: "nri-pass" }[ticket.status] || "nri-pass";
-  const oddsStr = ticket.games.length
-    ? (() => { const o = probabilityToAmericanOdds(ticket.estimatedProbability); return o > 0 ? `+${o}` : `${o}`; })()
-    : "—";
+function nriOddsStr(prob) {
+  const o = probabilityToAmericanOdds(prob);
+  return o > 0 ? `+${o}` : `${o}`;
+}
 
-  const gamesHtml = ticket.games.map((game) =>
-    `<div class="nri-game-block">
-      <div class="nri-pair-header">${escapeHtml(game.matchup)} · Innings ${game.innings.join(" + ")} · Pair score ${game.pairScore.toFixed(0)}</div>
-      ${game.innings.map((inn, idx) => {
-        const prob    = game.inningProbabilities[idx];
-        const score   = game.inningScores[idx];
-        const probCls = prob >= NO_RUN_RULES.preferredLegProbability ? "high" : prob >= NO_RUN_RULES.leanLegProbability ? "mid" : "low";
-        return `<div class="nri-leg">
-          <span class="nri-badge">Inn. ${inn}</span>
-          <span class="nri-leg-match">${escapeHtml(game.matchup)}</span>
-          <span class="nri-leg-score">${score.toFixed(0)}/100</span>
-          <span class="nri-leg-prob ${probCls}">${(prob * 100).toFixed(0)}%</span>
-        </div>`;
-      }).join("")}
-      ${game.reasons.length ? `<p class="nri-reasons">${escapeHtml(game.reasons[0])}</p>` : ""}
-    </div>`
-  ).join("");
-
-  const emptyHtml = `<p class="mlb-risk">No games available for this ticket.</p>`;
-
+function renderNriSingleLeg(leg) {
+  if (!leg) return "";
+  const sc = nriStatusClass(leg.status);
+  const probCls = leg.noRunProbability >= 0.70 ? "high" : leg.noRunProbability >= 0.60 ? "mid" : "low";
   return `
-    <div class="nri-ticket ${statusClass}">
+    <div class="nri-ticket ${sc}">
+      <div class="nri-header">
+        <strong>Best Single Inning</strong>
+        <span class="nri-rec ${sc}">${leg.status}</span>
+      </div>
+      <div class="nri-meta">
+        <span>Hit rate <strong>${(leg.noRunProbability * 100).toFixed(0)}%</strong></span>
+        <span>Fair odds <strong>${nriOddsStr(leg.noRunProbability)}</strong></span>
+        <span><strong>1</strong> leg</span>
+      </div>
+      <div class="nri-legs">
+        <div class="nri-leg">
+          <span class="nri-badge">Inn. ${leg.inning}</span>
+          <span class="nri-leg-match">${escapeHtml(leg.matchup)}</span>
+          <span class="nri-leg-score">${leg.score}/100</span>
+          <span class="nri-leg-prob ${probCls}">${(leg.noRunProbability * 100).toFixed(0)}%</span>
+        </div>
+        ${leg.reasons.map((r) => `<p class="nri-reasons">${escapeHtml(r)}</p>`).join("")}
+      </div>
+      <p class="nri-disclaimer">⚠ Starter + lineup feeds not yet connected — model estimates only.</p>
+    </div>`;
+}
+
+function renderNriSaferTicket(ticket) {
+  if (!ticket) return "";
+  const sc = nriStatusClass(ticket.status);
+  const legsHtml = ticket.legs.map((leg) => {
+    const probCls = leg.noRunProbability >= 0.70 ? "high" : leg.noRunProbability >= 0.60 ? "mid" : "low";
+    return `<div class="nri-leg">
+      <span class="nri-badge">Inn. ${leg.inning}</span>
+      <span class="nri-leg-match">${escapeHtml(ticket.matchup)}</span>
+      <span class="nri-leg-score">${leg.score}/100</span>
+      <span class="nri-leg-prob ${probCls}">${(leg.noRunProbability * 100).toFixed(0)}%</span>
+    </div>`;
+  }).join("");
+  return `
+    <div class="nri-ticket ${sc}">
       <div class="nri-header">
         <div>
-          <strong>${escapeHtml(title)}</strong>
-          <span class="nri-subtitle"> · ${escapeHtml(subtitle)}</span>
+          <strong>Safer 2-Leg Ticket</strong>
+          <span class="nri-subtitle"> · Innings ${ticket.innings.join(" + ")}</span>
         </div>
-        <span class="nri-rec ${statusClass}">${ticket.status}</span>
+        <span class="nri-rec ${sc}">${ticket.status}</span>
       </div>
-      ${ticket.games.length ? `
-        <div class="nri-meta">
-          <span>Est. hit rate <strong>${(ticket.estimatedProbability * 100).toFixed(1)}%</strong></span>
-          <span>Fair odds <strong>${oddsStr}</strong></span>
-          <span><strong>${ticket.games.length * 2}</strong> legs</span>
-        </div>` : ""}
-      <div class="nri-legs">${ticket.games.length ? gamesHtml : emptyHtml}</div>
+      <div class="nri-meta">
+        <span>Est. hit rate <strong>${(ticket.combinedProbability * 100).toFixed(1)}%</strong></span>
+        <span>Fair odds <strong>${nriOddsStr(ticket.combinedProbability)}</strong></span>
+        <span><strong>2</strong> legs</span>
+      </div>
+      <div class="nri-legs">${legsHtml}</div>
+      <p class="nri-disclaimer">⚠ Starter + lineup feeds not yet connected — model estimates only.</p>
+    </div>`;
+}
+
+function renderNriPrimaryTicket(ticket) {
+  if (!ticket) return "";
+  const sc = nriStatusClass(ticket.status);
+  const legsHtml = ticket.legs.map((leg) => {
+    const probCls = leg.noRunProbability >= 0.70 ? "high" : leg.noRunProbability >= 0.60 ? "mid" : "low";
+    return `<div class="nri-leg">
+      <span class="nri-badge">Inn. ${leg.inning}</span>
+      <span class="nri-leg-match">${escapeHtml(leg.matchup)}</span>
+      <span class="nri-leg-score">${leg.score}/100</span>
+      <span class="nri-leg-prob ${probCls}">${(leg.noRunProbability * 100).toFixed(0)}%</span>
+    </div>`;
+  }).join("");
+  return `
+    <div class="nri-ticket ${sc}">
+      <div class="nri-header">
+        <div>
+          <strong>3-Game Parlay</strong>
+          <span class="nri-subtitle"> · Best inning each game</span>
+        </div>
+        <span class="nri-rec ${sc}">${ticket.status}</span>
+      </div>
+      <div class="nri-meta">
+        <span>Est. hit rate <strong>${(ticket.combinedProbability * 100).toFixed(1)}%</strong></span>
+        <span>Fair odds <strong>${nriOddsStr(ticket.combinedProbability)}</strong></span>
+        <span><strong>3</strong> legs</span>
+      </div>
+      <div class="nri-legs">${legsHtml}</div>
       <p class="nri-disclaimer">⚠ Starter + lineup feeds not yet connected — model estimates only.</p>
     </div>`;
 }
@@ -3867,11 +3867,9 @@ function renderNoRunTicket(ticket, title, subtitle) {
 function renderNoRunBoard() {
   if (!slate.length) return renderMlbEmpty("Fetch a slate to generate the No Run Inning board.");
   const board = generateNoRunBoard(slate);
-  const warningsHtml = board.warnings.map((w) =>
-    `<p class="mlb-risk">⚠ ${escapeHtml(w)}</p>`).join("");
-  return warningsHtml +
-    renderNoRunTicket(board.primaryTicket, "Primary Ticket", `${board.primaryTicket.games.length} games · ${board.primaryTicket.games.length * 2} legs`) +
-    renderNoRunTicket(board.saferTicket,   "Safer Ticket",   `${board.saferTicket.games.length} games · ${board.saferTicket.games.length * 2} legs`);
+  return renderNriSingleLeg(board.bestSingleLeg) +
+    renderNriSaferTicket(board.saferTicket) +
+    renderNriPrimaryTicket(board.primaryTicket);
 }
 
 // ── MLB Board render ─────────────────────────────────────────────────────────
