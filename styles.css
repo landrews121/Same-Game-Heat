@@ -2785,3 +2785,10 @@ select:focus {
 }
 
 .hr-bench-card:hover { opacity: 1; }
+
+.hr-loading {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-style: italic;
+  padding: 8px 0;
+}

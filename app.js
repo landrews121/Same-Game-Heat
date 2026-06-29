@@ -3140,41 +3140,31 @@ function scoreMlbTeams(games = slate) {
   return allPicks.slice(0, 3);
 }
 
-// ── Home Run Board — full hitter/pitcher/environment scoring engine ──────────
+// ── Home Run Board — public MLB data engine (v2) ─────────────────────────────
 
 const HR_BASELINES = {
-  hitterBarrelRate:     0.075,
-  hitterHardHitRate:    0.39,
-  hitterFlyBallRate:    0.36,
-  hitterHrPerPa:        0.032,
-  hitterIso:            0.155,
-  hitterXslg:           0.410,
-  pitcherHrPerNine:     1.15,
-  pitcherBarrelAllowed: 0.075,
-  pitcherHardHitAllowed:0.39,
-  pitcherFlyBallAllowed:0.36,
-  bullpenHrPerNine:     1.10,
-  gameTotal:            8.5,
+  hitterHrPerPa:           0.032,
+  hitterIso:               0.155,
+  hitterSlugging:          0.410,
+  hitterOps:               0.725,
+  extraBaseHitPerPa:       0.075,
+  pitcherHrPerNine:        1.15,
+  pitcherHrPerBf:          0.032,
+  pitcherOppSlugging:      0.410,
+  bullpenHrPerNine:        1.10,
+  gameTotal:               8.5,
 };
 
 const HR_CONFIG = {
-  minimumSeasonPa:          50,
-  minimumSplitPa:           20,
-  minimumPitcherInnings:    15,
-  requireConfirmedPitcher:  false,   // false until real starter feed connected
-  minimumScore:             40,      // lowered so board always populates
-  maximumPlayersPerTeam:    1,
-  boardSelections:          3,
-  requireUniqueGames:       true,
-  hitterWeight:             0.55,
-  pitcherWeight:            0.30,
-  environmentWeight:        0.15,
+  minimumSeasonPa:         60,
+  minimumPitcherInnings:   15,
+  minimumScore:            53,
+  boardSelections:         3,
+  requireUniqueGames:      true,
 };
 
-function hrScoreAgainstBaseline(value, baseline, lo = 0.45, hi = 1.8) {
-  const min = baseline * lo, max = baseline * hi;
-  if (max === min) return 50;
-  return clamp(((value - min) / (max - min)) * 100, 0, 100);
+function hrSafeRate(num, den) {
+  return (Number.isFinite(num) && Number.isFinite(den) && den > 0) ? num / den : 0;
 }
 
 function hrRegressRate(observed, sample, leagueRate, stabilization) {
@@ -3182,327 +3172,322 @@ function hrRegressRate(observed, sample, leagueRate, stabilization) {
   return observed * w + leagueRate * (1 - w);
 }
 
-function hrSafeRate(num, den) {
-  return (Number.isFinite(num) && Number.isFinite(den) && den > 0) ? num / den : 0;
+function hrScoreAgainstBaseline(value, baseline, lo = 0.45, hi = 1.8) {
+  const min = baseline * lo, max = baseline * hi;
+  if (max === min) return 50;
+  return clamp(((value - min) / (max - min)) * 100, 0, 100);
+}
+
+function hrWeightedAvg(pairs) {
+  const valid = pairs.filter(([v, w]) => Number.isFinite(v) && w > 0);
+  const tw = valid.reduce((s, [, w]) => s + w, 0);
+  if (!tw) return 50;
+  return valid.reduce((s, [v, w]) => s + v * w, 0) / tw;
 }
 
 function hrLineupScore(pos) {
-  const scores = { 1: 95, 2: 100, 3: 100, 4: 98, 5: 88, 6: 74, 7: 62, 8: 50, 9: 42 };
-  return scores[pos] ?? 55;
+  return { 1: 94, 2: 100, 3: 100, 4: 99, 5: 91, 6: 78, 7: 64, 8: 51, 9: 42 }[pos] ?? 55;
 }
 
 function hrScoreToProb(score) {
-  return clamp(0.07 + (score / 100) ** 1.65 * (0.37 - 0.07), 0.07, 0.37);
+  return clamp(0.055 + (score / 100) ** 1.70 * (0.34 - 0.055), 0.055, 0.34);
 }
 
-// ── Profile builders (deterministic until real feeds connected) ───────────────
-
-function buildHrHitterProfile(game, prop) {
-  const seed    = `${game.id}-${normalizeName(prop.player || "")}-hrv2`;
-  const lineupPos = Math.round(deterministicNumber(`${seed}-lup`, 1, 9));
-  const odds    = prop.overOdds ?? prop.odds ?? null;
-  return {
-    playerId:   `${game.id}-${normalizeName(prop.player || "")}`,
-    playerName: prop.player || "Unknown",
-    team:       prop.team || game.homeTeam,
-    bats:       deterministicNumber(`${seed}-bats`, 0, 1) > 0.35 ? "R" : "L",
-    gameId:     game.id,
-    opponent:   prop.team === game.homeTeam ? game.awayTeam : game.homeTeam,
-    confirmedStarter:          true,   // assume in lineup until real data
-    projectedLineupPosition:   lineupPos,
-    seasonPlateAppearances:    Math.round(deterministicNumber(`${seed}-spa`,  120, 320)),
-    seasonHomeRuns:            Math.round(deterministicNumber(`${seed}-shr`,    4,  28)),
-    barrelRate:       deterministicNumber(`${seed}-barrel`,  0.04,  0.19),
-    hardHitRate:      deterministicNumber(`${seed}-hardhit`, 0.30,  0.56),
-    flyBallRate:      deterministicNumber(`${seed}-fb`,      0.25,  0.48),
-    iso:              deterministicNumber(`${seed}-iso`,     0.10,  0.28),
-    expectedSlugging: deterministicNumber(`${seed}-xslg`,   0.34,  0.56),
-    last15PlateAppearances: Math.round(deterministicNumber(`${seed}-r15pa`, 48, 68)),
-    last15HomeRuns:         Math.round(deterministicNumber(`${seed}-r15hr`,  0,  5)),
-    last15BarrelRate:       deterministicNumber(`${seed}-r15br`, 0.03, 0.22),
-    last15HardHitRate:      deterministicNumber(`${seed}-r15hh`, 0.28, 0.58),
-    splitPlateAppearances:  Math.round(deterministicNumber(`${seed}-spl-pa`, 30, 180)),
-    splitHomeRuns:          Math.round(deterministicNumber(`${seed}-spl-hr`,  1,  14)),
-    splitIso:               deterministicNumber(`${seed}-spl-iso`, 0.09, 0.28),
-    splitSlugging:          deterministicNumber(`${seed}-spl-slg`, 0.32, 0.56),
-    bestHomeRunOdds:        Number.isFinite(Number(odds)) ? Number(odds) : null,
-    consensusHomeRunProbability: null,
-  };
+function hrValidRealPlayer(id, name) {
+  if (!id || !name) return false;
+  const n = name.trim();
+  if (n.length < 4 || n.split(/\s+/).length < 2) return false;
+  return !/\b(bat|batter|hitter|player)\s*\d+\b|\bunknown\b|\btbd\b/i.test(n);
 }
 
-function buildHrPitcherProfile(game, isAway) {
-  const team = isAway ? game.awayTeam : game.homeTeam;
-  const seed = `${game.id}-${isAway ? "away" : "home"}-hrpit`;
-  return {
-    pitcherId:   `${game.id}-${isAway ? "away" : "home"}-sp`,
-    pitcherName: team,    // placeholder until real starter name connected
-    team,
-    throws: deterministicNumber(`${seed}-hand`, 0, 1) > 0.35 ? "R" : "L",
-    gameId: game.id,
-    confirmedStarter:       true,
-    inningsPitched:         deterministicNumber(`${seed}-ip`,   50, 140),
-    homeRunsAllowed:        Math.round(deterministicNumber(`${seed}-hra`,  6,  24)),
-    hrPerNine:              deterministicNumber(`${seed}-hr9`,  0.70, 1.80),
-    barrelRateAllowed:      deterministicNumber(`${seed}-brl`,  0.04, 0.14),
-    hardHitRateAllowed:     deterministicNumber(`${seed}-hh`,   0.30, 0.50),
-    flyBallRateAllowed:     deterministicNumber(`${seed}-fb`,   0.28, 0.48),
-    splitBattersFaced:      Math.round(deterministicNumber(`${seed}-spl-bf`,  40, 180)),
-    splitHomeRunsAllowed:   Math.round(deterministicNumber(`${seed}-spl-hr`,   2,  14)),
-    splitSluggingAllowed:   deterministicNumber(`${seed}-spl-slg`, 0.35, 0.56),
-    last5Innings:           deterministicNumber(`${seed}-r5ip`,  18,  32),
-    last5HomeRunsAllowed:   Math.round(deterministicNumber(`${seed}-r5hr`,  0,   7)),
-    last5BarrelRateAllowed: deterministicNumber(`${seed}-r5brl`, 0.03, 0.16),
-    expectedInnings:        deterministicNumber(`${seed}-ei`,    4.5,  6.5),
-  };
-}
+// ── Public-data hitter scorer ─────────────────────────────────────────────────
 
-function buildHrGameEnv(game) {
-  const homeAbbr = (() => {
-    const n = normalizeName(game.homeTeam || "");
-    for (const [abbr, alias] of Object.entries(teamAliases)) {
-      if (alias === n) return abbr.toUpperCase();
-    }
-    return "";
-  })();
-  const seed = `${game.id}-env`;
-  return {
-    gameId:    game.id,
-    awayTeam:  game.awayTeam,
-    homeTeam:  game.homeTeam,
-    homeRunParkFactor:     parkHRFactors[homeAbbr] || 1.0,
-    temperatureF:          deterministicNumber(`${seed}-temp`,  55,  91),
-    windSpeedMph:          deterministicNumber(`${seed}-wind`,   0,  16),
-    windOutFactor:         deterministicNumber(`${seed}-wdir`, -1,    1),
-    gameTotal:             deterministicNumber(`${seed}-tot`,   7.0, 10.5),
-    awayBullpenHrPerNine:  deterministicNumber(`${seed}-abp`,  0.80, 1.60),
-    homeBullpenHrPerNine:  deterministicNumber(`${seed}-hbp`,  0.80, 1.60),
-  };
-}
+function hrScoreHitter(h) {
+  const { seasonStats: s, recentStats: r, split } = h;
 
-// ── Scoring functions ─────────────────────────────────────────────────────────
+  const seasonHrPerPa = hrSafeRate(s.hr, s.pa);
+  const seasonIso     = Math.max(0, s.slg - s.avg);
+  const seasonXbhRate = hrSafeRate((s.doubles || 0) + (s.triples || 0) + s.hr, s.pa);
 
-function hrScoreHitter(hitter) {
-  const seasonHrPerPa = hrSafeRate(hitter.seasonHomeRuns, hitter.seasonPlateAppearances);
-  const recentHrPerPa = hrRegressRate(hrSafeRate(hitter.last15HomeRuns, hitter.last15PlateAppearances), hitter.last15PlateAppearances, HR_BASELINES.hitterHrPerPa, 45);
-  const splitHrPerPa  = hrRegressRate(hrSafeRate(hitter.splitHomeRuns, hitter.splitPlateAppearances), hitter.splitPlateAppearances, HR_BASELINES.hitterHrPerPa, 80);
-  const splitIso      = hrRegressRate(hitter.splitIso, hitter.splitPlateAppearances, HR_BASELINES.hitterIso, 100);
+  const recentHrRate  = hrRegressRate(hrSafeRate(r.hr, r.pa), r.pa, HR_BASELINES.hitterHrPerPa, 40);
+  const recentIso     = Math.max(0, r.slg - hrSafeRate(r.hits, r.ab));
 
-  const score =
-    hrScoreAgainstBaseline(hitter.barrelRate,      HR_BASELINES.hitterBarrelRate)                * 0.18 +
-    hrScoreAgainstBaseline(hitter.hardHitRate,     HR_BASELINES.hitterHardHitRate,    0.65, 1.45) * 0.10 +
-    hrScoreAgainstBaseline(hitter.flyBallRate,     HR_BASELINES.hitterFlyBallRate,    0.55, 1.55) * 0.05 +
-    hrScoreAgainstBaseline(seasonHrPerPa,          HR_BASELINES.hitterHrPerPa)                   * 0.15 +
-    hrScoreAgainstBaseline(hitter.iso,             HR_BASELINES.hitterIso)                        * 0.10 +
-    hrScoreAgainstBaseline(hitter.expectedSlugging,HR_BASELINES.hitterXslg,           0.65, 1.45) * 0.06 +
-    hrScoreAgainstBaseline(recentHrPerPa,          HR_BASELINES.hitterHrPerPa)                   * 0.10 +
-    hrScoreAgainstBaseline(hitter.last15BarrelRate,HR_BASELINES.hitterBarrelRate)                * 0.08 +
-    hrScoreAgainstBaseline(hitter.last15HardHitRate,HR_BASELINES.hitterHardHitRate,   0.65, 1.45) * 0.04 +
-    hrScoreAgainstBaseline(splitHrPerPa,           HR_BASELINES.hitterHrPerPa)                   * 0.07 +
-    hrScoreAgainstBaseline(splitIso,               HR_BASELINES.hitterIso)                        * 0.04 +
-    hrLineupScore(hitter.projectedLineupPosition)                                                  * 0.03;
+  const splitHrRate   = hrRegressRate(hrSafeRate(split.hr, split.pa), split.pa, HR_BASELINES.hitterHrPerPa, 80);
+  const splitIso      = Math.max(0, split.slg - split.avg);
+
+  const score = hrWeightedAvg([
+    [hrScoreAgainstBaseline(seasonHrPerPa,  HR_BASELINES.hitterHrPerPa),                  24],
+    [hrScoreAgainstBaseline(seasonIso,      HR_BASELINES.hitterIso),                       18],
+    [hrScoreAgainstBaseline(s.slg,          HR_BASELINES.hitterSlugging, 0.65, 1.45),      10],
+    [hrScoreAgainstBaseline(s.ops,          HR_BASELINES.hitterOps,      0.65, 1.45),       7],
+    [hrScoreAgainstBaseline(seasonXbhRate,  HR_BASELINES.extraBaseHitPerPa),                8],
+    [hrScoreAgainstBaseline(recentHrRate,   HR_BASELINES.hitterHrPerPa),                   10],
+    [hrScoreAgainstBaseline(recentIso,      HR_BASELINES.hitterIso),                        6],
+    [hrScoreAgainstBaseline(splitHrRate,    HR_BASELINES.hitterHrPerPa),                    7],
+    [hrScoreAgainstBaseline(splitIso,       HR_BASELINES.hitterIso),                        6],
+    [hrLineupScore(h.battingOrder),                                                          4],
+  ]);
 
   const reasons = [];
-  if (hitter.barrelRate >= 0.12)   reasons.push(`${(hitter.barrelRate * 100).toFixed(1)}% barrel rate`);
-  if (hitter.hardHitRate >= 0.45)  reasons.push(`${(hitter.hardHitRate * 100).toFixed(1)}% hard-hit rate`);
-  if (hitter.iso >= 0.220)         reasons.push(`${hitter.iso.toFixed(3)} isolated power`);
-  if (recentHrPerPa >= 0.05)       reasons.push("Strong recent HR production");
-  if (splitIso >= 0.210)           reasons.push("Strong ISO vs pitcher handedness");
-  if ((hitter.projectedLineupPosition || 9) <= 4) reasons.push(`Batting ${hitter.projectedLineupPosition}`);
+  if (seasonHrPerPa >= 0.045) reasons.push(`${(seasonHrPerPa * 100).toFixed(1)}% HR/PA this season`);
+  if (seasonIso >= 0.220)     reasons.push(`${seasonIso.toFixed(3)} isolated power`);
+  if (s.slg >= 0.475)         reasons.push(`${s.slg.toFixed(3)} slugging pct`);
+  if (recentHrRate >= 0.05)   reasons.push(`${r.hr} HR over last ${r.games || 15} games`);
+  if (splitIso >= 0.210)      reasons.push(`Power edge vs ${h.pitcherHand}HP — ${split.pa}PA split`);
+  if (h.battingOrder && h.battingOrder <= 5) reasons.push(`Batting ${h.battingOrder}`);
 
   return { score: clamp(score, 0, 100), reasons };
 }
 
-function hrScorePitcher(pitcher, hitter) {
-  const seasonHr9     = pitcher.hrPerNine > 0 ? pitcher.hrPerNine : hrSafeRate(pitcher.homeRunsAllowed * 9, pitcher.inningsPitched);
-  const recentHr9     = hrRegressRate(hrSafeRate(pitcher.last5HomeRunsAllowed * 9, pitcher.last5Innings), pitcher.last5Innings, HR_BASELINES.pitcherHrPerNine, 25);
-  const splitHrPerBat = hrRegressRate(hrSafeRate(pitcher.splitHomeRunsAllowed, pitcher.splitBattersFaced), pitcher.splitBattersFaced, HR_BASELINES.hitterHrPerPa, 100);
+// ── Public-data pitcher scorer ────────────────────────────────────────────────
 
-  const score =
-    hrScoreAgainstBaseline(seasonHr9,                   HR_BASELINES.pitcherHrPerNine)               * 0.25 +
-    hrScoreAgainstBaseline(pitcher.barrelRateAllowed,   HR_BASELINES.pitcherBarrelAllowed)            * 0.17 +
-    hrScoreAgainstBaseline(pitcher.hardHitRateAllowed,  HR_BASELINES.pitcherHardHitAllowed, 0.65,1.45)* 0.10 +
-    hrScoreAgainstBaseline(pitcher.flyBallRateAllowed,  HR_BASELINES.pitcherFlyBallAllowed, 0.55,1.55)* 0.10 +
-    hrScoreAgainstBaseline(recentHr9,                   HR_BASELINES.pitcherHrPerNine)               * 0.11 +
-    hrScoreAgainstBaseline(pitcher.last5BarrelRateAllowed, HR_BASELINES.pitcherBarrelAllowed)         * 0.07 +
-    hrScoreAgainstBaseline(splitHrPerBat,               HR_BASELINES.hitterHrPerPa)                  * 0.09 +
-    hrScoreAgainstBaseline(pitcher.splitSluggingAllowed,HR_BASELINES.hitterXslg,         0.65, 1.45) * 0.07 +
-    clamp((pitcher.expectedInnings / 6) * 100, 20, 100)                                              * 0.04;
+function hrScorePitcher(p) {
+  const { seasonStats: s } = p;
+  const hr9   = hrSafeRate(s.hr * 9, s.ip);
+  const hrPbf = hrSafeRate(s.hr, s.bf);
+  const oppSlg = s.oppSlg || HR_BASELINES.pitcherOppSlugging;
+
+  const score = hrWeightedAvg([
+    [hrScoreAgainstBaseline(hr9,    HR_BASELINES.pitcherHrPerNine),         30],
+    [hrScoreAgainstBaseline(hrPbf,  HR_BASELINES.pitcherHrPerBf),           17],
+    [hrScoreAgainstBaseline(oppSlg, HR_BASELINES.pitcherOppSlugging, 0.65, 1.45), 17],
+    [clamp(((p.expectedInnings ?? 5.2) / 6.5) * 100, 25, 100),              5],
+  ]);
 
   const reasons = [];
-  if (seasonHr9 >= 1.35)                reasons.push(`Pitcher allows ${seasonHr9.toFixed(2)} HR/9`);
-  if (pitcher.barrelRateAllowed >= 0.09) reasons.push(`${(pitcher.barrelRateAllowed * 100).toFixed(1)}% barrels allowed`);
-  if (pitcher.flyBallRateAllowed >= 0.40)reasons.push("Elevated fly-ball rate allowed");
-  if (recentHr9 >= 1.50)                reasons.push("Recently allowing elevated HR production");
-  if (hitter.splitPlateAppearances >= HR_CONFIG.minimumSplitPa && splitHrPerBat >= 0.04) {
-    reasons.push("Vulnerable to this batting side");
-  }
+  if (hr9 >= 1.35)   reasons.push(`Pitcher allows ${hr9.toFixed(2)} HR/9`);
+  if (oppSlg >= 0.44) reasons.push(`Opponents slug ${oppSlg.toFixed(3)}`);
 
   return { score: clamp(score, 0, 100), reasons };
 }
 
-function hrScoreEnvironment(env, hitter) {
-  const temp       = env.temperatureF  ?? 72;
-  const wind       = env.windSpeedMph  ?? 0;
-  const windOut    = env.windOutFactor ?? 0;
-  const total      = env.gameTotal     ?? HR_BASELINES.gameTotal;
-  const oppBullpen = hitter.team === env.awayTeam ? env.homeBullpenHrPerNine : env.awayBullpenHrPerNine;
+// ── Environment scorer ────────────────────────────────────────────────────────
 
-  const parkScore  = clamp(50 + (env.homeRunParkFactor - 1) * 250, 10, 100);
-  const tempScore  = clamp(50 + (temp - 72) * 1.7, 15, 100);
-  const windScore  = windOut > 0 ? clamp(50 + wind * windOut * 3, 20, 100)
-                   : windOut < 0 ? clamp(50 - wind * Math.abs(windOut) * 3, 0, 60) : 50;
+function hrScoreEnvironment(env, isHomeHitter) {
+  const temp      = env.temperatureF  ?? 72;
+  const wind      = env.windSpeedMph  ?? 0;
+  const windOut   = env.windOutFactor ?? 0;
+  const total     = env.gameTotal     ?? HR_BASELINES.gameTotal;
+  const bullpen   = isHomeHitter ? env.awayBullpenHr9 : env.homeBullpenHr9;
+
+  const parkScore  = clamp(50 + (env.parkFactor - 1) * 250, 10, 100);
+  const tempScore  = clamp(50 + (temp - 72) * 1.6, 15, 100);
+  const windScore  = windOut > 0 ? clamp(50 + wind * 3, 20, 100)
+                   : windOut < 0 ? clamp(50 - wind * 3, 0, 65) : 50;
   const totalScore = clamp(50 + (total - HR_BASELINES.gameTotal) * 12, 10, 100);
-  const bullScore  = oppBullpen != null
-    ? hrScoreAgainstBaseline(oppBullpen, HR_BASELINES.bullpenHrPerNine, 0.55, 1.7)
-    : 50;
+  const bullScore  = bullpen != null
+    ? hrScoreAgainstBaseline(bullpen, HR_BASELINES.bullpenHrPerNine, 0.55, 1.7) : 50;
 
-  const score = parkScore * 0.35 + tempScore * 0.15 + windScore * 0.20 + totalScore * 0.15 + bullScore * 0.15;
+  const score = parkScore * 0.35 + tempScore * 0.17 + windScore * 0.20 + totalScore * 0.13 + bullScore * 0.15;
 
   const reasons = [];
-  if (env.homeRunParkFactor >= 1.08) reasons.push("Hitter-friendly HR park");
-  if (temp >= 80)                    reasons.push(`${temp.toFixed(0)}°F at first pitch`);
-  if (windOut > 0 && wind >= 8)      reasons.push(`${wind.toFixed(0)} mph wind blowing out`);
+  if (env.parkFactor >= 1.08)        reasons.push("Hitter-friendly HR park");
+  if (temp >= 80)                    reasons.push(`${Math.round(temp)}°F at first pitch`);
+  if (windOut > 0 && wind >= 8)      reasons.push(`${Math.round(wind)} mph blowing out`);
   if (total >= 9.0)                  reasons.push(`${total.toFixed(1)}-run game total`);
-  if (oppBullpen != null && oppBullpen >= 1.25) reasons.push("Opposing bullpen allows elevated HR rate");
+  if (bullpen != null && bullpen >= 1.25) reasons.push("Opposing bullpen vulnerable to HR");
 
   return { score: clamp(score, 0, 100), reasons };
 }
 
-function buildHrCandidate(hitter, pitcher, env) {
-  const h = hrScoreHitter(hitter);
-  const p = hrScorePitcher(pitcher, hitter);
-  const e = hrScoreEnvironment(env, hitter);
+// ── Candidate builder ─────────────────────────────────────────────────────────
 
-  let score = h.score * HR_CONFIG.hitterWeight +
-              p.score * HR_CONFIG.pitcherWeight +
-              e.score * HR_CONFIG.environmentWeight;
+function buildHrCandidate(hitter, pitcher, env, bestOdds) {
+  const h = hrScoreHitter(hitter);
+  const p = hrScorePitcher(pitcher);
+  const e = hrScoreEnvironment(env, hitter.teamId === env.homeTeamId);
+
+  let score = h.score * 0.45 + p.score * 0.30 + e.score * 0.15;
 
   const warnings = [];
-  if (!hitter.confirmedStarter)  { warnings.push("Lineup not confirmed"); score -= 5; }
-  if (!pitcher.confirmedStarter) { warnings.push("Starter not confirmed"); score -= 9; }
-  if ((hitter.projectedLineupPosition || 0) >= 7) { warnings.push("Lower lineup position"); score -= 3; }
-  if (hitter.seasonPlateAppearances < HR_CONFIG.minimumSeasonPa) { warnings.push("Limited season sample"); score -= 4; }
-  if (pitcher.inningsPitched < HR_CONFIG.minimumPitcherInnings)  { warnings.push("Limited pitcher sample"); score -= 3; }
+  if (!hitter.confirmedStarter)  { warnings.push("Lineup not confirmed"); score -= 6; }
+  if (!pitcher.confirmed)        { warnings.push("Starter not confirmed"); score -= 10; }
+  if (hitter.battingOrder != null && hitter.battingOrder >= 7) { warnings.push("Lower lineup spot"); score -= 3; }
+  if (hitter.seasonStats.pa < HR_CONFIG.minimumSeasonPa) { warnings.push("Limited season sample"); score -= 4; }
+  if (pitcher.seasonStats.ip < HR_CONFIG.minimumPitcherInnings) { warnings.push("Limited pitcher sample"); score -= 4; }
+
+  // Sportsbook confirmation (5% weight boost / drag)
+  const odds = bestOdds ?? null;
+  const impliedProb = odds != null ? americanOddsToProbability(odds) : null;
+  if (impliedProb != null) {
+    const mktScore = clamp(impliedProb * 500, 0, 100);
+    score = score * 0.95 + mktScore * 0.05;
+  }
 
   score = clamp(score, 0, 100);
   const prob = hrScoreToProb(score);
-  const impliedProb = hitter.bestHomeRunOdds != null ? americanOddsToProbability(hitter.bestHomeRunOdds) : null;
   const edge = impliedProb != null ? prob - impliedProb : null;
-  const confidence = score >= 74 && hitter.confirmedStarter && pitcher.confirmedStarter ? "High"
-                   : score >= 62 && pitcher.confirmedStarter ? "Medium" : "Low";
+  const confidence = score >= 74 && hitter.confirmedStarter && pitcher.confirmed ? "HIGH"
+                   : score >= 62 ? "MEDIUM" : "LOW";
 
   return {
-    gameId:     hitter.gameId,
-    playerId:   hitter.playerId,
-    playerName: hitter.playerName,
-    team:       hitter.team,
-    opponent:   hitter.opponent,
-    pitcherName:pitcher.pitcherName,
-    pitcherHand:pitcher.throws,
-    lineupPosition: hitter.projectedLineupPosition,
-    score:      Number(score.toFixed(1)),
-    probability:Number(prob.toFixed(4)),
+    gamePk:       hitter.gamePk,
+    playerId:     hitter.playerId,
+    playerName:   hitter.playerName,
+    teamName:     hitter.teamName,
+    opponentName: hitter.opponentName,
+    pitcherName:  pitcher.pitcherName,
+    pitcherHand:  pitcher.throws,
+    battingOrder: hitter.battingOrder,
+    seasonHr:     hitter.seasonStats.hr,
+    score:        Number(score.toFixed(1)),
+    probability:  Number(prob.toFixed(4)),
     confidence,
-    odds:       hitter.bestHomeRunOdds,
+    odds,
     impliedProb,
     edge,
-    reasons:    [...h.reasons, ...p.reasons, ...e.reasons].slice(0, 5),
+    reasons:      [...h.reasons, ...p.reasons, ...e.reasons].slice(0, 6),
     warnings,
   };
 }
 
-function generateHrBoard(games = slate) {
+// ── Board generator ───────────────────────────────────────────────────────────
+
+function generatePublicHrBoard(serverGames, oddsPayloads = []) {
   const candidates = [];
 
-  games.forEach((game) => {
-    if (!game.id) return;
-    const awayPitcher = buildHrPitcherProfile(game, true);
-    const homePitcher = buildHrPitcherProfile(game, false);
-    const env = buildHrGameEnv(game);
-
-    // Hitters with sportsbook HR lines
-    const hrProps = (game.candidates || []).filter((p) => p.market === "batter_home_runs");
-
-    // Also generate synthetic candidates for top-of-order hitters even without sportsbook lines
-    const syntheticSeeds = hrProps.length ? [] : [1, 2, 3, 4].map((spot) => ({
-      player: `${game.awayTeam} Bat ${spot}`,
-      team: game.awayTeam,
-      market: "batter_home_runs",
-      overOdds: null,
-      odds: null,
-      _synthetic: true,
-    })).concat([1, 2, 3, 4].map((spot) => ({
-      player: `${game.homeTeam} Bat ${spot}`,
-      team: game.homeTeam,
-      market: "batter_home_runs",
-      overOdds: null,
-      odds: null,
-      _synthetic: true,
-    })));
-
-    [...hrProps, ...syntheticSeeds].forEach((prop) => {
-      const hitter = buildHrHitterProfile(game, prop);
-      const pitcher = hitter.team === game.homeTeam ? awayPitcher : homePitcher;
-      const candidate = buildHrCandidate(hitter, pitcher, env);
-      if (candidate.score >= HR_CONFIG.minimumScore || hrProps.length === 0) {
-        candidates.push(candidate);
+  // Index Odds API HR props by normalised player name for odds lookup
+  const hrPriceMap = new Map();
+  for (const payload of oddsPayloads) {
+    for (const bm of (payload.bookmakers || [])) {
+      for (const mkt of (bm.markets || [])) {
+        if (mkt.key !== "batter_home_runs") continue;
+        for (const out of (mkt.outcomes || [])) {
+          const key = normalizeName(out.name || "");
+          if (key && Number.isFinite(Number(out.price))) {
+            const existing = hrPriceMap.get(key);
+            if (!existing || Math.abs(Number(out.price)) < Math.abs(existing)) {
+              hrPriceMap.set(key, Number(out.price));
+            }
+          }
+        }
       }
-    });
-  });
+    }
+  }
+
+  for (const game of serverGames) {
+    const homePitcher = game.homeProbablePitcher;
+    const awayPitcher = game.awayProbablePitcher;
+
+    // Park factor from existing lookup
+    const homeAbbr = (() => {
+      const n = normalizeName(game.homeTeam?.name || "");
+      for (const [abbr, alias] of Object.entries(teamAliases)) {
+        if (alias === n) return abbr.toUpperCase();
+      }
+      return "";
+    })();
+
+    const env = {
+      gamePk:         game.gamePk,
+      homeTeamId:     game.homeTeam?.id,
+      awayTeamId:     game.awayTeam?.id,
+      parkFactor:     parkHRFactors[homeAbbr] || 1.0,
+      gameTotal:      null,   // TODO: wire Odds API totals
+      temperatureF:   null,
+      windSpeedMph:   null,
+      windOutFactor:  null,
+      homeBullpenHr9: null,
+      awayBullpenHr9: null,
+    };
+
+    const scoreOneSide = (hitters, facingPitcher, opponentTeam) => {
+      if (!facingPitcher) return;
+      for (const h of hitters) {
+        if (!hrValidRealPlayer(h.playerId, h.playerName)) continue;
+
+        const pitcherHand = facingPitcher.throws || "R";
+        const split = (pitcherHand === "L" ? h.vsLeft : h.vsRight) || {};
+
+        const profile = {
+          ...h,
+          gamePk:       game.gamePk,
+          teamName:     (h.teamId === game.homeTeam?.id ? game.homeTeam : game.awayTeam)?.name || "",
+          opponentName: opponentTeam?.name || "",
+          pitcherHand,
+          split: {
+            pa:  split.pa  || 0,
+            ab:  split.ab  || 0,
+            hits:split.hits|| 0,
+            doubles: split.doubles || 0,
+            triples: split.triples || 0,
+            hr:  split.hr  || 0,
+            avg: split.avg || 0,
+            slg: split.slg || 0,
+            ops: split.ops || 0,
+          },
+        };
+
+        const bestOdds = hrPriceMap.get(normalizeName(h.playerName)) ?? null;
+        const candidate = buildHrCandidate(profile, facingPitcher, env, bestOdds);
+
+        if (candidate.score >= HR_CONFIG.minimumScore) candidates.push(candidate);
+      }
+    };
+
+    scoreOneSide(game.homeHitters || [], awayPitcher, game.awayTeam);
+    scoreOneSide(game.awayHitters || [], homePitcher, game.homeTeam);
+  }
 
   candidates.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    if (b.probability !== a.probability) return b.probability - a.probability;
+    if (Math.abs(b.score - a.score) > 0.05) return b.score - a.score;
+    if (Math.abs(b.probability - a.probability) > 0.0005) return b.probability - a.probability;
     return (b.edge ?? -1) - (a.edge ?? -1);
   });
 
-  // One player per game, unique games
   const selections = [];
   const usedGames  = new Set();
-  const usedTeams  = new Map();
+  const usedPlayers = new Set();
 
   for (const c of candidates) {
-    if (HR_CONFIG.requireUniqueGames && usedGames.has(c.gameId)) continue;
-    if ((usedTeams.get(c.team) || 0) >= HR_CONFIG.maximumPlayersPerTeam) continue;
+    if (HR_CONFIG.requireUniqueGames && usedGames.has(c.gamePk)) continue;
+    if (usedPlayers.has(c.playerId)) continue;
     selections.push({ ...c, rank: selections.length + 1 });
-    usedGames.add(c.gameId);
-    usedTeams.set(c.team, (usedTeams.get(c.team) || 0) + 1);
+    usedGames.add(c.gamePk);
+    usedPlayers.add(c.playerId);
     if (selections.length >= HR_CONFIG.boardSelections) break;
   }
 
-  const usedIds  = new Set(selections.map((s) => s.playerId));
-  const bench    = candidates.filter((c) => !usedIds.has(c.playerId)).slice(0, 5)
-                    .map((c, i) => ({ ...c, rank: selections.length + 1 + i }));
+  const usedIds = new Set(selections.map((s) => s.playerId));
+  const alternates = candidates
+    .filter((c) => !usedIds.has(c.playerId))
+    .slice(0, 5)
+    .map((c, i) => ({ ...c, rank: selections.length + 1 + i }));
 
-  const allConfirmed = selections.length === HR_CONFIG.boardSelections && selections.every((s) => !s.warnings.length);
-  return {
-    status:     allConfirmed ? "FINAL" : "PROVISIONAL",
-    selections,
-    bench,
-    hasLivePrices: games.some((g) => (g.candidates || []).some((p) => p.market === "batter_home_runs" && p.overOdds != null)),
-  };
+  const allLineupsConfirmed = selections.every((s) => !s.warnings.includes("Lineup not confirmed"));
+  const hasLivePrices = selections.some((s) => s.odds != null);
+
+  const status = selections.length < HR_CONFIG.boardSelections ? "INSUFFICIENT_MATCHUPS"
+    : allLineupsConfirmed ? "FINAL" : "PROVISIONAL";
+
+  return { status, selections, alternates, hasLivePrices };
 }
 
-function scoreMlbHomeRunBats(games = slate) {
-  // Legacy shim — generateHrBoard is the real engine now.
-  // Returns first selection as a single pick for backward compatibility.
-  const board = generateHrBoard(games);
-  return board.selections.slice(0, 1).map((s) => ({
-    type: "homer",
-    game: (games.find((g) => g.id === s.gameId)) || { awayTeam: s.opponent, homeTeam: s.team },
-    player: s.playerName,
-    team: s.team,
-    market: "batter_home_runs",
-    line: 0.5,
-    odds: s.odds,
-    homeRunScore: s.score,
-    homerProbability: s.probability,
-    confidence: s.confidence === "High" ? "Strong HR Look" : s.confidence === "Medium" ? "Good HR Look" : "Sprinkle Only",
-    reasons: s.reasons,
-    riskFlags: [...s.warnings, "Statcast and starter feeds not yet connected — model estimates only."],
-    _fullBoard: board,
-  }));
+// ── Async public-data fetcher + board builder ─────────────────────────────────
+
+async function fetchMlbHrBoardData(date) {
+  if (window.location.protocol === "file:") return { games: [] };
+  const url = new URL("/api/mlb/hr-board-data", window.location.origin);
+  url.searchParams.set("date", date);
+  return fetchJson(url);
 }
+
+let _hrBoardPromise = null;
+let _hrBoardDate    = null;
+
+async function buildPublicHrBoard(date) {
+  if (_hrBoardDate === date && _hrBoardPromise) return _hrBoardPromise;
+  _hrBoardDate = date;
+  _hrBoardPromise = fetchMlbHrBoardData(date).then((data) => {
+    const oddsPayloads = (slate || []).flatMap((g) =>
+      (g.candidates || []).length ? [{ bookmakers: g.candidates.map((c) => ({ markets: [{ key: c.market, outcomes: [{ name: c.player, price: c.overOdds ?? c.odds }] }] })) }] : []
+    );
+    return generatePublicHrBoard(data.games || [], oddsPayloads);
+  });
+  return _hrBoardPromise;
+}
+
+function scoreMlbHomeRunBats() { return []; }  // retired; board is now async
 
 // ── No Run Inning Board v2 — pitcher/offense grading engine ─────────────────
 
@@ -3893,8 +3878,7 @@ function renderNoRunBoard() {
 
 function renderMlbBoard() {
   const teamPicks = scoreMlbTeams();
-  const homerPicks = scoreMlbHomeRunBats();
-  const topScore = Math.max(...teamPicks.map((p) => p.finalScore), ...homerPicks.map((p) => p.homeRunScore), 0);
+  const topScore  = Math.max(...teamPicks.map((p) => p.finalScore), 0);
   elements.selectedGameTitle.textContent = "MLB Daily Board";
   if (elements.parlayScore) elements.parlayScore.textContent = topScore || "--";
   elements.riskLabel.textContent = teamPicks[0]?.tier?.label || "Awaiting slate";
@@ -3924,6 +3908,18 @@ function renderMlbBoard() {
       ${renderHrBoardSection()}
     </section>
   `;
+
+  // Kick off async real-data fetch; updateHrBoardDom fills in the section when ready
+  const date = elements.slateDate?.value || today;
+  _hrBoardDate = null; // invalidate cache so new render always re-fetches
+  buildPublicHrBoard(date)
+    .then(updateHrBoardDom)
+    .catch((err) => {
+      const pill = document.getElementById("hrBoardStatusPill");
+      if (pill) pill.textContent = "fetch failed";
+      const loading = document.getElementById("hrBoardLoading");
+      if (loading) loading.textContent = `HR board: ${err.message}`;
+    });
 }
 
 function renderMlbEmpty(message) {
@@ -4003,30 +3999,38 @@ function renderMlbTeamPick(pick, index = 0) {
 }
 
 function renderHrBoardSection() {
-  const board = generateHrBoard();
-  const pill  = document.getElementById("hrBoardStatusPill");
+  // Returns a loading shell immediately; async update fills it in.
+  return `<p class="hr-loading" id="hrBoardLoading">Fetching real player data from MLB Stats API…</p>`;
+}
+
+function updateHrBoardDom(board) {
+  const container = document.querySelector(".mlb-board-section .mlb-section-header + *");
+  const pill      = document.getElementById("hrBoardStatusPill");
+  const loading   = document.getElementById("hrBoardLoading");
 
   const statusLabel = board.status === "FINAL"
     ? `${board.selections.length}/${HR_CONFIG.boardSelections} confirmed`
+    : board.status === "INSUFFICIENT_MATCHUPS"
+    ? `${board.selections.length} qualified`
     : `${board.selections.length}/${HR_CONFIG.boardSelections} provisional`;
   if (pill) pill.textContent = statusLabel;
 
-  const priceNote = board.hasLivePrices ? "" : "<!-- no live prices -->";
-
   if (!board.selections.length) {
-    return renderMlbEmpty(bdlMlbSupplementError
-      ? `No HR props: ${bdlMlbSupplementError}`
-      : "No home run candidates generated for today's slate.");
+    const msg = board.status === "INSUFFICIENT_MATCHUPS"
+      ? "Not enough hitters qualified today — check back closer to game time."
+      : "No home run candidates from MLB data yet.";
+    if (loading) loading.textContent = msg;
+    return;
   }
 
   const medals = ["🥇", "🥈", "🥉"];
   const selHtml = board.selections.map((s, i) => renderHrCandidate(s, medals[i] || "⚾", true)).join("");
 
-  const benchHtml = board.bench.length
+  const benchHtml = board.alternates?.length
     ? `<details class="hr-bench-details">
-        <summary>On the bench (${board.bench.length})</summary>
+        <summary>Alternates (${board.alternates.length})</summary>
         <div class="hr-bench-list">
-          ${board.bench.slice(0, 3).map((b, i) =>
+          ${board.alternates.slice(0, 3).map((b, i) =>
             renderHrCandidate(b, `${board.selections.length + i + 1}.`, false)
           ).join("")}
         </div>
@@ -4034,9 +4038,22 @@ function renderHrBoardSection() {
     : "";
 
   const provisionalBanner = board.status === "PROVISIONAL"
-    ? `<p class="hr-provisional">⚠️ Board is PROVISIONAL — confirm lineups before wagering.</p>` : "";
+    ? `<p class="hr-provisional">⚠️ PROVISIONAL — confirm starting lineups before wagering.</p>` : "";
 
-  return `${provisionalBanner}${priceNote}${selHtml}${benchHtml}`;
+  const html = `${provisionalBanner}${selHtml}${benchHtml}`;
+
+  // Replace the loading node with real content
+  const section = document.querySelector(".mlb-board-section:last-child");
+  if (section) {
+    const existing = section.querySelector(".hr-loading, .mlb-pick-card, .hr-provisional, .hr-bench-details");
+    if (existing) {
+      existing.insertAdjacentHTML("beforebegin", html);
+      // Remove all placeholders / old cards
+      section.querySelectorAll(".hr-loading").forEach((el) => el.remove());
+    } else {
+      section.insertAdjacentHTML("beforeend", html);
+    }
+  }
 }
 
 function renderHrCandidate(c, medal, isMain) {

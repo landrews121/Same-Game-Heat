@@ -302,9 +302,177 @@ async function fetchMlbPublicRoster(teamId) {
   const season = new Date().getFullYear();
   const rosterUrl = new URL(`https://statsapi.mlb.com/api/v1/teams/${teamId}/roster`);
   rosterUrl.searchParams.set("rosterType", "active");
-  rosterUrl.searchParams.set("hydrate", `person(stats(group=[hitting],type=[season],season=${season}))`);
+  rosterUrl.searchParams.set("hydrate", `person(stats(group=[hitting],type=[season,vsLeft,vsRight,lastXGames],lastXGames=15,season=${season}))`);
   const result = await fetchJson(rosterUrl);
   return result.roster || [];
+}
+
+async function fetchMlbPitcherStats(pitcherId, season) {
+  const url = new URL(`https://statsapi.mlb.com/api/v1/people/${pitcherId}/stats`);
+  url.searchParams.set("stats", "season");
+  url.searchParams.set("group", "pitching");
+  url.searchParams.set("season", String(season));
+  url.searchParams.set("gameType", "R");
+  const result = await fetchJson(url);
+  const splits = (result.stats || [])[0]?.splits || [];
+  return splits[0]?.stat || {};
+}
+
+function extractHitterStatGroup(person, typeName) {
+  const stats = person?.stats || [];
+  for (const group of stats) {
+    const gname = (group.group?.displayName || "").toLowerCase();
+    if (gname !== "hitting") continue;
+    for (const split of (group.splits || [])) {
+      const stype = (split.type?.displayName || split.type?.type || "").toLowerCase();
+      if (stype === typeName.toLowerCase()) return split.stat || {};
+    }
+  }
+  return {};
+}
+
+function numPitchingStatValue(stats, key) {
+  const v = stats?.[key];
+  if (v == null) return 0;
+  const n = typeof v === "object" ? Number(Object.values(v)[0] ?? 0) : Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+async function fetchMlbHrBoardData(date) {
+  const season = new Date().getFullYear();
+  const games = await fetchMlbPublicSchedule(date);
+
+  const result = [];
+
+  for (const game of games.slice(0, 12)) {
+    const gamePk = game.gamePk;
+    const homeTeam = game.teams?.home?.team;
+    const awayTeam = game.teams?.away?.team;
+    const homeProbable = game.teams?.home?.probablePitcher;
+    const awayProbable = game.teams?.away?.probablePitcher;
+
+    if (!homeTeam?.id || !awayTeam?.id) continue;
+
+    const [homeRoster, awayRoster, homePitcherStats, awayPitcherStats] = await Promise.all([
+      fetchMlbPublicRoster(homeTeam.id),
+      fetchMlbPublicRoster(awayTeam.id),
+      homeProbable?.id ? fetchMlbPitcherStats(homeProbable.id, season) : Promise.resolve({}),
+      awayProbable?.id ? fetchMlbPitcherStats(awayProbable.id, season) : Promise.resolve({}),
+    ]);
+
+    const buildHitterEntry = (rosterEntry, teamId) => {
+      const person = rosterEntry.person;
+      const season = extractHitterStatGroup(person, "season");
+      const vsLeft = extractHitterStatGroup(person, "vsLeft") || extractHitterStatGroup(person, "vsLeftSeason");
+      const vsRight = extractHitterStatGroup(person, "vsRight") || extractHitterStatGroup(person, "vsRightSeason");
+      const recent = extractHitterStatGroup(person, "lastXGames");
+
+      const ab = numericStatValue(season.atBats);
+      const hr = numericStatValue(season.homeRuns);
+      const slg = numericStatValue(season.slugging);
+      if (ab < 20 && hr === 0 && slg < 0.35) return null;
+
+      return {
+        playerId: person.id,
+        playerName: person.fullName || person.displayName || "",
+        teamId,
+        bats: person.batSide?.code || null,
+        confirmedStarter: false,
+        battingOrder: null,
+        seasonStats: {
+          pa: numericStatValue(season.plateAppearances),
+          ab,
+          hits: numericStatValue(season.hits),
+          doubles: numericStatValue(season.doubles),
+          triples: numericStatValue(season.triples),
+          hr,
+          bb: numericStatValue(season.baseOnBalls),
+          avg: numericStatValue(season.avg),
+          slg,
+          ops: numericStatValue(season.ops),
+        },
+        vsLeft: {
+          pa: numericStatValue(vsLeft.plateAppearances),
+          ab: numericStatValue(vsLeft.atBats),
+          hits: numericStatValue(vsLeft.hits),
+          doubles: numericStatValue(vsLeft.doubles),
+          triples: numericStatValue(vsLeft.triples),
+          hr: numericStatValue(vsLeft.homeRuns),
+          avg: numericStatValue(vsLeft.avg),
+          slg: numericStatValue(vsLeft.slugging),
+          ops: numericStatValue(vsLeft.ops),
+        },
+        vsRight: {
+          pa: numericStatValue(vsRight.plateAppearances),
+          ab: numericStatValue(vsRight.atBats),
+          hits: numericStatValue(vsRight.hits),
+          doubles: numericStatValue(vsRight.doubles),
+          triples: numericStatValue(vsRight.triples),
+          hr: numericStatValue(vsRight.homeRuns),
+          avg: numericStatValue(vsRight.avg),
+          slg: numericStatValue(vsRight.slugging),
+          ops: numericStatValue(vsRight.ops),
+        },
+        recentStats: {
+          games: numericStatValue(recent.gamesPlayed) || 15,
+          pa: numericStatValue(recent.plateAppearances),
+          ab: numericStatValue(recent.atBats),
+          hits: numericStatValue(recent.hits),
+          doubles: numericStatValue(recent.doubles),
+          triples: numericStatValue(recent.triples),
+          hr: numericStatValue(recent.homeRuns),
+          slg: numericStatValue(recent.slugging),
+        },
+      };
+    };
+
+    const buildPitcherEntry = (probPitcher, pitcherStats, teamId) => {
+      if (!probPitcher?.id) return null;
+      const ip = numPitchingStatValue(pitcherStats, "inningsPitched");
+      const bf = numPitchingStatValue(pitcherStats, "battersFaced");
+      return {
+        pitcherId: probPitcher.id,
+        pitcherName: probPitcher.fullName || probPitcher.fullName || "",
+        teamId,
+        throws: probPitcher.pitchHand?.code || null,
+        confirmed: true,
+        seasonStats: {
+          ip,
+          bf,
+          h: numPitchingStatValue(pitcherStats, "hits"),
+          hr: numPitchingStatValue(pitcherStats, "homeRuns"),
+          bb: numPitchingStatValue(pitcherStats, "baseOnBalls"),
+          era: numPitchingStatValue(pitcherStats, "era"),
+          whip: numPitchingStatValue(pitcherStats, "whip"),
+          oppAvg: numPitchingStatValue(pitcherStats, "avg"),
+          oppSlg: numPitchingStatValue(pitcherStats, "slg"),
+        },
+      };
+    };
+
+    const homeHitters = homeRoster
+      .filter((r) => r.position?.type !== "Pitcher")
+      .map((r) => buildHitterEntry(r, homeTeam.id))
+      .filter(Boolean);
+    const awayHitters = awayRoster
+      .filter((r) => r.position?.type !== "Pitcher")
+      .map((r) => buildHitterEntry(r, awayTeam.id))
+      .filter(Boolean);
+
+    result.push({
+      gamePk,
+      startTime: game.gameDate,
+      venueName: game.venue?.name || "",
+      homeTeam: { id: homeTeam.id, name: homeTeam.name || "" },
+      awayTeam: { id: awayTeam.id, name: awayTeam.name || "" },
+      homeProbablePitcher: buildPitcherEntry(homeProbable, homePitcherStats, homeTeam.id),
+      awayProbablePitcher: buildPitcherEntry(awayProbable, awayPitcherStats, awayTeam.id),
+      homeHitters,
+      awayHitters,
+    });
+  }
+
+  return result;
 }
 
 function hitterSeasonStats(player) {
@@ -705,6 +873,24 @@ async function handleApi(req, res, url) {
         error: error.message,
         source: "MLB Stats API",
         candidates: []
+      });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/mlb/hr-board-data") {
+    const date = url.searchParams.get("date") || new Date().toISOString().slice(0, 10);
+    try {
+      json(res, 200, {
+        source: "MLB Stats API",
+        date,
+        games: await fetchMlbHrBoardData(date)
+      });
+    } catch (error) {
+      json(res, 502, {
+        error: error.message,
+        source: "MLB Stats API",
+        games: []
       });
     }
     return;
