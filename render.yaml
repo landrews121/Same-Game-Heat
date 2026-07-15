@@ -16,3 +16,12 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
+  - type: web
+    name: batch-run-tracker
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm run start:batch
+    envVars:
+      - key: NODE_VERSION
+        value: 20
