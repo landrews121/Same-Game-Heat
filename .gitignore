@@ -4,3 +4,4 @@ node_modules/
 .saved-boards.json
 .app-state.json
 data/batch-state.json
+batch-run-tracker/

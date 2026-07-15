@@ -6,9 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "PORT=4000 nodemon server.js",
-    "start:batch": "node batch-server.js",
-    "dev:batch": "PORT=4100 nodemon batch-server.js"
+    "dev": "PORT=4000 nodemon server.js"
   },
   "engines": {
     "node": ">=20"
