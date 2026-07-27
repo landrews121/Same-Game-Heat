@@ -298,6 +298,35 @@ async function fetchMlbPublicSchedule(date) {
   return (result.dates || []).flatMap((item) => item.games || []);
 }
 
+async function fetchMlbPublicSlate(date) {
+  const games = await fetchMlbHrBoardData(date);
+  return games.map((game) => {
+    const homeTeam = game.homeTeam;
+    const awayTeam = game.awayTeam;
+    return {
+      event: {
+        id: `mlb-${game.gamePk}`,
+        sport_key: "baseball_mlb",
+        sport_title: "MLB",
+        commence_time: game.startTime,
+        home_team: homeTeam?.name || "",
+        away_team: awayTeam?.name || "",
+        source: "MLB Stats API"
+      },
+      odds: {
+        id: `mlb-${game.gamePk}`,
+        sport_key: "baseball_mlb",
+        commence_time: game.startTime,
+        home_team: homeTeam?.name || "",
+        away_team: awayTeam?.name || "",
+        bookmakers: [],
+        source: "MLB Stats API"
+      },
+      mlbContext: game
+    };
+  }).filter((payload) => payload.event.home_team && payload.event.away_team);
+}
+
 async function fetchMlbPublicRoster(teamId) {
   const season = new Date().getFullYear();
   const rosterUrl = new URL(`https://statsapi.mlb.com/api/v1/teams/${teamId}/roster`);
@@ -825,11 +854,40 @@ async function handleApi(req, res, url) {
       .filter(Boolean);
 
     try {
+      if (sport === "baseball_mlb" && !oddsApiKey) {
+        json(res, 200, {
+          configured: false,
+          source: "MLB Stats API",
+          oddsUnavailable: true,
+          events: await fetchMlbPublicSlate(date)
+        });
+        return;
+      }
+
       json(res, 200, {
         configured: Boolean(oddsApiKey),
         events: await fetchOddsSlate({ sport, date, region, markets })
       });
     } catch (error) {
+      if (sport === "baseball_mlb") {
+        try {
+          json(res, 200, {
+            configured: Boolean(oddsApiKey),
+            source: "MLB Stats API",
+            oddsUnavailable: true,
+            oddsError: error.message,
+            events: await fetchMlbPublicSlate(date)
+          });
+          return;
+        } catch (fallbackError) {
+          json(res, 502, {
+            error: fallbackError.message,
+            oddsError: error.message,
+            configured: Boolean(oddsApiKey)
+          });
+          return;
+        }
+      }
       json(res, oddsApiKey ? 502 : 400, { error: error.message, configured: Boolean(oddsApiKey) });
     }
     return;
