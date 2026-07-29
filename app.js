@@ -3169,45 +3169,75 @@ function finalizeMlbMatchupPick(teamPick, opponentPick) {
 
 function scoreMlbTeams(games = slate) {
   const contenders = [];
+  const backfillContenders = [];
 
   games.forEach((game) => {
     const context = mlbContextForGame(game);
     const homePick = scoreMlbMoneylineSide(game, { team: game.homeTeam, opponent: game.awayTeam, isHome: true }, context);
     const awayPick = scoreMlbMoneylineSide(game, { team: game.awayTeam, opponent: game.homeTeam, isHome: false }, context);
     [finalizeMlbMatchupPick(homePick, awayPick), finalizeMlbMatchupPick(awayPick, homePick)].forEach((pick) => {
+      const backfillEligible = pick.dataComplete &&
+        pick.finalScore >= 48 &&
+        pick.modelWinProbability >= 0.50 &&
+        pick.matchupEdge > 0;
       const qualifies = pick.dataComplete &&
         pick.finalScore >= MLB_MONEYLINE_RULES.minimumTeamScore &&
         pick.modelWinProbability >= MLB_MONEYLINE_RULES.minimumWinProbability &&
         pick.matchupEdge >= MLB_MONEYLINE_RULES.minimumMatchupEdge &&
         pick.tier.tier > 0;
+      if (backfillEligible) backfillContenders.push(pick);
       if (qualifies) contenders.push(pick);
     });
   });
 
-  contenders.sort((a, b) => {
+  const sortMlbTeamPicks = (a, b) => {
     if (b.modelWinProbability !== a.modelWinProbability) return b.modelWinProbability - a.modelWinProbability;
     if (b.matchupEdge !== a.matchupEdge) return b.matchupEdge - a.matchupEdge;
     return b.finalScore - a.finalScore;
-  });
+  };
+
+  contenders.sort(sortMlbTeamPicks);
+  backfillContenders.sort(sortMlbTeamPicks);
 
   const picks = [];
   const usedGames = new Set();
   const usedMatchups = new Set();
   const usedTeams = new Set();
-  for (const pick of contenders) {
+
+  const addUniquePick = (pick, isBackfill = false) => {
     const teamKey = normalizeName(pick.team);
     const matchupKey = [
       normalizeName(pick.game.awayTeam),
       normalizeName(pick.game.homeTeam),
       String(pick.game.commenceTime || "").slice(0, 10)
     ].join("@");
-    if (usedGames.has(pick.game.id) || usedMatchups.has(matchupKey) || usedTeams.has(teamKey)) continue;
-    picks.push(pick);
+    if (usedGames.has(pick.game.id) || usedMatchups.has(matchupKey) || usedTeams.has(teamKey)) return false;
+    picks.push(isBackfill ? {
+      ...pick,
+      tier: pick.tier.tier > 0 ? pick.tier : { tier: 3, label: "Best Available" },
+      riskFlags: [
+        "Backfilled as the next-best unique team after duplicate teams were removed; treat as lower confidence.",
+        ...(pick.riskFlags || [])
+      ]
+    } : pick);
     usedGames.add(pick.game.id);
     usedMatchups.add(matchupKey);
     usedTeams.add(teamKey);
+    return true;
+  };
+
+  for (const pick of contenders) {
+    addUniquePick(pick);
     if (picks.length >= 3) break;
   }
+
+  if (picks.length < 3) {
+    for (const pick of backfillContenders) {
+      addUniquePick(pick, true);
+      if (picks.length >= 3) break;
+    }
+  }
+
   return picks;
 }
 
