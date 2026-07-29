@@ -3192,10 +3192,20 @@ function scoreMlbTeams(games = slate) {
 
   const picks = [];
   const usedGames = new Set();
+  const usedMatchups = new Set();
+  const usedTeams = new Set();
   for (const pick of contenders) {
-    if (usedGames.has(pick.game.id)) continue;
+    const teamKey = normalizeName(pick.team);
+    const matchupKey = [
+      normalizeName(pick.game.awayTeam),
+      normalizeName(pick.game.homeTeam),
+      String(pick.game.commenceTime || "").slice(0, 10)
+    ].join("@");
+    if (usedGames.has(pick.game.id) || usedMatchups.has(matchupKey) || usedTeams.has(teamKey)) continue;
     picks.push(pick);
     usedGames.add(pick.game.id);
+    usedMatchups.add(matchupKey);
+    usedTeams.add(teamKey);
     if (picks.length >= 3) break;
   }
   return picks;
