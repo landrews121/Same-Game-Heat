@@ -357,6 +357,18 @@ function decimalToAmericanOdds(decimal) {
   return value;
 }
 
+function fairAmericanOddsFromProbability(probability) {
+  const probabilityNumber = clamp(Number(probability), 0.01, 0.99);
+  return probabilityNumber >= 0.5
+    ? -Math.round((probabilityNumber / (1 - probabilityNumber)) * 100)
+    : Math.round(((1 - probabilityNumber) / probabilityNumber) * 100);
+}
+
+function playableMoneylineFromProbability(probability) {
+  const conservativeProbability = clamp(Number(probability) - 0.025, 0.01, 0.99);
+  return fairAmericanOddsFromProbability(conservativeProbability);
+}
+
 function formatSigned(value) {
   return `${value >= 0 ? "+" : ""}${value.toFixed(1)}`;
 }
@@ -2979,6 +2991,28 @@ function moneylineForTeam(game, team) {
   return game?.moneylines?.[normalizeName(team)] || null;
 }
 
+function mlbGameDateKey(game) {
+  return String(game?.commenceTime || "").slice(0, 10);
+}
+
+function mlbMatchupDateKey(game) {
+  return [
+    normalizeName(game?.awayTeam),
+    normalizeName(game?.homeTeam),
+    mlbGameDateKey(game)
+  ].join("@");
+}
+
+function mlbGameNumberLabel(game, games = slate) {
+  const matchupKey = mlbMatchupDateKey(game);
+  const sameMatchup = games
+    .filter((candidate) => mlbMatchupDateKey(candidate) === matchupKey)
+    .sort((a, b) => Date.parse(a.commenceTime || "") - Date.parse(b.commenceTime || ""));
+  if (sameMatchup.length <= 1) return formatDateTime(game?.commenceTime);
+  const index = sameMatchup.findIndex((candidate) => candidate.id === game.id);
+  return `Game ${index + 1} · ${formatDateTime(game?.commenceTime)}`;
+}
+
 function mlbContextForGame(game) {
   if (game?.mlbContext) return game.mlbContext;
   const away = normalizeName(game.awayTeam);
@@ -3144,6 +3178,8 @@ function finalizeMlbMatchupPick(teamPick, opponentPick) {
     ? pureModelProbability
     : clamp(teamPick.impliedProbability * 0.45 + pureModelProbability * 0.55, 0.40, 0.74);
   const edge = teamPick.impliedProbability === null ? null : modelWinProbability - teamPick.impliedProbability;
+  const fairOdds = fairAmericanOddsFromProbability(modelWinProbability);
+  const playableThrough = playableMoneylineFromProbability(modelWinProbability);
   const reasons = [...teamPick.components]
     .filter((component) => component.score >= 60)
     .sort((a, b) => b.score - a.score)
@@ -3162,32 +3198,36 @@ function finalizeMlbMatchupPick(teamPick, opponentPick) {
     matchupEdge,
     modelWinProbability,
     edge,
+    fairOdds,
+    playableThrough,
     tier: mlbMoneylineTier(teamPick.finalScore, modelWinProbability),
     reasons
   };
 }
 
-function scoreMlbTeams(games = slate) {
-  const contenders = [];
-  const backfillContenders = [];
+function mlbMoneylinePassReasons(pick) {
+  const reasons = [];
+  if (!pick.dataComplete) reasons.push("probable starter data missing");
+  if (pick.finalScore < MLB_MONEYLINE_RULES.minimumTeamScore) reasons.push("team score below threshold");
+  if (pick.modelWinProbability < MLB_MONEYLINE_RULES.minimumWinProbability) reasons.push("win probability below official-card threshold");
+  if (pick.matchupEdge < MLB_MONEYLINE_RULES.minimumMatchupEdge) reasons.push("matchup edge is thin");
+  if (pick.moneyline?.odds && pick.playableThrough < 0 && Number(pick.moneyline.odds) < pick.playableThrough) {
+    reasons.push("sportsbook price is worse than playable range");
+  }
+  return reasons;
+}
+
+function buildMlbMoneylineContenders(games = slate) {
+  const allSides = [];
 
   games.forEach((game) => {
     const context = mlbContextForGame(game);
     const homePick = scoreMlbMoneylineSide(game, { team: game.homeTeam, opponent: game.awayTeam, isHome: true }, context);
     const awayPick = scoreMlbMoneylineSide(game, { team: game.awayTeam, opponent: game.homeTeam, isHome: false }, context);
-    [finalizeMlbMatchupPick(homePick, awayPick), finalizeMlbMatchupPick(awayPick, homePick)].forEach((pick) => {
-      const backfillEligible = pick.dataComplete &&
-        pick.finalScore >= 48 &&
-        pick.modelWinProbability >= 0.50 &&
-        pick.matchupEdge > 0;
-      const qualifies = pick.dataComplete &&
-        pick.finalScore >= MLB_MONEYLINE_RULES.minimumTeamScore &&
-        pick.modelWinProbability >= MLB_MONEYLINE_RULES.minimumWinProbability &&
-        pick.matchupEdge >= MLB_MONEYLINE_RULES.minimumMatchupEdge &&
-        pick.tier.tier > 0;
-      if (backfillEligible) backfillContenders.push(pick);
-      if (qualifies) contenders.push(pick);
-    });
+    allSides.push(
+      finalizeMlbMatchupPick(homePick, awayPick),
+      finalizeMlbMatchupPick(awayPick, homePick)
+    );
   });
 
   const sortMlbTeamPicks = (a, b) => {
@@ -3196,7 +3236,45 @@ function scoreMlbTeams(games = slate) {
     return b.finalScore - a.finalScore;
   };
 
-  contenders.sort(sortMlbTeamPicks);
+  const contenders = allSides
+    .map((pick) => {
+      const passReasons = mlbMoneylinePassReasons(pick);
+      const qualifies = pick.dataComplete &&
+        pick.finalScore >= MLB_MONEYLINE_RULES.minimumTeamScore &&
+        pick.modelWinProbability >= MLB_MONEYLINE_RULES.minimumWinProbability &&
+        pick.matchupEdge >= MLB_MONEYLINE_RULES.minimumMatchupEdge &&
+        pick.tier.tier > 0;
+      const backfillEligible = pick.dataComplete &&
+        pick.finalScore >= 48 &&
+        pick.modelWinProbability >= 0.50 &&
+        pick.matchupEdge > 0;
+      return {
+        ...pick,
+        gameLabel: mlbGameNumberLabel(pick.game, games),
+        passReasons,
+        qualifies,
+        backfillEligible
+      };
+    })
+    .sort(sortMlbTeamPicks);
+
+  const gameWinners = [];
+  const usedGameWinners = new Set();
+  contenders.forEach((pick) => {
+    if (usedGameWinners.has(pick.game.id)) return;
+    usedGameWinners.add(pick.game.id);
+    gameWinners.push(pick);
+  });
+
+  return { contenders, gameWinners, sortMlbTeamPicks };
+}
+
+function scoreMlbMoneylineBoard(games = slate) {
+  const { contenders, gameWinners, sortMlbTeamPicks } = buildMlbMoneylineContenders(games);
+  const officialContenders = contenders.filter((pick) => pick.qualifies);
+  const backfillContenders = contenders.filter((pick) => pick.backfillEligible);
+
+  officialContenders.sort(sortMlbTeamPicks);
   backfillContenders.sort(sortMlbTeamPicks);
 
   const picks = [];
@@ -3215,6 +3293,7 @@ function scoreMlbTeams(games = slate) {
     picks.push(isBackfill ? {
       ...pick,
       tier: pick.tier.tier > 0 ? pick.tier : { tier: 3, label: "Best Available" },
+      isBackfill: true,
       riskFlags: [
         "Backfilled as the next-best unique team after duplicate teams were removed; treat as lower confidence.",
         ...(pick.riskFlags || [])
@@ -3226,7 +3305,7 @@ function scoreMlbTeams(games = slate) {
     return true;
   };
 
-  for (const pick of contenders) {
+  for (const pick of officialContenders) {
     addUniquePick(pick);
     if (picks.length >= 3) break;
   }
@@ -3238,7 +3317,21 @@ function scoreMlbTeams(games = slate) {
     }
   }
 
-  return picks;
+  const officialKeys = new Set(picks.map((pick) => `${normalizeName(pick.team)}:${pick.game.id}`));
+  const leans = gameWinners
+    .filter((pick) => !officialKeys.has(`${normalizeName(pick.team)}:${pick.game.id}`))
+    .filter((pick) => pick.backfillEligible || pick.qualifies)
+    .slice(0, 6);
+  const passes = gameWinners
+    .filter((pick) => !officialKeys.has(`${normalizeName(pick.team)}:${pick.game.id}`))
+    .filter((pick) => !pick.backfillEligible && !pick.qualifies)
+    .slice(0, 8);
+
+  return { picks, leans, passes, gameWinners };
+}
+
+function scoreMlbTeams(games = slate) {
+  return scoreMlbMoneylineBoard(games).picks;
 }
 
 // ── Home Run Board — public MLB data engine (v2) ─────────────────────────────
@@ -3991,7 +4084,8 @@ function renderNoRunBoard() {
 // ── MLB Board render ─────────────────────────────────────────────────────────
 
 function renderMlbBoard() {
-  const teamPicks = scoreMlbTeams();
+  const moneylineBoard = scoreMlbMoneylineBoard();
+  const teamPicks = moneylineBoard.picks;
   const topScore  = Math.max(...teamPicks.map((p) => p.finalScore), 0);
   elements.selectedGameTitle.textContent = "MLB Daily Board";
   if (elements.parlayScore) elements.parlayScore.textContent = topScore || "--";
@@ -4006,6 +4100,7 @@ function renderMlbBoard() {
         <span>${teamPicks.length}/3 ranked</span>
       </div>
       ${teamPicks.length ? teamPicks.map((pick, i) => renderMlbTeamPick(pick, i)).join("") : renderMlbEmpty("No team cleared the moneyline confidence threshold with complete pitcher, odds, and matchup data.")}
+      ${renderMlbSlateRead(moneylineBoard)}
     </section>
     <section class="mlb-board-section">
       <div class="mlb-section-header">
@@ -4038,6 +4133,42 @@ function renderMlbBoard() {
 
 function renderMlbEmpty(message) {
   return `<p class="mlb-empty">${escapeHtml(message)}</p>`;
+}
+
+function renderMlbSlateRead(board) {
+  const leanRows = board.leans.length
+    ? board.leans.map((pick) => renderMlbSlateReadRow(pick, "Lean")).join("")
+    : `<p class="mlb-empty compact">No additional leans cleared the reduced watchlist threshold.</p>`;
+  const passRows = board.passes.length
+    ? board.passes.map((pick) => renderMlbSlateReadRow(pick, "Pass")).join("")
+    : `<p class="mlb-empty compact">No pass notes available yet.</p>`;
+
+  return `
+    <details class="mlb-slate-read">
+      <summary>Full Slate Read: leans and passes</summary>
+      <div class="mlb-slate-read-grid">
+        <div>
+          <h4>Next-Best Leans</h4>
+          ${leanRows}
+        </div>
+        <div>
+          <h4>Pass / Wait</h4>
+          ${passRows}
+        </div>
+      </div>
+    </details>`;
+}
+
+function renderMlbSlateReadRow(pick, label) {
+  const reasons = label === "Pass"
+    ? (pick.passReasons?.length ? pick.passReasons.slice(0, 2).join("; ") : "thin edge")
+    : (pick.riskFlags?.[0] || "lower than official-card confidence");
+  return `
+    <div class="mlb-slate-read-row">
+      <strong>${escapeHtml(pick.team)}</strong>
+      <span>${escapeHtml(pick.gameLabel || formatDateTime(pick.game.commenceTime))} · ${formatProbability(pick.modelWinProbability)} · ${escapeHtml(label)}</span>
+      <small>${escapeHtml(reasons)}</small>
+    </div>`;
 }
 
 function renderMlbTeamPick(pick, index = 0) {
@@ -4094,7 +4225,7 @@ function renderMlbTeamPick(pick, index = 0) {
         </div>
         <span class="mlb-pick-top-odds">${formatOdds(pick.moneyline?.odds)}</span>
       </div>
-      <p>Opponent: ${escapeHtml(pick.opponent)} · ${pick.game.awayTeam === pick.team ? "Away" : "Home"} · Starter: ${escapeHtml(pick.starterName)}</p>
+      <p>${escapeHtml(pick.gameLabel || formatDateTime(pick.game.commenceTime))} · Opponent: ${escapeHtml(pick.opponent)} · ${pick.game.awayTeam === pick.team ? "Away" : "Home"} · Starter: ${escapeHtml(pick.starterName)}</p>
       <div class="mlb-pill-row">
         <span>Confidence ${pick.tier.label}</span>
         <span>${edge}</span>
@@ -4106,6 +4237,10 @@ function renderMlbTeamPick(pick, index = 0) {
       <div class="mlb-components">${componentHtml}</div>
       ${disqHtml}
       ${vegasHtml}
+      <div class="mlb-price-row">
+        <span>Fair odds ${formatOdds(pick.fairOdds)}</span>
+        <span>Playable through ${formatOdds(pick.playableThrough)}</span>
+      </div>
       <p class="mlb-risk">Matchup edge: +${Math.round(pick.matchupEdge)} points vs ${escapeHtml(pick.opponent)}</p>
       <p class="mlb-risk">Risk: ${escapeHtml(pick.riskFlags[0] || "No major risk flag.")}</p>
     </article>

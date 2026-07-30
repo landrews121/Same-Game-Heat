@@ -1043,6 +1043,71 @@ select:focus {
 }
 .mlb-vegas-row strong { color: #b84040; }
 
+.mlb-price-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.mlb-price-row span {
+  border-radius: 6px;
+  background: #edf4ff;
+  color: var(--accent-deep);
+  padding: 6px 8px;
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+
+.mlb-slate-read {
+  border: 1px solid #d6e1f2;
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+}
+
+.mlb-slate-read summary {
+  cursor: pointer;
+  color: var(--accent-deep);
+  font-size: 0.85rem;
+  font-weight: 950;
+}
+
+.mlb-slate-read-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.mlb-slate-read h4 {
+  margin: 0 0 6px;
+  color: var(--ink);
+  font-size: 0.82rem;
+}
+
+.mlb-slate-read-row {
+  display: grid;
+  gap: 2px;
+  border-top: 1px solid #edf1f8;
+  padding: 7px 0;
+}
+
+.mlb-slate-read-row strong {
+  color: var(--ink);
+  font-size: 0.82rem;
+}
+
+.mlb-slate-read-row span,
+.mlb-slate-read-row small {
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.25;
+}
+
+.mlb-empty.compact {
+  font-size: 0.76rem;
+}
+
 /* Disqualifiers */
 .mlb-disqualifiers {
   display: grid;
@@ -2105,6 +2170,11 @@ select:focus {
   .mlb-pill-row {
     align-items: flex-start;
     flex-wrap: wrap;
+  }
+
+  .mlb-slate-read-grid,
+  .mlb-price-row {
+    grid-template-columns: 1fr;
   }
 
   .workspace,
