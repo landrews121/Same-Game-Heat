@@ -6,10 +6,15 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "PORT=4000 nodemon server.js"
+    "dev": "PORT=4000 nodemon server.js",
+    "test": "node --test tests/*.test.js",
+    "social:dry-run": "node scripts/social-publication-dry-run.js"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "sharp": "^0.33.5"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"

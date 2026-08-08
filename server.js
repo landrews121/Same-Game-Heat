@@ -4,6 +4,7 @@ const path = require("node:path");
 const { URL } = require("node:url");
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
+const { createSocialManager } = require("./social-manager");
 
 const root = __dirname;
 const execFileAsync = promisify(execFile);
@@ -18,12 +19,19 @@ const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const oddsApiKey = process.env.ODDS_API_KEY || process.env.THE_ODDS_API_KEY || "";
 const ballDontLieKey = process.env.BALL_DONT_LIE_API_KEY || process.env.BDL_API_KEY || "";
 const defaultMarkets = ["h2h"];
+const socialManager = createSocialManager({
+  root,
+  env: process.env,
+  supabaseEnabled,
+  supabaseRequest
+});
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8"
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml; charset=utf-8"
 };
 
 function loadEnvFile() {
@@ -803,6 +811,15 @@ async function supabaseHealth() {
 
 
 async function handleApi(req, res, url) {
+  if (url.pathname.startsWith("/api/social/")) {
+    try {
+      if (await socialManager.handle(req, res, url, readRequestBody)) return;
+    } catch (error) {
+      json(res, error.statusCode || 500, { error: error.message });
+      return;
+    }
+  }
+
   if (url.pathname === "/api/config") {
     json(res, 200, {
       oddsConfigured: Boolean(oddsApiKey),
@@ -1140,6 +1157,13 @@ const server = http.createServer(async (req, res) => {
   await serveStatic(req, res, url);
 });
 
-server.listen(port, () => {
-  console.log(`Prop Lens running at http://localhost:${port}`);
-});
+if (require.main === module) {
+  server.listen(port, () => {
+    console.log(`Prop Lens running at http://localhost:${port}`);
+  });
+}
+
+module.exports = {
+  server,
+  socialManager
+};

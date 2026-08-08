@@ -3,5 +3,13 @@ node_modules/
 .DS_Store
 .saved-boards.json
 .app-state.json
+.social-pick-snapshots.json
+.social-content.json
+.social-graphics.json
+.social-results.json
+.social-publications.json
+.social-assets/
+.social-publication-assets/
+.social-dry-runs/
 data/batch-state.json
 batch-run-tracker/

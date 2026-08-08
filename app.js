@@ -207,7 +207,9 @@ document.querySelectorAll("[data-parlay-view]").forEach((button) => {
 const tabButtons = Array.from(document.querySelectorAll(".mobile-tabs button"));
 const parlayTabButtons = Array.from(document.querySelectorAll("[data-parlay-view]"));
 const leagueTabButtons = Array.from(document.querySelectorAll("[data-sport-target]"));
+const appBuildVersion = "same-game-heat-web-v1";
 const boardBuildVersion = "v67-value-combos-h2h";
+const moneylineModelVersion = "mlb-moneyline-v1";
 const shotBuildVersion = "v4-quality-first";
 const minimumLegProbability = 0.6;
 const singleLegProbability = 0.62;
@@ -4086,6 +4088,7 @@ function renderNoRunBoard() {
 function renderMlbBoard() {
   const moneylineBoard = scoreMlbMoneylineBoard();
   const teamPicks = moneylineBoard.picks;
+  cacheCurrentSocialMlbBoard(moneylineBoard);
   const topScore  = Math.max(...teamPicks.map((p) => p.finalScore), 0);
   elements.selectedGameTitle.textContent = "MLB Daily Board";
   if (elements.parlayScore) elements.parlayScore.textContent = topScore || "--";
@@ -4129,6 +4132,66 @@ function renderMlbBoard() {
       const loading = document.getElementById("hrBoardLoading");
       if (loading) loading.textContent = `HR board: ${err.message}`;
     });
+}
+
+function cacheCurrentSocialMlbBoard(moneylineBoard) {
+  try {
+    if (!moneylineBoard?.picks?.length || !window.localStorage) return;
+    const slateDate = elements.slateDate?.value || today;
+    const bookTitle = elements.bookFilter?.options?.[elements.bookFilter.selectedIndex]?.text || elements.bookFilter?.value || "";
+    const payload = {
+      snapshotSource: "Same Game Heat official browser board",
+      sourceBoardType: "MLB_DAILY_3",
+      appBuildVersion,
+      boardBuildVersion,
+      moneylineModelVersion,
+      generatedAt: new Date().toISOString(),
+      slateDate,
+      sport: elements.sportKey?.value || "baseball_mlb",
+      sportsbook: bookTitle,
+      officialPicks: moneylineBoard.picks.slice(0, 3).map((pick, index) => ({
+        slateDate,
+        sport: elements.sportKey?.value || "baseball_mlb",
+        gameId: pick.game?.id || "",
+        gameStartTime: pick.game?.commenceTime || "",
+        gameLabel: pick.gameLabel || formatDateTime(pick.game?.commenceTime),
+        gameNumber: index + 1,
+        homeTeam: pick.game?.homeTeam || "",
+        awayTeam: pick.game?.awayTeam || "",
+        selectedTeam: pick.team,
+        opponent: pick.opponent,
+        homeOrAway: pick.game?.homeTeam === pick.team ? "Home" : "Away",
+        market: "Moneyline",
+        line: null,
+        sportsbook: bookTitle,
+        sportsbookOdds: pick.moneyline?.odds ?? null,
+        modelWinProbability: pick.modelWinProbability,
+        finalScore: pick.finalScore,
+        confidenceTier: pick.tier?.tier ?? null,
+        confidenceLabel: pick.tier?.label || "",
+        matchupEdge: pick.matchupEdge,
+        fairOdds: pick.fairOdds,
+        playableThrough: pick.playableThrough,
+        starterName: pick.starterName || "",
+        dataComplete: Boolean(pick.dataComplete),
+        isBackfill: Boolean(pick.isBackfill),
+        reasons: pick.reasons || [],
+        components: pick.components || [],
+        riskFlags: pick.riskFlags || [],
+        passReasons: pick.passReasons || [],
+        sourceBoardType: "MLB_DAILY_3",
+        originalPickRank: index + 1,
+        appBuildVersion,
+        boardBuildVersion,
+        moneylineModelVersion,
+        rawSnapshotPayload: pick
+      }))
+    };
+    window.localStorage.setItem("sgh-social-current-board", JSON.stringify(payload));
+    window.SGH_CURRENT_SOCIAL_BOARD = payload;
+  } catch {
+    // Social Studio export is optional and must never block board rendering.
+  }
 }
 
 function renderMlbEmpty(message) {
