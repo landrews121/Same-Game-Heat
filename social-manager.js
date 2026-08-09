@@ -100,6 +100,39 @@ function uniqueStrings(values = []) {
   return [...new Set(values.map((value) => cleanString(value)).filter(Boolean))];
 }
 
+function parseSocialAiTimeoutMs(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 15000;
+  return Math.min(60000, Math.max(3000, Math.round(parsed)));
+}
+
+function sanitizeSocialAiMessage(message, secrets = []) {
+  let safe = cleanString(message, "OpenAI request failed");
+  for (const secret of secrets.filter(Boolean)) {
+    safe = safe.split(secret).join("[redacted]");
+  }
+  return safe
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted]")
+    .replace(/sk-[A-Za-z0-9_-]+/g, "sk-[redacted]")
+    .replace(/access_token=[^&\s]+/gi, "access_token=[redacted]")
+    .replace(/authorization:\s*[^\s,}]+/gi, "authorization: [redacted]")
+    .slice(0, 260);
+}
+
+async function readOpenAiErrorMessage(response, secrets = []) {
+  const body = await response.text().catch(() => "");
+  let detail = cleanString(response.statusText, "request failed");
+  if (body) {
+    try {
+      const parsed = JSON.parse(body);
+      detail = parsed?.error?.message || parsed?.error?.code || parsed?.error?.type || body;
+    } catch {
+      detail = body;
+    }
+  }
+  return sanitizeSocialAiMessage(`OpenAI ${response.status}: ${detail}`, secrets);
+}
+
 function normalizeContentType(contentType) {
   const normalized = cleanString(contentType || "DAILY_3").toUpperCase();
   if (!SOCIAL_CONTENT_TYPES.has(normalized)) throw new Error("Unsupported social content type");
@@ -532,6 +565,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
   const adminSecret = env.SOCIAL_ADMIN_SECRET || "";
   const openAiKey = env.OPENAI_API_KEY || "";
   const aiModel = env.SOCIAL_AI_MODEL || "gpt-4o-mini";
+  const aiTimeoutMs = parseSocialAiTimeoutMs(env.SOCIAL_AI_TIMEOUT_MS);
   const secureCookie = env.NODE_ENV === "production" || env.SOCIAL_COOKIE_SECURE === "true";
 
   function sendJson(res, status, payload, headers = {}) {
@@ -1304,9 +1338,13 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
       snapshots
     };
 
+    const startedAt = Date.now();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), aiTimeoutMs);
     try {
       const response = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
+        signal: controller.signal,
         headers: {
           Authorization: `Bearer ${openAiKey}`,
           "Content-Type": "application/json"
@@ -1321,19 +1359,43 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
           ]
         })
       });
-      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      if (!response.ok) {
+        const error = new Error(await readOpenAiErrorMessage(response, [openAiKey]));
+        error.status = response.status;
+        throw error;
+      }
       const data = await response.json();
-      const text = data.choices?.[0]?.message?.content || "{}";
-      return { provider: "openai", model: aiModel, output: JSON.parse(text) };
+      const text = cleanString(data.choices?.[0]?.message?.content);
+      if (!text) throw new Error("OpenAI response did not include message content");
+      return {
+        provider: "openai",
+        model: aiModel,
+        output: {
+          ...JSON.parse(text),
+          requestDurationMs: Date.now() - startedAt
+        }
+      };
     } catch (error) {
+      const status = error.name === "AbortError" ? "timeout" : error.status || "error";
+      const message = error.name === "AbortError"
+        ? `OpenAI request timed out after ${aiTimeoutMs}ms`
+        : sanitizeSocialAiMessage(error.message, [openAiKey]);
+      console.warn("Social AI generation failed", {
+        provider: "openai",
+        model: aiModel,
+        status,
+        message
+      });
       return {
         provider: "local-template",
         model: "local-template",
         output: {
           ...localSocialTemplate(contentType, snapshots),
-          warnings: [`AI generation failed: ${error.message}. Local draft created instead.`]
+          warnings: [`AI generation failed: ${message}. Local draft created instead.`]
         }
       };
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

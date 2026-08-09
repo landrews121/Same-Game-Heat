@@ -119,6 +119,58 @@ async function login(manager, headers = {}) {
   return response.headers["Set-Cookie"];
 }
 
+function mockOpenAiResponse({ status = 200, body = {}, textBody = null } = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 200 ? "OK" : "Provider Error",
+    async json() {
+      return body;
+    },
+    async text() {
+      return textBody ?? JSON.stringify(body);
+    }
+  };
+}
+
+async function withMockedSocialAi({ env = {}, fetchImpl, run }) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-social-ai-"));
+  const originalFetch = global.fetch;
+  const originalWarn = console.warn;
+  const warnings = [];
+  global.fetch = fetchImpl;
+  console.warn = (...args) => warnings.push(args);
+  try {
+    const manager = createSocialManager({
+      root,
+      env: {
+        SOCIAL_ADMIN_SECRET: "secret",
+        OPENAI_API_KEY: "sk-test-secret-should-not-leak",
+        SOCIAL_AI_MODEL: "gpt-4o-mini",
+        ...env
+      }
+    });
+    const cookie = await login(manager);
+    const response = await route(manager, {
+      method: "POST",
+      path: "/api/social/generate",
+      headers: { cookie },
+      body: {
+        contentType: "DAILY_3",
+        board: {
+          slateDate: "2026-07-27",
+          sport: "baseball_mlb",
+          officialPicks: [samplePick()]
+        }
+      }
+    });
+    await run({ response, warnings });
+  } finally {
+    global.fetch = originalFetch;
+    console.warn = originalWarn;
+  }
+}
+
 test("snapshot serialization is deterministic and strips secrets", () => {
   const a = createSocialPickSnapshot(samplePick(), { createdAt: "2026-07-27T12:00:00Z" });
   const b = createSocialPickSnapshot(samplePick(), { createdAt: "2026-07-27T12:00:00Z" });
@@ -263,6 +315,139 @@ test("Daily 3 route prevents duplicate active content for the same slate", async
     async () => body
   );
   assert.equal(secondRes.capture.status, 409);
+});
+
+test("successful OpenAI social response preserves provider and configured model", async () => {
+  let capturedBody = null;
+  await withMockedSocialAi({
+    fetchImpl: async (_url, options) => {
+      assert.ok(options.signal);
+      capturedBody = JSON.parse(options.body);
+      return mockOpenAiResponse({
+        body: {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                headline: "AI Daily 3",
+                caption: "Angels ML leads the card.\n\n21+ | Bet responsibly.",
+                shortCaption: "Angels ML",
+                hashtags: ["#SameGameHeat"],
+                disclaimer: "21+ | Bet responsibly."
+              })
+            }
+          }]
+        }
+      });
+    },
+    run: async ({ response, warnings }) => {
+      assert.equal(response.status, 200);
+      assert.equal(response.json.content.generationProvider, "openai");
+      assert.equal(response.json.content.generationModel, "gpt-4o-mini");
+      assert.equal(response.json.content.headline, "AI Daily 3");
+      assert.equal(capturedBody.model, "gpt-4o-mini");
+      assert.equal(capturedBody.response_format.type, "json_object");
+      assert.equal(warnings.length, 0);
+    }
+  });
+});
+
+test("OpenAI timeout falls back to local template and respects configured timeout", async () => {
+  const abortError = new Error("aborted");
+  abortError.name = "AbortError";
+  await withMockedSocialAi({
+    env: { SOCIAL_AI_TIMEOUT_MS: "60000" },
+    fetchImpl: async (_url, options) => {
+      assert.ok(options.signal);
+      throw abortError;
+    },
+    run: async ({ response, warnings }) => {
+      assert.equal(response.status, 200);
+      assert.equal(response.json.content.generationProvider, "local-template");
+      const warning = response.json.content.metadata.warnings[0];
+      assert.match(warning, /timed out after 60000ms/);
+      assert.equal(warnings[0][0], "Social AI generation failed");
+      assert.equal(warnings[0][1].status, "timeout");
+    }
+  });
+});
+
+test("invalid OpenAI timeout env uses safe default", async () => {
+  const abortError = new Error("aborted");
+  abortError.name = "AbortError";
+  await withMockedSocialAi({
+    env: { SOCIAL_AI_TIMEOUT_MS: "not-a-number" },
+    fetchImpl: async () => {
+      throw abortError;
+    },
+    run: async ({ response }) => {
+      assert.equal(response.status, 200);
+      assert.match(response.json.content.metadata.warnings[0], /timed out after 15000ms/);
+    }
+  });
+});
+
+for (const status of [401, 429, 500]) {
+  test(`OpenAI ${status} falls back to local template with sanitized warning`, async () => {
+    await withMockedSocialAi({
+      fetchImpl: async () => mockOpenAiResponse({
+        status,
+        body: { error: { message: `Provider rejected sk-test-secret-should-not-leak with status ${status}` } }
+      }),
+      run: async ({ response, warnings }) => {
+        assert.equal(response.status, 200);
+        assert.equal(response.json.content.generationProvider, "local-template");
+        const serialized = JSON.stringify({ content: response.json.content, warnings });
+        assert.match(response.json.content.metadata.warnings[0], new RegExp(`OpenAI ${status}`));
+        assert.doesNotMatch(serialized, /sk-test-secret-should-not-leak/);
+        assert.match(serialized, /\[redacted\]/);
+      }
+    });
+  });
+}
+
+test("malformed OpenAI JSON falls back to local template", async () => {
+  await withMockedSocialAi({
+    fetchImpl: async () => mockOpenAiResponse({
+      body: { choices: [{ message: { content: "{bad-json" } }] }
+    }),
+    run: async ({ response }) => {
+      assert.equal(response.status, 200);
+      assert.equal(response.json.content.generationProvider, "local-template");
+      assert.match(response.json.content.metadata.warnings[0], /AI generation failed/);
+    }
+  });
+});
+
+test("invalid OpenAI response falls back to local template", async () => {
+  await withMockedSocialAi({
+    fetchImpl: async () => mockOpenAiResponse({ body: { choices: [] } }),
+    run: async ({ response }) => {
+      assert.equal(response.status, 200);
+      assert.equal(response.json.content.generationProvider, "local-template");
+      assert.match(response.json.content.metadata.warnings[0], /did not include message content/);
+    }
+  });
+});
+
+test("network OpenAI failure warning never includes API key", async () => {
+  await withMockedSocialAi({
+    fetchImpl: async () => {
+      throw new Error("network failed for Bearer sk-test-secret-should-not-leak");
+    },
+    run: async ({ response, warnings }) => {
+      const serialized = JSON.stringify({ content: response.json.content, warnings });
+      assert.equal(response.json.content.generationProvider, "local-template");
+      assert.doesNotMatch(serialized, /sk-test-secret-should-not-leak/);
+      assert.match(serialized, /Bearer \[redacted\]/);
+    }
+  });
+});
+
+test("frontend social generation clears loading status in finally", async () => {
+  const source = await fs.readFile(path.join(__dirname, "../social.js"), "utf8");
+  assert.match(source, /async function generateContent/);
+  assert.match(source, /finally\s*{/);
+  assert.match(source, /showStatus\(finalStatus\)/);
 });
 
 test("forged high modelWinProbability is rejected", () => {

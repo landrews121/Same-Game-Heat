@@ -305,6 +305,7 @@ function renderContentDetail(content) {
     state.snapshots.find((snapshot) => snapshot.id === id) || { id }
   );
   const graphics = state.graphicsByContent.get(content.id) || [];
+  const warnings = Array.isArray(content.metadata?.warnings) ? content.metadata.warnings : [];
   els.contentDetail.innerHTML = `
     <div class="studio-meta">
       <span class="studio-pill">${escapeHtml(content.contentType)}</span>
@@ -312,6 +313,7 @@ function renderContentDetail(content) {
       <span class="studio-pill">${escapeHtml(content.generationProvider)} · ${escapeHtml(content.generationModel)}</span>
     </div>
     ${content.generationError ? `<div class="studio-warning">${escapeHtml(content.generationError)}</div>` : ""}
+    ${warnings.length ? `<div class="studio-warning">${warnings.map((warning) => escapeHtml(warning)).join("<br>")}</div>` : ""}
     <div class="snapshot-list">
       ${snapshots.map((snapshot) => `
         <div class="snapshot-mini">
@@ -403,18 +405,25 @@ async function generateContent(contentType, pickIndex = 0) {
     return;
   }
   showStatus(`Generating ${contentType} social draft...`);
-  const payload = await api("/api/social/generate", {
-    method: "POST",
-    body: JSON.stringify({
-      contentType,
-      board: state.board,
-      pickIndex: Number(pickIndex || 0)
-    })
-  });
-  state.selectedContent = payload.content;
-  showStatus("");
-  await refreshQueue();
-  renderContentDetail(state.selectedContent);
+  let finalStatus = "";
+  try {
+    const payload = await api("/api/social/generate", {
+      method: "POST",
+      body: JSON.stringify({
+        contentType,
+        board: state.board,
+        pickIndex: Number(pickIndex || 0)
+      })
+    });
+    state.selectedContent = payload.content;
+    finalStatus = payload.content?.metadata?.warnings?.[0] || "";
+    await refreshQueue();
+    renderContentDetail(state.selectedContent);
+  } catch (error) {
+    finalStatus = error.message || "Social draft generation failed.";
+  } finally {
+    showStatus(finalStatus);
+  }
 }
 
 async function handleContentAction(action) {
