@@ -484,6 +484,203 @@ function publicMaterialLimitations(snapshots = []) {
   return uniqueStrings(notes);
 }
 
+function disclaimerRegex() {
+  return /21\+\s*\|\s*Bet responsibly\.?/gi;
+}
+
+function ensureFinalDisclaimer(text) {
+  const body = cleanString(text)
+    .replace(disclaimerRegex(), "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return body ? `${body}\n\n${DEFAULT_DISCLAIMER}` : DEFAULT_DISCLAIMER;
+}
+
+function ensureInlineDisclaimer(text) {
+  const body = cleanString(text)
+    .replace(disclaimerRegex(), "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return body ? `${body} ${DEFAULT_DISCLAIMER}` : DEFAULT_DISCLAIMER;
+}
+
+function deterministicDailyShortCaption(snapshots) {
+  return ensureInlineDisclaimer(`🔥 SGH Daily 3: ${snapshots.map((snapshot) => {
+    const probability = formatModelWinProbability(snapshot.modelWinProbability);
+    return `${pickLine(snapshot)}${probability ? ` (${probability})` : ""}`;
+  }).join(", ")}.`);
+}
+
+function deterministicDailyStoryText(snapshots) {
+  return ensureFinalDisclaimer(`🔥 SGH DAILY 3\n\n${snapshots.map((snapshot) => {
+    const probability = formatModelWinProbability(snapshot.modelWinProbability);
+    return `${pickLine(snapshot)}\n${probability || "Model probability unavailable"}`;
+  }).join("\n\n")}`);
+}
+
+function genericHookReplacement() {
+  return "SGH scanned today's MLB slate. These three moneylines finished at the top of the model.";
+}
+
+function isGenericHook(text) {
+  return brandStyleHits(text).length > 0 || /curious about|looking for picks|model insights/i.test(cleanString(text));
+}
+
+function extractSentences(text) {
+  return cleanString(text)
+    .replace(/\n+/g, " ")
+    .split(/(?<=[.!?])\s+|;\s+/)
+    .map(cleanString)
+    .filter(Boolean);
+}
+
+function extractAiReasonForSnapshot(output, normalized, snapshot, index) {
+  const pickReasons = Array.isArray(output?.pickReasons) ? output.pickReasons : [];
+  const matchedReason = pickReasons.find((item) => {
+    if (!isPlainObject(item)) return false;
+    const rank = toNumber(item.rank, null);
+    const team = cleanString(item.team);
+    return (rank === index + 1 || !rank) && (!team || team.toLowerCase() === cleanString(snapshot.selectedTeam).toLowerCase());
+  });
+  if (matchedReason) {
+    const reason = sentence(matchedReason.reason);
+    if (reason && !validateNoProhibitedLanguage({ reason }).length && !brandStyleHits(reason).length) return reason;
+  }
+
+  const haystack = [normalized.caption, normalized.reelScript, normalized.reasoningSummary].join(" ");
+  const team = cleanString(snapshot.selectedTeam);
+  const sentenceMatch = extractSentences(haystack).find((item) => team && item.toLowerCase().includes(team.toLowerCase()));
+  const reason = sentence(sentenceMatch || snapshotReason(snapshot));
+  if (reason && !validateNoProhibitedLanguage({ reason }).length && !brandStyleHits(reason).length) return reason;
+  return sentence(snapshotReason(snapshot));
+}
+
+function buildHybridDailyCaption(output, normalized, snapshots) {
+  const pickBlocks = snapshots.map((snapshot, index) => {
+    const probability = formatModelWinProbability(snapshot.modelWinProbability);
+    const backfill = snapshot.isBackfill ? " Rounds out the board as SGH's best available lower-confidence side." : "";
+    return [
+      `${ordinalEmoji(index)} ${pickLine(snapshot)}`,
+      probability ? `Model win probability: ${probability}` : "",
+      `${extractAiReasonForSnapshot(output, normalized, snapshot, index)}${backfill}`,
+      snapshotPriceContext(snapshot)
+    ].filter(Boolean).join("\n");
+  });
+  const closingNotes = uniqueStrings([
+    "Price matters. Confirm the current number before betting.",
+    ...publicMaterialLimitations(snapshots)
+  ]).join("\n");
+  return ensureFinalDisclaimer(`🔥 SAME GAME HEAT — DAILY 3\n\n${pickBlocks.join("\n\n")}\n\n${closingNotes}`);
+}
+
+function snapshotAllowedNumbers(snapshots) {
+  const allowed = new Set();
+  for (const snapshot of snapshots) {
+    for (const value of [snapshot.sportsbookOdds, snapshot.fairOdds, snapshot.playableThrough]) {
+      const odds = formatAmericanOdds(value);
+      if (odds) allowed.add(odds);
+    }
+    const probability = formatModelWinProbability(snapshot.modelWinProbability);
+    if (probability) allowed.add(probability);
+  }
+  return allowed;
+}
+
+function findWrongSnapshotValues(text, snapshots) {
+  const allowed = snapshotAllowedNumbers(snapshots);
+  const found = uniqueStrings([
+    ...(cleanString(text).match(/[+-]\d{2,4}/g) || []),
+    ...(cleanString(text).match(/\b\d{1,3}(?:\.\d)?%/g) || [])
+  ]);
+  return found.filter((value) => !allowed.has(value));
+}
+
+function classifyAiCopyFailures(output, contentType, snapshots) {
+  const { normalized } = normalizeGeneratedContent(output, contentType, snapshots);
+  const failures = validateAiCopyQuality(output, contentType, snapshots);
+  const hardFailures = [];
+  const repairableFailures = [];
+  const combined = [normalized.headline, normalized.caption, normalized.shortCaption, normalized.reelHook, normalized.reelScript, normalized.storyText].join("\n");
+  const captionStyleHits = brandStyleHits([normalized.headline, normalized.caption, normalized.shortCaption, normalized.reelScript].join("\n"));
+  if (captionStyleHits.length) hardFailures.push(`Generic brand phrasing detected: ${captionStyleHits.join(", ")}`);
+  const wrongValues = findWrongSnapshotValues(combined, snapshots);
+  if (wrongValues.length) hardFailures.push(`AI copy changed or invented snapshot values: ${wrongValues.join(", ")}`);
+
+  for (const failure of failures) {
+    if (/Generic brand phrasing/.test(failure)) {
+      if (!captionStyleHits.length) repairableFailures.push(failure);
+      continue;
+    }
+    if (/DAILY_3 caption omitted supplied teams/.test(failure)) {
+      hardFailures.push(failure);
+      continue;
+    }
+    if (/caption omitted supplied model win probabilities|caption omitted supplied frozen odds|caption did not start|lacked separate visual blocks|caption must end|short caption omitted|story text was too long|Responsible gambling disclaimer missing/.test(failure)) {
+      repairableFailures.push(failure);
+      continue;
+    }
+    hardFailures.push(failure);
+  }
+  return {
+    normalized,
+    hardFailures: uniqueStrings(hardFailures),
+    repairableFailures: uniqueStrings(repairableFailures)
+  };
+}
+
+function repairGeneratedSocialCopy({ contentType, generated, snapshots }) {
+  const safeOutput = isPlainObject(generated) ? generated : {};
+  const { normalized, hardFailures, repairableFailures } = classifyAiCopyFailures(safeOutput, contentType, snapshots);
+  if (hardFailures.length) return { output: normalized, hardFailures, repairReasons: [] };
+
+  const repaired = { ...normalized };
+  const repairReasons = [];
+  if (contentType === "DAILY_3") {
+    if (repairableFailures.length) {
+      const originalCaption = repaired.caption;
+      const originalShortCaption = repaired.shortCaption;
+      const originalStoryText = repaired.storyText;
+      repaired.caption = buildHybridDailyCaption(safeOutput, normalized, snapshots);
+      repaired.shortCaption = deterministicDailyShortCaption(snapshots);
+      repaired.storyText = deterministicDailyStoryText(snapshots);
+      if (repaired.caption !== originalCaption) repairReasons.push("daily_3_caption_rebuilt");
+      if (repaired.shortCaption !== originalShortCaption) repairReasons.push("short_caption_rebuilt");
+      if (repaired.storyText !== originalStoryText) repairReasons.push("story_text_rebuilt");
+    }
+  } else {
+    const caption = ensureFinalDisclaimer(repaired.caption);
+    if (caption !== repaired.caption) {
+      repaired.caption = caption;
+      repairReasons.push("disclaimer_normalized");
+    }
+  }
+
+  if (!repaired.hashtags.length) {
+    repaired.hashtags = localSocialTemplate(contentType, snapshots).hashtags;
+    repairReasons.push("hashtags_rebuilt");
+  }
+  if (contentType === "DAILY_3" && isGenericHook(repaired.reelHook)) {
+    repaired.reelHook = genericHookReplacement();
+    repairReasons.push("reel_hook_rebuilt");
+  }
+  if (repairReasons.length || repairableFailures.length) {
+    repaired.presentationRepaired = true;
+    repaired.repairReasons = uniqueStrings([...repairReasons, ...repairableFailures.map((failure) => failure.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""))]);
+    repaired.warnings = uniqueStrings([...(repaired.warnings || []), "AI copy was reformatted to SGH publishing standards."]);
+  }
+
+  const finalFailures = validateAiCopyQuality(repaired, contentType, snapshots);
+  const prohibited = validateNoProhibitedLanguage(repaired);
+  if (finalFailures.length || prohibited.length) {
+    return {
+      output: repaired,
+      hardFailures: uniqueStrings([...finalFailures, ...prohibited.map((hit) => `Prohibited language detected: ${hit}`)]),
+      repairReasons: repaired.repairReasons || []
+    };
+  }
+  return { output: repaired, hardFailures: [], repairReasons: repaired.repairReasons || [] };
+}
+
 function localSocialTemplate(contentType, snapshots) {
   const first = snapshots[0];
   const pickList = snapshots.map((snapshot, index) => {
@@ -554,7 +751,9 @@ function normalizeGeneratedContent(output = {}, contentType, snapshots) {
     reasoningSummary: cleanString(safeOutput.reasoningSummary || fallback.reasoningSummary),
     hashtags: (hashtags.length ? hashtags : fallback.hashtags).slice(0, 12),
     disclaimer: cleanString(safeOutput.disclaimer || DEFAULT_DISCLAIMER),
-    warnings: uniqueStrings(safeOutput.warnings)
+    warnings: uniqueStrings(safeOutput.warnings),
+    presentationRepaired: Boolean(safeOutput.presentationRepaired),
+    repairReasons: uniqueStrings(safeOutput.repairReasons)
   };
   if (!normalized.disclaimer.includes("21+")) normalized.disclaimer = DEFAULT_DISCLAIMER;
   const hits = validateNoProhibitedLanguage(normalized);
@@ -633,6 +832,8 @@ function createSocialContentRecord({ contentType, snapshots, generated, status =
     generationError: prohibited.length ? `Prohibited language detected: ${prohibited.join(", ")}` : null,
     metadata: {
       warnings: normalized.warnings,
+      presentationRepaired: normalized.presentationRepaired,
+      repairReasons: normalized.repairReasons,
       previousContentId,
       snapshotHashes: snapshots.map((snapshot) => snapshot.snapshotHash)
     }
@@ -1572,13 +1773,13 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
       if (!text) throw new Error("OpenAI response did not include message content");
       const output = JSON.parse(text);
       if (!isPlainObject(output)) throw new Error("OpenAI response JSON must be an object");
-      const qualityFailures = validateAiCopyQuality(output, contentType, snapshots);
-      if (qualityFailures.length) throw new Error(`AI copy quality check failed: ${qualityFailures.join("; ")}`);
+      const repaired = repairGeneratedSocialCopy({ contentType, generated: output, snapshots });
+      if (repaired.hardFailures.length) throw new Error(`AI copy quality check failed: ${repaired.hardFailures.join("; ")}`);
       return {
         provider: "openai",
         model: aiModel,
         output: {
-          ...output,
+          ...repaired.output,
           requestDurationMs: Date.now() - startedAt
         }
       };

@@ -580,7 +580,7 @@ test("three-pick OpenAI DAILY_3 with visual blocks preserves provider", async ()
   });
 });
 
-test("one-paragraph three-pick OpenAI DAILY_3 fails formatting and falls back", async () => {
+test("one-paragraph three-pick OpenAI DAILY_3 is repaired and preserves provider", async () => {
   const picks = [
     samplePickForTeam("Milwaukee Brewers", "Atlanta Braves", 1, { sportsbookOdds: -247, modelWinProbability: 0.631 }),
     samplePickForTeam("Philadelphia Phillies", "Miami Marlins", 2, { sportsbookOdds: -190, modelWinProbability: 0.606 }),
@@ -609,9 +609,129 @@ test("one-paragraph three-pick OpenAI DAILY_3 fails formatting and falls back", 
     }),
     run: async ({ response }) => {
       assert.equal(response.status, 200);
-      assert.equal(response.json.content.generationProvider, "local-template");
-      assert.match(response.json.content.metadata.warnings[0], /separate visual blocks/);
+      assert.equal(response.json.content.generationProvider, "openai");
+      assert.equal(response.json.content.metadata.presentationRepaired, true);
+      assert.match(response.json.content.metadata.repairReasons.join(" "), /daily_3_caption_rebuilt/);
       assert.match(response.json.content.caption, /1️⃣ Milwaukee Brewers/);
+      assert.match(response.json.content.caption, /2️⃣ Philadelphia Phillies/);
+      assert.match(response.json.content.caption, /3️⃣ St\. Louis Cardinals/);
+      assert.ok(response.json.content.caption.trim().endsWith("21+ | Bet responsibly."));
+      assert.match(response.json.content.shortCaption, /Milwaukee Brewers ML -247 \(63\.1%\)/);
+      assert.match(response.json.content.shortCaption, /Philadelphia Phillies ML -190 \(60\.6%\)/);
+      assert.match(response.json.content.shortCaption, /St\. Louis Cardinals ML -158 \(58\.6%\)/);
+    }
+  });
+});
+
+test("missing headline disclaimer shortCaption teams and weak hook are repaired without fallback", async () => {
+  const picks = [
+    samplePickForTeam("Milwaukee Brewers", "Atlanta Braves", 1, { sportsbookOdds: -247, modelWinProbability: 0.631, reasons: ["Starting-pitching edge"] }),
+    samplePickForTeam("Philadelphia Phillies", "Miami Marlins", 2, { sportsbookOdds: -190, modelWinProbability: 0.606, reasons: ["Home-field edge"] }),
+    samplePickForTeam("St. Louis Cardinals", "Chicago Cubs", 3, { sportsbookOdds: -158, modelWinProbability: 0.586, reasons: ["Matchup score"] })
+  ];
+  await withMockedSocialAi({
+    picks,
+    fetchImpl: async () => mockOpenAiResponse({
+      body: {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              headline: "Daily Card",
+              caption: "Milwaukee Brewers are backed by the starter edge. Philadelphia Phillies are supported by the home-field edge. St. Louis Cardinals round out the slate on matchup score.",
+              shortCaption: "MLB Daily Picks: Brewers, Phillies, Cardinals",
+              reelHook: "Curious about today's model insights for MLB matchups?",
+              reelScript: "Milwaukee Brewers, Philadelphia Phillies, and St. Louis Cardinals grade highest. 21+ | Bet responsibly.",
+              storyText: "Long story text",
+              hashtags: [],
+              disclaimer: "",
+              warnings: []
+            })
+          }
+        }]
+      }
+    }),
+    run: async ({ response }) => {
+      assert.equal(response.status, 200);
+      assert.equal(response.json.content.generationProvider, "openai");
+      assert.equal(response.json.content.metadata.presentationRepaired, true);
+      assert.match(response.json.content.caption, /^🔥 SAME GAME HEAT — DAILY 3/);
+      assert.match(response.json.content.caption, /Milwaukee Brewers are backed by the starter edge/);
+      assert.ok(response.json.content.caption.trim().endsWith("21+ | Bet responsibly."));
+      assert.match(response.json.content.shortCaption, /Milwaukee Brewers ML -247 \(63\.1%\)/);
+      assert.match(response.json.content.shortCaption, /Philadelphia Phillies ML -190 \(60\.6%\)/);
+      assert.match(response.json.content.shortCaption, /St\. Louis Cardinals ML -158 \(58\.6%\)/);
+      assert.equal(response.json.content.reelHook, "SGH scanned today's MLB slate. These three moneylines finished at the top of the model.");
+      assert.match(response.json.content.metadata.repairReasons.join(" "), /reel_hook_rebuilt/);
+    }
+  });
+});
+
+test("duplicate disclaimer is normalized during DAILY_3 presentation repair", async () => {
+  const picks = [
+    samplePickForTeam("Milwaukee Brewers", "Atlanta Braves", 1, { sportsbookOdds: -247, modelWinProbability: 0.631 }),
+    samplePickForTeam("Philadelphia Phillies", "Miami Marlins", 2, { sportsbookOdds: -190, modelWinProbability: 0.606 }),
+    samplePickForTeam("St. Louis Cardinals", "Chicago Cubs", 3, { sportsbookOdds: -158, modelWinProbability: 0.586 })
+  ];
+  await withMockedSocialAi({
+    picks,
+    fetchImpl: async () => mockOpenAiResponse({
+      body: {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              headline: "Same Game Heat Daily 3",
+              caption: "Milwaukee Brewers ML -247 63.1%. Philadelphia Phillies ML -190 60.6%. St. Louis Cardinals ML -158 58.6%. 21+ | Bet responsibly. 21+ | Bet responsibly.",
+              shortCaption: "Milwaukee Brewers ML -247 (63.1%), Philadelphia Phillies ML -190 (60.6%), St. Louis Cardinals ML -158 (58.6%). 21+ | Bet responsibly.",
+              reelHook: "Three moneylines separated themselves from today's slate.",
+              reelScript: "Milwaukee Brewers, Philadelphia Phillies, and St. Louis Cardinals grade highest. 21+ | Bet responsibly.",
+              storyText: "Milwaukee Brewers ML -247\n63.1%\nPhiladelphia Phillies ML -190\n60.6%\nSt. Louis Cardinals ML -158\n58.6%\n21+ | Bet responsibly.",
+              hashtags: ["#SameGameHeat"],
+              disclaimer: "21+ | Bet responsibly.",
+              warnings: []
+            })
+          }
+        }]
+      }
+    }),
+    run: async ({ response }) => {
+      assert.equal(response.json.content.generationProvider, "openai");
+      assert.equal((response.json.content.caption.match(/21\+ \| Bet responsibly\./g) || []).length, 1);
+      assert.ok(response.json.content.caption.trim().endsWith("21+ | Bet responsibly."));
+    }
+  });
+});
+
+test("AI DAILY_3 with wrong frozen odds still falls back safely", async () => {
+  const picks = [
+    samplePickForTeam("Milwaukee Brewers", "Atlanta Braves", 1, { sportsbookOdds: -247, modelWinProbability: 0.631 }),
+    samplePickForTeam("Philadelphia Phillies", "Miami Marlins", 2, { sportsbookOdds: -190, modelWinProbability: 0.606 }),
+    samplePickForTeam("St. Louis Cardinals", "Chicago Cubs", 3, { sportsbookOdds: -158, modelWinProbability: 0.586 })
+  ];
+  await withMockedSocialAi({
+    picks,
+    fetchImpl: async () => mockOpenAiResponse({
+      body: {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              headline: "Same Game Heat Daily 3",
+              caption: "🔥 SAME GAME HEAT — DAILY 3\n\n1️⃣ Milwaukee Brewers ML -999\nModel win probability: 63.1%\nStarter edge.\n\n2️⃣ Philadelphia Phillies ML -190\nModel win probability: 60.6%\nHome edge.\n\n3️⃣ St. Louis Cardinals ML -158\nModel win probability: 58.6%\nMatchup edge.\n\n21+ | Bet responsibly.",
+              shortCaption: "Milwaukee Brewers ML -999 (63.1%), Philadelphia Phillies ML -190 (60.6%), St. Louis Cardinals ML -158 (58.6%). 21+ | Bet responsibly.",
+              reelHook: "Three moneylines separated themselves from today's slate.",
+              reelScript: "Milwaukee Brewers, Philadelphia Phillies, and St. Louis Cardinals grade highest. 21+ | Bet responsibly.",
+              storyText: "Milwaukee Brewers ML -999\n63.1%\nPhiladelphia Phillies ML -190\n60.6%\nSt. Louis Cardinals ML -158\n58.6%\n21+ | Bet responsibly.",
+              hashtags: ["#SameGameHeat"],
+              disclaimer: "21+ | Bet responsibly.",
+              warnings: []
+            })
+          }
+        }]
+      }
+    }),
+    run: async ({ response }) => {
+      assert.equal(response.json.content.generationProvider, "local-template");
+      assert.match(response.json.content.metadata.warnings[0], /changed or invented snapshot values/);
+      assert.doesNotMatch(response.json.content.caption, /-999/);
     }
   });
 });
