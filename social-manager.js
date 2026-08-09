@@ -63,6 +63,27 @@ const PROHIBITED_PHRASES = [
   "SURE THING",
   "NO RISK"
 ];
+const BRAND_STYLE_EXCLUSIONS = [
+  "WINNING PICKS",
+  "WE'VE GOT YOU COVERED",
+  "WE’VE GOT YOU COVERED",
+  "EASY WINNER",
+  "SMASH PLAY",
+  "CASH IT",
+  "LET'S GET PAID",
+  "LET’S GET PAID",
+  "BANKROLL BUILDER",
+  "PRINTING MONEY",
+  "CHECK OUT OUR PICKS",
+  "DON'T MISS OUT",
+  "DON’T MISS OUT",
+  "GET READY",
+  "LOOKING FOR WINNING PICKS",
+  "HERE ARE SOME GREAT BETS",
+  "BIG OPPORTUNITY",
+  "TAKE ADVANTAGE",
+  "EASY MONEY"
+];
 const ALLOWED_SOCIAL_SPORT = "baseball_mlb";
 const ALLOWED_MARKETS = new Set(["h2h", "moneyline", "money line", "ml", "mlb moneyline"]);
 const ALLOWED_HOME_AWAY = new Set(["Home", "Away"]);
@@ -385,35 +406,95 @@ function validateNoProhibitedLanguage(record) {
   return prohibitedHits(text);
 }
 
+function brandStyleHits(text) {
+  const haystack = String(text || "").toUpperCase();
+  return BRAND_STYLE_EXCLUSIONS.filter((phrase) => haystack.includes(phrase));
+}
+
 function pickLine(snapshot) {
   const odds = snapshot.sportsbookOdds === null || snapshot.sportsbookOdds === undefined
     ? ""
     : ` ${snapshot.sportsbookOdds > 0 ? "+" : ""}${snapshot.sportsbookOdds}`;
-  return `${snapshot.selectedTeam} ${snapshot.market}${odds}`.trim();
+  return `${snapshot.selectedTeam} ${marketLabel(snapshot.market)}${odds}`.trim();
+}
+
+function marketLabel(market) {
+  const normalized = cleanString(market);
+  return /money\s*line|moneyline|^ml$/i.test(normalized) ? "ML" : normalized;
+}
+
+function formatModelWinProbability(value) {
+  const number = toNumber(value, null);
+  if (number === null) return "";
+  const percent = number <= 1 ? number * 100 : number;
+  return `${percent.toFixed(1)}%`;
+}
+
+function snapshotReason(snapshot) {
+  return cleanString(snapshot.reasons?.[0] || snapshot.passReasons?.[0] || "The model liked the matchup profile.");
+}
+
+function snapshotRisk(snapshot) {
+  return cleanString(snapshot.riskFlags?.[0] || "Price matters. Confirm the current number before betting.");
+}
+
+function snapshotReasons(snapshot) {
+  const reasons = uniqueStrings(snapshot.reasons || []);
+  return reasons.length ? reasons : [snapshotReason(snapshot)];
+}
+
+function snapshotPriceContext(snapshot) {
+  const fairOdds = snapshot.fairOdds === null || snapshot.fairOdds === undefined ? "" : `SGH fair price: ${snapshot.fairOdds > 0 ? "+" : ""}${snapshot.fairOdds}.`;
+  const playableThrough = snapshot.playableThrough === null || snapshot.playableThrough === undefined ? "" : `Playable through ${snapshot.playableThrough > 0 ? "+" : ""}${snapshot.playableThrough}.`;
+  return [fairOdds, playableThrough].filter(Boolean).join(" ");
 }
 
 function localSocialTemplate(contentType, snapshots) {
   const first = snapshots[0];
-  const pickList = snapshots.map((snapshot, index) => `${index + 1}. ${pickLine(snapshot)}`);
-  const headline = contentType === "BEST_BET"
-    ? "Best Bet Watch"
-    : contentType === "PICK_BREAKDOWN"
-      ? `${first?.selectedTeam || "Pick"} Breakdown`
-      : "Daily 3 Moneyline Board";
-  const reasoning = snapshots.map((snapshot) => {
-    const reason = snapshot.reasons?.[0] || "The model liked the matchup profile.";
-    const risk = snapshot.riskFlags?.[0] || "Confirm lineups and prices before placing anything.";
-    return `${snapshot.selectedTeam}: ${reason} Main risk: ${risk}`;
+  const pickList = snapshots.map((snapshot, index) => {
+    const probability = formatModelWinProbability(snapshot.modelWinProbability);
+    const backfill = snapshot.isBackfill ? " Best available lower-confidence option." : "";
+    const risk = snapshot.riskFlags?.[0] ? `Risk to watch: ${snapshot.riskFlags[0]}` : "";
+    return [
+      `${index + 1}. ${pickLine(snapshot)}`,
+      probability ? `Model win probability: ${probability}` : "",
+      `${snapshotReason(snapshot)}${backfill}`,
+      risk
+    ].filter(Boolean).join("\n");
   });
+  const headline = contentType === "BEST_BET"
+    ? `Best Bet: ${pickLine(first || {})}`
+    : contentType === "PICK_BREAKDOWN"
+      ? `${first?.selectedTeam || "Pick"} vs ${first?.opponent || "Opponent"} — SGH Breakdown`
+      : "Same Game Heat Daily 3";
+  const reasoning = snapshots.map((snapshot) => {
+    const probability = formatModelWinProbability(snapshot.modelWinProbability);
+    return `${snapshot.selectedTeam}: ${probability ? `${probability} model win probability. ` : ""}${snapshotReason(snapshot)} Risk to watch: ${snapshotRisk(snapshot)}`;
+  });
+  const priceNote = "Price matters. Confirm the current number before betting.";
+  const bestBetCaption = first
+    ? `🔥 SAME GAME HEAT — BEST BET\n\n${pickLine(first)}\n\n${formatModelWinProbability(first.modelWinProbability) ? `Model win probability: ${formatModelWinProbability(first.modelWinProbability)}\n` : ""}${snapshotPriceContext(first)}\n\nWHY THE MODEL LIKES IT:\n• ${snapshotReasons(first).slice(0, 2).join("\n• ")}\n\nRISK TO WATCH:\n• ${snapshotRisk(first)}\n\n${DEFAULT_DISCLAIMER}`
+    : `${headline}\n\n${DEFAULT_DISCLAIMER}`;
+  const breakdownCaption = first
+    ? `${first.gameLabel || `${first.selectedTeam} vs ${first.opponent}`}\n\nPICK:\n${pickLine(first)}\n\nMODEL:\n${formatModelWinProbability(first.modelWinProbability) || "Model probability unavailable"} model win probability\n\nWHY IT RATES WELL:\n• ${snapshotReasons(first).slice(0, 2).join("\n• ")}\n\nPRICE CHECK:\n${snapshotPriceContext(first) || "Confirm the current number before betting."}\n\nRISK TO WATCH:\n• ${snapshotRisk(first)}\n\n${DEFAULT_DISCLAIMER}`
+    : `${headline}\n\n${DEFAULT_DISCLAIMER}`;
+  const dailyCaption = `🔥 SAME GAME HEAT — DAILY 3\n\n${pickList.join("\n\n")}\n\n${priceNote}\n\n${DEFAULT_DISCLAIMER}`;
 
   return {
     headline,
     subheadline: first?.slateDate ? `Slate date ${first.slateDate}` : "Same Game Heat read",
-    caption: `${headline}\n\n${pickList.join("\n")}\n\n${reasoning.join("\n")}\n\n${DEFAULT_DISCLAIMER}`,
-    shortCaption: `${headline}: ${snapshots.map((snapshot) => snapshot.selectedTeam).join(", ")}. ${DEFAULT_DISCLAIMER}`,
-    reelHook: "Here is the board the model is watching today.",
-    reelScript: `${headline}. ${pickList.join(" ")} Check the price, confirm lineups, and bet responsibly.`,
-    storyText: `${headline}\n${pickList.join("\n")}`,
+    caption: contentType === "BEST_BET" ? bestBetCaption : contentType === "PICK_BREAKDOWN" ? breakdownCaption : dailyCaption,
+    shortCaption: `${headline}: ${snapshots.map((snapshot) => {
+      const probability = formatModelWinProbability(snapshot.modelWinProbability);
+      return `${pickLine(snapshot)}${probability ? ` (${probability})` : ""}`;
+    }).join(", ")}. ${DEFAULT_DISCLAIMER}`,
+    reelHook: contentType === "DAILY_3"
+      ? "The full MLB slate is in. These three sides finished highest in the SGH model."
+      : `${first?.selectedTeam || "This side"} separated itself in the SGH model.`,
+    reelScript: `${headline}. ${reasoning.join(" ")} ${priceNote} ${DEFAULT_DISCLAIMER}`,
+    storyText: contentType === "DAILY_3"
+      ? `🔥 DAILY 3\n\n${snapshots.map((snapshot) => `${pickLine(snapshot)}\n${formatModelWinProbability(snapshot.modelWinProbability) || "Model probability unavailable"}`).join("\n\n")}\n\n${DEFAULT_DISCLAIMER}`
+      : `${headline}\n${pickLine(first || {})}\n${formatModelWinProbability(first?.modelWinProbability) || ""}\n${DEFAULT_DISCLAIMER}`,
     reasoningSummary: reasoning.join(" "),
     hashtags: ["#SameGameHeat", "#MLB", "#SportsBetting"],
     disclaimer: DEFAULT_DISCLAIMER,
@@ -441,6 +522,28 @@ function normalizeGeneratedContent(output = {}, contentType, snapshots) {
   if (!normalized.disclaimer.includes("21+")) normalized.disclaimer = DEFAULT_DISCLAIMER;
   const hits = validateNoProhibitedLanguage(normalized);
   return { normalized, prohibited: hits };
+}
+
+function validateAiCopyQuality(output, contentType, snapshots) {
+  const { normalized } = normalizeGeneratedContent(output, contentType, snapshots);
+  const failures = [];
+  const combined = [normalized.headline, normalized.caption, normalized.shortCaption, normalized.reelHook, normalized.reelScript, normalized.storyText].join("\n");
+  const styleHits = brandStyleHits(combined);
+  if (styleHits.length) failures.push(`Generic brand phrasing detected: ${styleHits.join(", ")}`);
+  if (contentType === "DAILY_3") {
+    const missingTeams = snapshots
+      .map((snapshot) => cleanString(snapshot.selectedTeam))
+      .filter((team) => team && !normalized.caption.toLowerCase().includes(team.toLowerCase()));
+    if (missingTeams.length) failures.push(`DAILY_3 caption omitted supplied teams: ${missingTeams.join(", ")}`);
+    const probabilitySnapshots = snapshots.filter((snapshot) => formatModelWinProbability(snapshot.modelWinProbability));
+    const missingProbabilities = probabilitySnapshots.filter((snapshot) => !normalized.caption.includes(formatModelWinProbability(snapshot.modelWinProbability)));
+    if (missingProbabilities.length) failures.push("DAILY_3 caption omitted supplied model win probabilities");
+    const oddsSnapshots = snapshots.filter((snapshot) => snapshot.sportsbookOdds !== null && snapshot.sportsbookOdds !== undefined);
+    const missingOdds = oddsSnapshots.filter((snapshot) => !normalized.caption.includes(snapshot.sportsbookOdds > 0 ? `+${snapshot.sportsbookOdds}` : String(snapshot.sportsbookOdds)));
+    if (missingOdds.length) failures.push("DAILY_3 caption omitted supplied frozen odds");
+  }
+  if (!normalized.disclaimer.includes("21+")) failures.push("Responsible gambling disclaimer missing");
+  return failures;
 }
 
 function createSocialContentRecord({ contentType, snapshots, generated, status = "ready_for_review", now = new Date().toISOString(), provider = "local-template", model = "local-template", previousContentId = null }) {
@@ -1352,14 +1455,34 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
     }
 
     const prompt = {
-      task: "Generate compliant sports-betting social copy from only the structured pick snapshots.",
+      task: "Generate Same Game Heat social copy from only the structured frozen pick snapshots.",
+      brandVoice: [
+        "Confident, data-driven, sports-media oriented, conversational, credible, sharp, concise, transparent.",
+        "Write like an analytical sports account presenting its model card, not a sportsbook ad or tout page.",
+        "Every pick should earn its place with at least one supplied model-supported reason when available."
+      ],
       rules: [
         "Do not guarantee outcomes.",
         "Do not fabricate missing facts.",
+        "Use only supplied snapshot values; do not infer injuries, weather, bullpen status, lineups, records, streaks, standings, or advanced metrics unless explicitly present.",
         "Do not use prohibited phrases.",
+        `Avoid generic brand filler: ${BRAND_STYLE_EXCLUSIONS.join(", ")}.`,
+        "Describe modelWinProbability as model win probability, never certainty or true chance.",
+        "Use frozen sportsbookOdds, fairOdds, playableThrough, reasons, and riskFlags where useful without overloading the caption.",
+        "If isBackfill is true, identify that selection as best available or lower-confidence rather than equal strength.",
+        "Keep hashtags useful, usually 3-6 tags.",
+        "Use emoji sparingly.",
         "Keep language clear for an average bettor.",
         `Use disclaimer: ${DEFAULT_DISCLAIMER}`
       ],
+      formatGuidance: {
+        DAILY_3: "Prefer: SGH Daily 3 headline, then each team ML with frozen odds, model win probability, and a concise supplied reason. Close with price/risk discipline and the disclaimer.",
+        BEST_BET: "Focus on one pick with selected team, frozen odds, model win probability, fair price/playable-through when supplied, why the model likes it, and risk to watch.",
+        PICK_BREAKDOWN: "Use pick, model read, why it rates well, price check, and risk to watch. Keep it readable for Instagram.",
+        reelHook: "Create curiosity around model analysis. Do not say winning picks, winners, locks, or hype phrases.",
+        reelScript: "20-30 seconds: hook, pick(s) with supplied reason, short uncertainty/price note, responsible-gambling close.",
+        storyText: "Very concise: pick names, odds, model probabilities, disclaimer."
+      },
       contentType,
       snapshots
     };
@@ -1380,7 +1503,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
           temperature: 0.45,
           response_format: { type: "json_object" },
           messages: [
-            { role: "system", content: "Return one strict JSON object only. Required keys: headline, subheadline, caption, shortCaption, reelHook, reelScript, storyText, reasoningSummary, hashtags, disclaimer, warnings. hashtags MUST be a JSON array of strings. warnings MUST be a JSON array of strings. All other listed fields MUST be JSON strings." },
+            { role: "system", content: "You write for Same Game Heat, a credible MLB model-analysis brand. Return one strict JSON object only. Required keys: headline, subheadline, caption, shortCaption, reelHook, reelScript, storyText, reasoningSummary, hashtags, disclaimer, warnings. hashtags MUST be a JSON array of strings. warnings MUST be a JSON array of strings. All other listed fields MUST be JSON strings. Use actual supplied teams, markets, frozen odds, model win probabilities, reasons, price thresholds, and risk flags. Avoid generic marketing copy, hype, guarantees, tout language, and invented analysis." },
             { role: "user", content: JSON.stringify(prompt) }
           ]
         })
@@ -1395,6 +1518,8 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
       if (!text) throw new Error("OpenAI response did not include message content");
       const output = JSON.parse(text);
       if (!isPlainObject(output)) throw new Error("OpenAI response JSON must be an object");
+      const qualityFailures = validateAiCopyQuality(output, contentType, snapshots);
+      if (qualityFailures.length) throw new Error(`AI copy quality check failed: ${qualityFailures.join("; ")}`);
       return {
         provider: "openai",
         model: aiModel,
