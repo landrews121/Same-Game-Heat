@@ -96,8 +96,32 @@ function cleanString(value, fallback = "") {
   return String(value ?? fallback).trim();
 }
 
+function normalizeStringArray(value, { splitPattern = null } = {}) {
+  if (value === null || value === undefined) return [];
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => normalizeStringArray(item, { splitPattern }));
+  }
+  if (typeof value === "string") {
+    const trimmed = cleanString(value);
+    if (!trimmed) return [];
+    return splitPattern ? trimmed.split(splitPattern).map(cleanString).filter(Boolean) : [trimmed];
+  }
+  return [];
+}
+
 function uniqueStrings(values = []) {
-  return [...new Set(values.map((value) => cleanString(value)).filter(Boolean))];
+  return [...new Set(normalizeStringArray(values))];
+}
+
+function normalizeHashtags(value) {
+  const tags = normalizeStringArray(value, { splitPattern: /[\s,]+/ })
+    .map((tag) => tag.startsWith("#") ? tag : `#${tag}`)
+    .filter((tag) => /^#[A-Za-z0-9_]+$/.test(tag));
+  return uniqueStrings(tags);
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function parseSocialAiTimeoutMs(value) {
@@ -399,18 +423,20 @@ function localSocialTemplate(contentType, snapshots) {
 
 function normalizeGeneratedContent(output = {}, contentType, snapshots) {
   const fallback = localSocialTemplate(contentType, snapshots);
+  const safeOutput = isPlainObject(output) ? output : {};
+  const hashtags = normalizeHashtags(safeOutput.hashtags);
   const normalized = {
-    headline: cleanString(output.headline || fallback.headline),
-    subheadline: cleanString(output.subheadline || fallback.subheadline),
-    caption: cleanString(output.caption || fallback.caption),
-    shortCaption: cleanString(output.shortCaption || fallback.shortCaption),
-    reelHook: cleanString(output.reelHook || fallback.reelHook),
-    reelScript: cleanString(output.reelScript || fallback.reelScript),
-    storyText: cleanString(output.storyText || fallback.storyText),
-    reasoningSummary: cleanString(output.reasoningSummary || fallback.reasoningSummary),
-    hashtags: uniqueStrings(output.hashtags || fallback.hashtags).slice(0, 12),
-    disclaimer: cleanString(output.disclaimer || DEFAULT_DISCLAIMER),
-    warnings: uniqueStrings(output.warnings || [])
+    headline: cleanString(safeOutput.headline || fallback.headline),
+    subheadline: cleanString(safeOutput.subheadline || fallback.subheadline),
+    caption: cleanString(safeOutput.caption || fallback.caption),
+    shortCaption: cleanString(safeOutput.shortCaption || fallback.shortCaption),
+    reelHook: cleanString(safeOutput.reelHook || fallback.reelHook),
+    reelScript: cleanString(safeOutput.reelScript || fallback.reelScript),
+    storyText: cleanString(safeOutput.storyText || fallback.storyText),
+    reasoningSummary: cleanString(safeOutput.reasoningSummary || fallback.reasoningSummary),
+    hashtags: (hashtags.length ? hashtags : fallback.hashtags).slice(0, 12),
+    disclaimer: cleanString(safeOutput.disclaimer || DEFAULT_DISCLAIMER),
+    warnings: uniqueStrings(safeOutput.warnings)
   };
   if (!normalized.disclaimer.includes("21+")) normalized.disclaimer = DEFAULT_DISCLAIMER;
   const hits = validateNoProhibitedLanguage(normalized);
@@ -1354,7 +1380,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
           temperature: 0.45,
           response_format: { type: "json_object" },
           messages: [
-            { role: "system", content: "Return strict JSON with keys headline, subheadline, caption, shortCaption, reelHook, reelScript, storyText, reasoningSummary, hashtags, disclaimer, warnings." },
+            { role: "system", content: "Return one strict JSON object only. Required keys: headline, subheadline, caption, shortCaption, reelHook, reelScript, storyText, reasoningSummary, hashtags, disclaimer, warnings. hashtags MUST be a JSON array of strings. warnings MUST be a JSON array of strings. All other listed fields MUST be JSON strings." },
             { role: "user", content: JSON.stringify(prompt) }
           ]
         })
@@ -1367,11 +1393,13 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
       const data = await response.json();
       const text = cleanString(data.choices?.[0]?.message?.content);
       if (!text) throw new Error("OpenAI response did not include message content");
+      const output = JSON.parse(text);
+      if (!isPlainObject(output)) throw new Error("OpenAI response JSON must be an object");
       return {
         provider: "openai",
         model: aiModel,
         output: {
-          ...JSON.parse(text),
+          ...output,
           requestDurationMs: Date.now() - startedAt
         }
       };

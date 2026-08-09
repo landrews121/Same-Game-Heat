@@ -231,6 +231,69 @@ test("malformed generated output falls back to safe local fields", () => {
   assert.ok(result.normalized.caption.includes("Los Angeles Angels"));
 });
 
+test("normal string arrays are preserved during generated content normalization", () => {
+  const snapshot = createSocialPickSnapshot(samplePick());
+  const result = normalizeGeneratedContent({ hashtags: ["#SameGameHeat", "#MLB"], warnings: ["Confirm lineups"] }, "DAILY_3", [snapshot]);
+  assert.deepEqual(result.normalized.hashtags, ["#SameGameHeat", "#MLB"]);
+  assert.deepEqual(result.normalized.warnings, ["Confirm lineups"]);
+});
+
+test("space separated hashtag string is normalized", () => {
+  const snapshot = createSocialPickSnapshot(samplePick());
+  const result = normalizeGeneratedContent({ hashtags: "#SameGameHeat #MLB #SportsBetting" }, "DAILY_3", [snapshot]);
+  assert.deepEqual(result.normalized.hashtags, ["#SameGameHeat", "#MLB", "#SportsBetting"]);
+});
+
+test("comma separated hashtag string is normalized", () => {
+  const snapshot = createSocialPickSnapshot(samplePick());
+  const result = normalizeGeneratedContent({ hashtags: "#SameGameHeat, #MLB, #SportsBetting" }, "DAILY_3", [snapshot]);
+  assert.deepEqual(result.normalized.hashtags, ["#SameGameHeat", "#MLB", "#SportsBetting"]);
+});
+
+test("warnings string becomes one warning instead of splitting words", () => {
+  const snapshot = createSocialPickSnapshot(samplePick());
+  const result = normalizeGeneratedContent({ warnings: "Confirm lineups before posting." }, "DAILY_3", [snapshot]);
+  assert.deepEqual(result.normalized.warnings, ["Confirm lineups before posting."]);
+});
+
+test("null warnings are normalized to an empty list", () => {
+  const snapshot = createSocialPickSnapshot(samplePick());
+  const result = normalizeGeneratedContent({ warnings: null }, "DAILY_3", [snapshot]);
+  assert.deepEqual(result.normalized.warnings, []);
+});
+
+test("null hashtags safely fall back to local template hashtags", () => {
+  const snapshot = createSocialPickSnapshot(samplePick());
+  const result = normalizeGeneratedContent({ hashtags: null }, "DAILY_3", [snapshot]);
+  assert.deepEqual(result.normalized.hashtags, ["#SameGameHeat", "#MLB", "#SportsBetting"]);
+});
+
+test("plain object hashtags and warnings do not crash normalization", () => {
+  const snapshot = createSocialPickSnapshot(samplePick());
+  const result = normalizeGeneratedContent({ hashtags: { tag: "#SameGameHeat" }, warnings: { text: "Confirm lineups" } }, "DAILY_3", [snapshot]);
+  assert.deepEqual(result.normalized.hashtags, ["#SameGameHeat", "#MLB", "#SportsBetting"]);
+  assert.deepEqual(result.normalized.warnings, []);
+});
+
+test("mixed array string fields do not crash normalization", () => {
+  const snapshot = createSocialPickSnapshot(samplePick());
+  const result = normalizeGeneratedContent({ hashtags: ["#SameGameHeat", 12, null, "#MLB"], warnings: ["Confirm", 12, false, null] }, "DAILY_3", [snapshot]);
+  assert.deepEqual(result.normalized.hashtags, ["#SameGameHeat", "#MLB"]);
+  assert.deepEqual(result.normalized.warnings, ["Confirm"]);
+});
+
+test("prohibited-language validation still runs after normalization", () => {
+  const snapshot = createSocialPickSnapshot(samplePick());
+  const result = normalizeGeneratedContent({ caption: "This is free money.", hashtags: "#SameGameHeat #MLB" }, "DAILY_3", [snapshot]);
+  assert.ok(result.prohibited.length > 0);
+});
+
+test("disclaimer is still enforced after normalization", () => {
+  const snapshot = createSocialPickSnapshot(samplePick());
+  const result = normalizeGeneratedContent({ disclaimer: "Bet carefully", hashtags: "#SameGameHeat #MLB" }, "DAILY_3", [snapshot]);
+  assert.equal(result.normalized.disclaimer, "21+ | Bet responsibly.");
+});
+
 test("local social manager blocks unauthorized protected endpoints", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-social-test-"));
   const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret" } });
@@ -347,6 +410,47 @@ test("successful OpenAI social response preserves provider and configured model"
       assert.equal(capturedBody.model, "gpt-4o-mini");
       assert.equal(capturedBody.response_format.type, "json_object");
       assert.equal(warnings.length, 0);
+    }
+  });
+});
+
+test("OpenAI response with string hashtags preserves AI caption and provider", async () => {
+  await withMockedSocialAi({
+    fetchImpl: async () => mockOpenAiResponse({
+      body: {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              headline: "AI Daily 3",
+              caption: "This AI caption should stay.\n\n21+ | Bet responsibly.",
+              shortCaption: "AI short caption",
+              hashtags: "#SameGameHeat #MLB #SportsBetting",
+              warnings: "Confirm lineups before posting.",
+              disclaimer: "21+ | Bet responsibly."
+            })
+          }
+        }]
+      }
+    }),
+    run: async ({ response }) => {
+      assert.equal(response.status, 200);
+      assert.equal(response.json.content.generationProvider, "openai");
+      assert.equal(response.json.content.caption, "This AI caption should stay.\n\n21+ | Bet responsibly.");
+      assert.deepEqual(response.json.content.hashtags, ["#SameGameHeat", "#MLB", "#SportsBetting"]);
+      assert.deepEqual(response.json.content.metadata.warnings, ["Confirm lineups before posting."]);
+    }
+  });
+});
+
+test("top-level malformed OpenAI JSON structure falls back safely", async () => {
+  await withMockedSocialAi({
+    fetchImpl: async () => mockOpenAiResponse({
+      body: { choices: [{ message: { content: JSON.stringify(["foo", "bar"]) } }] }
+    }),
+    run: async ({ response }) => {
+      assert.equal(response.status, 200);
+      assert.equal(response.json.content.generationProvider, "local-template");
+      assert.match(response.json.content.metadata.warnings[0], /must be an object/);
     }
   });
 });
