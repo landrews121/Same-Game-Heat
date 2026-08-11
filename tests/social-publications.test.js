@@ -103,6 +103,56 @@ async function approvedContentAndGraphic(manager, cookie) {
   return { content, graphic: graphic.json.graphic };
 }
 
+async function approvedDaily3ContentAndGraphic(manager, cookie, root, { captionOverride = null, extraContentFields = {} } = {}) {
+  const dailyPick = ({ id, gameId, selectedTeam, opponent, sportsbookOdds, modelWinProbability, originalPickRank }) => pick({
+    id,
+    gameId,
+    gameLabel: `${opponent} @ ${selectedTeam}`,
+    homeTeam: selectedTeam,
+    awayTeam: opponent,
+    selectedTeam,
+    opponent,
+    homeOrAway: "Home",
+    sportsbookOdds,
+    modelWinProbability,
+    originalPickRank
+  });
+  const generated = await route(manager, {
+    method: "POST",
+    path: "/api/social/generate",
+    headers: { cookie },
+    body: {
+      contentType: "DAILY_3",
+      board: {
+        slateDate: "2026-07-27",
+        sport: "baseball_mlb",
+        officialPicks: [
+          dailyPick({ id: "pick-white-sox", gameId: "game-1", selectedTeam: "Chicago White Sox", opponent: "Kansas City Royals", sportsbookOdds: -166, modelWinProbability: 0.582, originalPickRank: 1 }),
+          dailyPick({ id: "pick-blue-jays", gameId: "game-2", selectedTeam: "Toronto Blue Jays", opponent: "Baltimore Orioles", sportsbookOdds: -135, modelWinProbability: 0.571, originalPickRank: 2 }),
+          dailyPick({ id: "pick-rays", gameId: "game-3", selectedTeam: "Tampa Bay Rays", opponent: "Boston Red Sox", sportsbookOdds: -118, modelWinProbability: 0.563, originalPickRank: 3 })
+        ]
+      }
+    }
+  });
+  assert.equal(generated.status, 200);
+  let content = generated.json.content;
+  if (captionOverride !== null || Object.keys(extraContentFields).length) {
+    const contentFile = path.join(root, ".social-content.json");
+    const rows = await readJson(contentFile);
+    rows[0] = {
+      ...rows[0],
+      ...extraContentFields,
+      ...(captionOverride !== null ? { caption: captionOverride } : {})
+    };
+    await writeJson(contentFile, rows);
+    content = rows[0];
+  }
+  await route(manager, { method: "POST", path: `/api/social/content/${content.id}/approve`, headers: { cookie }, body: {} });
+  const graphic = await route(manager, { method: "POST", path: `/api/social/content/${content.id}/graphics`, headers: { cookie }, body: { format: "feed" } });
+  await route(manager, { method: "POST", path: `/api/social/graphics/${graphic.json.graphic.id}/approve`, headers: { cookie }, body: {} });
+  return { content, graphic: graphic.json.graphic };
+}
+
 async function readJson(file) {
   return JSON.parse(await fs.readFile(file, "utf8"));
 }
@@ -831,9 +881,9 @@ test("publication receipt preserves exact caption, hash, and snapshot hashes", (
   assert.equal(verifyPublicationIntegrity(record).integrityStatus, "verified");
 });
 
-test("Daily 3 publication caption stores approved caption once when duplicate blocks are present", () => {
+test("Daily 3 publication caption preserves full approved distinct pick blocks", () => {
   const snapshot = createSocialPickSnapshot(pick(), { createdAt: "2026-07-27T12:00:00Z" });
-  const approvedOnce = [
+  const fullCaption = [
     "FIRE SAME GAME HEAT - DAILY 3",
     "",
     "1. Chicago White Sox ML +115",
@@ -852,12 +902,11 @@ test("Daily 3 publication caption stores approved caption once when duplicate bl
     "",
     "21+ | Bet responsibly."
   ].join("\n");
-  const duplicatedCaption = `${approvedOnce}\n\n${approvedOnce}\n\n${approvedOnce}`;
   const content = {
     id: "content_daily_3",
     contentType: "DAILY_3",
     slateDate: "2026-07-27",
-    caption: duplicatedCaption,
+    caption: fullCaption,
     pickSnapshotIds: [snapshot.id],
     metadata: { snapshotHashes: [snapshot.snapshotHash] }
   };
@@ -869,12 +918,98 @@ test("Daily 3 publication caption stores approved caption once when duplicate bl
     account: { accountId: "123", username: "samegameheat" },
     apiVersion: "v23.0"
   });
+  assert.equal(record.caption, fullCaption);
   assert.equal(record.caption, approvedCaptionForPublication(content));
   assert.equal((record.caption.match(/Chicago White Sox/g) || []).length, 1);
   assert.equal((record.caption.match(/Toronto Blue Jays/g) || []).length, 1);
   assert.equal((record.caption.match(/Tampa Bay Rays/g) || []).length, 1);
   assert.equal((record.caption.match(/21\+ \| Bet responsibly\./g) || []).length, 1);
   assert.equal(record.captionHash, sha256(record.caption));
+});
+
+test("Daily 3 prepare preserves all three approved teams and ignores short story reel fields", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-daily3-full-caption-"));
+  const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_PUBLISH_DRY_RUN: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123" } });
+  const cookie = await login(manager);
+  const approvedCaption = [
+    "FIRE SAME GAME HEAT - DAILY 3",
+    "",
+    "1. Chicago White Sox ML -166",
+    "Model win probability: 58.2%",
+    "Fair price: -140. Playable through -150.",
+    "",
+    "2. Toronto Blue Jays ML -135",
+    "Model win probability: 57.1%",
+    "Fair price: -125. Playable through -145.",
+    "",
+    "3. Tampa Bay Rays ML -118",
+    "Model win probability: 56.3%",
+    "Fair price: -115. Playable through -130.",
+    "",
+    "Price matters. Confirm the current number before betting.",
+    "",
+    "21+ | Bet responsibly."
+  ].join("\n");
+  const { graphic } = await approvedDaily3ContentAndGraphic(manager, cookie, root, {
+    captionOverride: approvedCaption,
+    extraContentFields: {
+      shortCaption: "SHORT CAPTION SHOULD NOT BE USED",
+      storyText: "STORY TEXT SHOULD NOT BE APPENDED",
+      reelScript: "REEL SCRIPT SHOULD NOT BE APPENDED"
+    }
+  });
+  const prepared = await route(manager, { method: "POST", path: `/api/social/graphics/${graphic.id}/prepare-publication`, headers: { cookie }, body: {} });
+  assert.equal(prepared.status, 200);
+  assert.equal(prepared.json.publication.caption, approvedCaption);
+  assert.match(prepared.json.publication.caption, /Chicago White Sox/);
+  assert.match(prepared.json.publication.caption, /Toronto Blue Jays/);
+  assert.match(prepared.json.publication.caption, /Tampa Bay Rays/);
+  assert.doesNotMatch(prepared.json.publication.caption, /SHORT CAPTION SHOULD NOT BE USED/);
+  assert.doesNotMatch(prepared.json.publication.caption, /STORY TEXT SHOULD NOT BE APPENDED/);
+  assert.doesNotMatch(prepared.json.publication.caption, /REEL SCRIPT SHOULD NOT BE APPENDED/);
+  assert.equal(prepared.json.publication.captionHash, sha256(approvedCaption));
+});
+
+test("Daily 3 prepare rejects approved caption missing a frozen pick", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-daily3-missing-pick-"));
+  const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_PUBLISH_DRY_RUN: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123" } });
+  const cookie = await login(manager);
+  const incompleteCaption = [
+    "FIRE SAME GAME HEAT - DAILY 3",
+    "",
+    "1. Chicago White Sox ML -166",
+    "Model win probability: 58.2%",
+    "",
+    "3. Tampa Bay Rays ML -118",
+    "Model win probability: 56.3%",
+    "",
+    "21+ | Bet responsibly."
+  ].join("\n");
+  const { graphic } = await approvedDaily3ContentAndGraphic(manager, cookie, root, { captionOverride: incompleteCaption });
+  const prepared = await route(manager, { method: "POST", path: `/api/social/graphics/${graphic.id}/prepare-publication`, headers: { cookie }, body: {} });
+  assert.equal(prepared.status, 400);
+  assert.equal(prepared.json.stage, "approval_check");
+  assert.match(prepared.json.error, /Approved Daily 3 caption is incomplete/);
+});
+
+test("Daily 3 prepare rejects duplicated full caption through duplicate disclaimer check", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-daily3-duplicate-caption-"));
+  const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_PUBLISH_DRY_RUN: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123" } });
+  const cookie = await login(manager);
+  const caption = [
+    "FIRE SAME GAME HEAT - DAILY 3",
+    "",
+    "1. Chicago White Sox ML -166",
+    "2. Toronto Blue Jays ML -135",
+    "3. Tampa Bay Rays ML -118",
+    "",
+    "21+ | Bet responsibly."
+  ].join("\n");
+  const { graphic } = await approvedDaily3ContentAndGraphic(manager, cookie, root, { captionOverride: `${caption}\n\n${caption}` });
+  const prepared = await route(manager, { method: "POST", path: `/api/social/graphics/${graphic.id}/prepare-publication`, headers: { cookie }, body: {} });
+  assert.equal(prepared.status, 400);
+  assert.equal(prepared.json.stage, "approval_check");
+  assert.match(prepared.json.error, /exactly one responsible gambling disclaimer/);
 });
 
 test("same approved graphic cannot prepare a second publication after publish", async () => {
@@ -961,6 +1096,81 @@ test("published receipt stores platform media ID and permalink", async () => {
     const finalIdentityIndex = global.fetch.calls.findIndex((call, index) => index > publishCallIndex - 4 && call.href.includes("graph.facebook.com") && call.href.includes("/123?"));
     assert.ok(publishCallIndex > -1);
     assert.ok(finalIdentityIndex > -1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("live publish sends exact full approved Daily 3 caption to provider", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-daily3-provider-caption-"));
+  const originalFetch = global.fetch;
+  global.fetch = fakeMetaFetch({ containerStatus: "FINISHED" });
+  try {
+    const manager = createSocialManager({
+      root,
+      env: {
+        SOCIAL_ADMIN_SECRET: "secret",
+        SOCIAL_LIVE_PUBLISH_ENABLED: "true",
+        INSTAGRAM_ACCESS_TOKEN: "token",
+        INSTAGRAM_USER_ID: "123",
+        INSTAGRAM_EXPECTED_USERNAME: "samegameheat",
+        SUPABASE_URL: "https://project.supabase.co",
+        SUPABASE_SERVICE_ROLE_KEY: "service-role"
+      }
+    });
+    const cookie = await login(manager);
+    const approvedCaption = [
+      "FIRE SAME GAME HEAT - DAILY 3",
+      "",
+      "1. Chicago White Sox ML -166",
+      "Model win probability: 58.2%",
+      "Fair price: -140. Playable through -150.",
+      "",
+      "2. Toronto Blue Jays ML -135",
+      "Model win probability: 57.1%",
+      "Fair price: -125. Playable through -145.",
+      "",
+      "3. Tampa Bay Rays ML -118",
+      "Model win probability: 56.3%",
+      "Fair price: -115. Playable through -130.",
+      "",
+      "21+ | Bet responsibly."
+    ].join("\n");
+    const { content, graphic } = await approvedDaily3ContentAndGraphic(manager, cookie, root, {
+      captionOverride: approvedCaption,
+      extraContentFields: {
+        shortCaption: "SHORT CAPTION SHOULD NOT BE SENT",
+        storyText: "STORY TEXT SHOULD NOT BE SENT",
+        reelHook: "REEL HOOK SHOULD NOT BE SENT",
+        reelScript: "REEL SCRIPT SHOULD NOT BE SENT"
+      }
+    });
+    const prepared = await route(manager, {
+      method: "POST",
+      path: `/api/social/graphics/${graphic.id}/prepare-publication`,
+      headers: { cookie },
+      body: { contentId: content.id, graphicId: graphic.id }
+    });
+    assert.equal(prepared.status, 200);
+    assert.equal(prepared.json.publication.caption, approvedCaption);
+    const published = await route(manager, {
+      method: "POST",
+      path: `/api/social/publications/${prepared.json.publication.id}/publish`,
+      headers: { cookie },
+      body: { confirmLivePublish: true }
+    });
+    assert.equal(published.status, 200);
+    const mediaCall = global.fetch.calls.find((call) => call.method === "POST" && call.href.includes("/123/media?"));
+    assert.ok(mediaCall);
+    const providerCaption = new URL(mediaCall.href).searchParams.get("caption");
+    assert.equal(providerCaption, approvedCaption);
+    assert.match(providerCaption, /Chicago White Sox/);
+    assert.match(providerCaption, /Toronto Blue Jays/);
+    assert.match(providerCaption, /Tampa Bay Rays/);
+    assert.doesNotMatch(providerCaption, /SHORT CAPTION SHOULD NOT BE SENT/);
+    assert.doesNotMatch(providerCaption, /STORY TEXT SHOULD NOT BE SENT/);
+    assert.doesNotMatch(providerCaption, /REEL SCRIPT SHOULD NOT BE SENT/);
+    assert.equal(global.fetch.calls.some((call) => call.href.includes("api.openai.com")), false);
   } finally {
     global.fetch = originalFetch;
   }

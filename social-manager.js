@@ -507,6 +507,27 @@ function ensureInlineDisclaimer(text) {
   return body ? `${body} ${DEFAULT_DISCLAIMER}` : DEFAULT_DISCLAIMER;
 }
 
+function disclaimerCount(text) {
+  return (cleanString(text).match(disclaimerRegex()) || []).length;
+}
+
+function assertSingleApprovedDisclaimer(caption) {
+  if (disclaimerCount(caption) !== 1) throw validationError("Approved caption must contain exactly one responsible gambling disclaimer.");
+}
+
+function assertDaily3CaptionComplete(content, snapshots) {
+  if (content?.contentType !== "DAILY_3") return;
+  const caption = cleanString(content.caption).toLowerCase();
+  const missingTeams = snapshots
+    .slice(0, 3)
+    .map((snapshot) => cleanString(snapshot.selectedTeam))
+    .filter(Boolean)
+    .filter((team) => !caption.includes(team.toLowerCase()));
+  if (missingTeams.length || snapshots.length < 3) {
+    throw validationError("Approved Daily 3 caption is incomplete. Live publication aborted.");
+  }
+}
+
 function deterministicDailyShortCaption(snapshots) {
   return ensureInlineDisclaimer(`🔥 SGH Daily 3: ${snapshots.map((snapshot) => {
     const probability = formatModelWinProbability(snapshot.modelWinProbability);
@@ -1624,7 +1645,10 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
     const snapshots = (await getSnapshots({})).filter((snapshot) => (graphic.snapshotIds || content.pickSnapshotIds || []).includes(snapshot.id));
     const badSnapshot = snapshots.find((snapshot) => snapshot.integrityStatus === "failed");
     if (badSnapshot) throw validationError(`Snapshot integrity failed: ${badSnapshot.integrityError}`);
-    const hits = validateNoProhibitedLanguage({ caption: approvedCaptionForPublication(content) });
+    const approvedCaption = approvedCaptionForPublication(content);
+    assertSingleApprovedDisclaimer(approvedCaption);
+    assertDaily3CaptionComplete(content, snapshots);
+    const hits = validateNoProhibitedLanguage({ caption: approvedCaption });
     if (hits.length) throw validationError(`Caption failed claim safety: ${hits.join(", ")}`);
     if (content.contentType === "DAILY_RESULTS") {
       const results = (content.metadata?.results || []).map(verifyResultIntegrity);
@@ -1801,6 +1825,13 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
     if (content.status !== "approved") throw publicationStep("approval_check", "Social Content must still be approved before live publishing.", diagnostics);
     if (graphic.status !== "approved") throw publicationStep("approval_check", "Social Graphic must still be approved before live publishing.", diagnostics);
     if (graphic.socialContentId !== content.id) throw publicationStep("approval_check", "Approved graphic no longer belongs to approved content.", diagnostics);
+    try {
+      const snapshots = (await getSnapshots({})).filter((snapshot) => (graphic.snapshotIds || content.pickSnapshotIds || []).includes(snapshot.id));
+      assertSingleApprovedDisclaimer(approvedCaptionForPublication(content));
+      assertDaily3CaptionComplete(content, snapshots);
+    } catch (error) {
+      throw attachPublicationStage(error, "approval_check", diagnostics);
+    }
     if (approvedCaptionForPublication(content) !== publication.caption) throw publicationStep("approval_check", "Live publish must use the exact approved caption.", diagnostics);
     if (sha256(approvedCaptionForPublication(content)) !== publication.captionHash) throw publicationStep("approval_check", "Approved content caption hash mismatch.", diagnostics);
     if ((graphic.snapshotHashes || []).join("|") !== (publication.snapshotHashes || []).join("|")) {
