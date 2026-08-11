@@ -558,6 +558,21 @@ function extractSentences(text) {
     .filter(Boolean);
 }
 
+function safeAiReason(value, snapshots, snapshot) {
+  const reason = sentence(value);
+  if (!reason) return "";
+  const lower = reason.toLowerCase();
+  const otherTeams = snapshots
+    .filter((item) => cleanString(item.selectedTeam).toLowerCase() !== cleanString(snapshot.selectedTeam).toLowerCase())
+    .map((item) => cleanString(item.selectedTeam).toLowerCase())
+    .filter(Boolean);
+  if (validateNoProhibitedLanguage({ reason }).length || brandStyleHits(reason).length) return "";
+  if (otherTeams.some((team) => lower.includes(team))) return "";
+  if (/\b[1-3][.)]\s|[1-3]️⃣|model win probability|sgh fair price|playable through|price matters|21\+|bet responsibly|same game heat|daily 3|🔥/i.test(reason)) return "";
+  if (reason.split(/\s+/).length > 34) return "";
+  return reason;
+}
+
 function extractAiReasonForSnapshot(output, normalized, snapshot, index) {
   const pickReasons = Array.isArray(output?.pickReasons) ? output.pickReasons : [];
   const matchedReason = pickReasons.find((item) => {
@@ -567,26 +582,30 @@ function extractAiReasonForSnapshot(output, normalized, snapshot, index) {
     return (rank === index + 1 || !rank) && (!team || team.toLowerCase() === cleanString(snapshot.selectedTeam).toLowerCase());
   });
   if (matchedReason) {
-    const reason = sentence(matchedReason.reason);
-    if (reason && !validateNoProhibitedLanguage({ reason }).length && !brandStyleHits(reason).length) return reason;
+    const reason = safeAiReason(matchedReason.reason, snapshotsForReasons(output, normalized), snapshot);
+    if (reason) return reason;
   }
 
-  const haystack = [normalized.caption, normalized.reelScript, normalized.reasoningSummary].join(" ");
+  const haystack = [normalized.reasoningSummary, normalized.reelScript].join(" ");
   const team = cleanString(snapshot.selectedTeam);
   const sentenceMatch = extractSentences(haystack).find((item) => team && item.toLowerCase().includes(team.toLowerCase()));
-  const reason = sentence(sentenceMatch || snapshotReason(snapshot));
-  if (reason && !validateNoProhibitedLanguage({ reason }).length && !brandStyleHits(reason).length) return reason;
+  const reason = safeAiReason(sentenceMatch, snapshotsForReasons(output, normalized), snapshot);
+  if (reason) return reason;
   return sentence(snapshotReason(snapshot));
 }
 
-function buildHybridDailyCaption(output, normalized, snapshots) {
+function snapshotsForReasons(output, normalized) {
+  return Array.isArray(output?.__snapshotsForReasons) ? output.__snapshotsForReasons : Array.isArray(normalized?.__snapshotsForReasons) ? normalized.__snapshotsForReasons : [];
+}
+
+function buildDaily3Caption(snapshots, safeAiReasons = []) {
   const pickBlocks = snapshots.map((snapshot, index) => {
     const probability = formatModelWinProbability(snapshot.modelWinProbability);
     const backfill = snapshot.isBackfill ? " Rounds out the board as SGH's best available lower-confidence side." : "";
     return [
       `${ordinalEmoji(index)} ${pickLine(snapshot)}`,
       probability ? `Model win probability: ${probability}` : "",
-      `${extractAiReasonForSnapshot(output, normalized, snapshot, index)}${backfill}`,
+      `${safeAiReasons[index] || sentence(snapshotReason(snapshot))}${backfill}`,
       snapshotPriceContext(snapshot)
     ].filter(Boolean).join("\n");
   });
@@ -595,6 +614,13 @@ function buildHybridDailyCaption(output, normalized, snapshots) {
     ...publicMaterialLimitations(snapshots)
   ]).join("\n");
   return ensureFinalDisclaimer(`🔥 SAME GAME HEAT — DAILY 3\n\n${pickBlocks.join("\n\n")}\n\n${closingNotes}`);
+}
+
+function buildHybridDailyCaption(output, normalized, snapshots) {
+  const reasonContextOutput = { ...output, __snapshotsForReasons: snapshots };
+  const reasonContextNormalized = { ...normalized, __snapshotsForReasons: snapshots };
+  const safeAiReasons = snapshots.map((snapshot, index) => extractAiReasonForSnapshot(reasonContextOutput, reasonContextNormalized, snapshot, index));
+  return buildDaily3Caption(snapshots, safeAiReasons);
 }
 
 function snapshotAllowedNumbers(snapshots) {
@@ -660,17 +686,15 @@ function repairGeneratedSocialCopy({ contentType, generated, snapshots }) {
   const repaired = { ...normalized };
   const repairReasons = [];
   if (contentType === "DAILY_3") {
-    if (repairableFailures.length) {
-      const originalCaption = repaired.caption;
-      const originalShortCaption = repaired.shortCaption;
-      const originalStoryText = repaired.storyText;
-      repaired.caption = buildHybridDailyCaption(safeOutput, normalized, snapshots);
-      repaired.shortCaption = deterministicDailyShortCaption(snapshots);
-      repaired.storyText = deterministicDailyStoryText(snapshots);
-      if (repaired.caption !== originalCaption) repairReasons.push("daily_3_caption_rebuilt");
-      if (repaired.shortCaption !== originalShortCaption) repairReasons.push("short_caption_rebuilt");
-      if (repaired.storyText !== originalStoryText) repairReasons.push("story_text_rebuilt");
-    }
+    const originalCaption = repaired.caption;
+    const originalShortCaption = repaired.shortCaption;
+    const originalStoryText = repaired.storyText;
+    repaired.caption = buildHybridDailyCaption(safeOutput, normalized, snapshots);
+    repaired.shortCaption = deterministicDailyShortCaption(snapshots);
+    repaired.storyText = deterministicDailyStoryText(snapshots);
+    if (repaired.caption !== originalCaption) repairReasons.push("daily_3_caption_canonicalized");
+    if (repaired.shortCaption !== originalShortCaption) repairReasons.push("short_caption_rebuilt");
+    if (repaired.storyText !== originalStoryText) repairReasons.push("story_text_rebuilt");
   } else {
     const caption = ensureFinalDisclaimer(repaired.caption);
     if (caption !== repaired.caption) {
