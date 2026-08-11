@@ -945,6 +945,19 @@ test("frontend dry-run publication action is explicit", async () => {
   assert.match(source, /DRY-RUN RECEIPT/);
 });
 
+test("frontend testing reset clears local workspace and avoids refresh rehydration", async () => {
+  const source = await fs.readFile(path.join(__dirname, "../social.js"), "utf8");
+  assert.match(source, /sgh-social-testing-reset/);
+  assert.match(source, /Clear the current Social Studio testing workspace\?/);
+  assert.match(source, /localStorage\.removeItem\(SOCIAL_BOARD_KEY\)/);
+  assert.match(source, /state\.selectedContent = null/);
+  assert.match(source, /renderContentDetail\(null\)/);
+  assert.match(source, /\/api\/social\/testing\/reset/);
+  assert.match(source, /Testing workspace cleared\./);
+  assert.match(source, /if \(localStorage\.getItem\(SOCIAL_RESET_KEY\)\)/);
+  assert.match(source, /function refreshCurrentBoard/);
+});
+
 test("forged high modelWinProbability is rejected", () => {
   assert.throws(() => createSocialPickSnapshot(samplePick({ modelWinProbability: 99 })), /modelWinProbability/);
 });
@@ -975,7 +988,8 @@ test("all Social Studio POST mutation routes require auth", async () => {
     ["/api/social/generate", { contentType: "BEST_BET", board: { officialPicks: [samplePick()] } }],
     ["/api/social/content/content_123/regenerate", {}],
     ["/api/social/content/content_123/approve", {}],
-    ["/api/social/content/content_123/archive", {}]
+    ["/api/social/content/content_123/archive", {}],
+    ["/api/social/testing/reset", {}]
   ];
   for (const [pathName, body] of protectedRoutes) {
     const response = await route(manager, { method: "POST", path: pathName, body });

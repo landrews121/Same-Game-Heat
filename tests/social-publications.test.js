@@ -370,6 +370,118 @@ test("prepared dry-run publication never reports published", async () => {
   assert.notEqual(refreshed.json.publication.status, "published");
 });
 
+test("testing reset archives dry-run receipts and preserves official history", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-testing-reset-"));
+  let metaCalled = false;
+  const manager = createSocialManager({
+    root,
+    env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_PUBLISH_DRY_RUN: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123" },
+    fetchImpl: async () => {
+      metaCalled = true;
+      throw new Error("Reset should not call Meta");
+    }
+  });
+  const cookie = await login(manager);
+  const { content, graphic } = await approvedContentAndGraphic(manager, cookie);
+  const snapshotBefore = (await readJson(path.join(root, ".social-pick-snapshots.json")))[0];
+  const result = createResultRecord({
+    snapshot: snapshotBefore,
+    gameResult: { gameId: snapshotBefore.gameId, homeTeam: snapshotBefore.homeTeam, awayTeam: snapshotBefore.awayTeam, status: "final", homeScore: 5, awayScore: 2 }
+  });
+  await writeJson(path.join(root, ".social-results.json"), [result]);
+  const prepared = await route(manager, { method: "POST", path: `/api/social/graphics/${graphic.id}/prepare-publication`, headers: { cookie }, body: {} });
+  assert.equal(prepared.status, 200);
+
+  const reset = await route(manager, {
+    method: "POST",
+    path: "/api/social/testing/reset",
+    headers: { cookie },
+    body: {
+      slateDate: "2026-07-27",
+      selectedContentId: content.id,
+      selectedGraphicId: graphic.id
+    }
+  });
+  assert.equal(reset.status, 200);
+  assert.equal(reset.json.ok, true);
+  assert.equal(reset.json.cleared.currentSelections, true);
+  assert.equal(reset.json.cleared.currentBoardCache, true);
+  assert.equal(reset.json.cleared.dryRunPublications, 1);
+  assert.equal(reset.json.cleared.testContent, 1);
+  assert.equal(reset.json.cleared.testGraphics, 1);
+  assert.deepEqual(reset.json.preserved, {
+    officialSnapshots: true,
+    results: true,
+    performanceHistory: true,
+    livePublications: true,
+    instagramPosts: true
+  });
+  assert.equal(JSON.stringify(reset.json).includes("token"), false);
+  assert.equal(metaCalled, false);
+
+  const activePublications = await route(manager, { method: "GET", path: "/api/social/publications", headers: { cookie } });
+  assert.equal(activePublications.status, 200);
+  assert.equal(activePublications.json.publications.length, 0);
+  const archivedPublications = await route(manager, { method: "GET", path: "/api/social/publications?includeArchived=true", headers: { cookie } });
+  assert.equal(archivedPublications.json.publications.length, 1);
+  assert.equal(archivedPublications.json.publications[0].dryRun, true);
+  assert.equal(archivedPublications.json.publications[0].status, "archived");
+
+  const snapshotsAfter = await readJson(path.join(root, ".social-pick-snapshots.json"));
+  const resultsAfter = await readJson(path.join(root, ".social-results.json"));
+  const contentAfter = await readJson(path.join(root, ".social-content.json"));
+  const graphicsAfter = await readJson(path.join(root, ".social-graphics.json"));
+  assert.equal(snapshotsAfter.length, 1);
+  assert.equal(snapshotsAfter[0].id, snapshotBefore.id);
+  assert.equal(resultsAfter.length, 1);
+  assert.equal(resultsAfter[0].id, result.id);
+  assert.equal(contentAfter.find((item) => item.id === content.id).status, "archived");
+  assert.equal(graphicsAfter.find((item) => item.id === graphic.id).status, "archived");
+});
+
+test("testing reset preserves live publication records and linked content", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-testing-reset-live-"));
+  const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_PUBLISH_DRY_RUN: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123" } });
+  const cookie = await login(manager);
+  const { content, graphic } = await approvedContentAndGraphic(manager, cookie);
+  const live = await manager.savePublication(publicationFixture({
+    content,
+    graphic,
+    dryRun: false,
+    status: "published",
+    account: { accountId: "123", username: "sg_heater" }
+  }));
+  const reset = await route(manager, {
+    method: "POST",
+    path: "/api/social/testing/reset",
+    headers: { cookie },
+    body: {
+      selectedContentId: content.id,
+      selectedGraphicId: graphic.id
+    }
+  });
+  assert.equal(reset.status, 200);
+  assert.equal(reset.json.cleared.testContent, 0);
+  assert.equal(reset.json.cleared.testGraphics, 0);
+  assert.equal(reset.json.cleared.dryRunPublications, 0);
+
+  const activePublications = await route(manager, { method: "GET", path: "/api/social/publications", headers: { cookie } });
+  assert.equal(activePublications.json.publications.length, 1);
+  assert.equal(activePublications.json.publications[0].id, live.id);
+  assert.equal(activePublications.json.publications[0].status, "published");
+  const contentAfter = await readJson(path.join(root, ".social-content.json"));
+  const graphicsAfter = await readJson(path.join(root, ".social-graphics.json"));
+  assert.notEqual(contentAfter.find((item) => item.id === content.id).status, "archived");
+  assert.notEqual(graphicsAfter.find((item) => item.id === graphic.id).status, "archived");
+});
+
+test("anonymous testing reset request is rejected", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-testing-reset-auth-"));
+  const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret" } });
+  const response = await route(manager, { method: "POST", path: "/api/social/testing/reset", body: {} });
+  assert.equal(response.status, 401);
+});
+
 test("unauthorized publish endpoint is rejected", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-auth-"));
   const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret" } });

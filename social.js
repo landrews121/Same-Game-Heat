@@ -1,4 +1,5 @@
 const SOCIAL_BOARD_KEY = "sgh-social-current-board";
+const SOCIAL_RESET_KEY = "sgh-social-testing-reset";
 
 const state = {
   authorized: false,
@@ -27,6 +28,7 @@ const els = {
   createBestBet: document.querySelector("#createBestBet"),
   createBreakdown: document.querySelector("#createBreakdown"),
   refreshBoard: document.querySelector("#refreshBoard"),
+  resetTestingWorkspace: document.querySelector("#resetTestingWorkspace"),
   breakdownPick: document.querySelector("#breakdownPick"),
   queueStatus: document.querySelector("#queueStatus"),
   refreshQueue: document.querySelector("#refreshQueue"),
@@ -74,12 +76,65 @@ async function api(path, options = {}) {
 }
 
 function loadCurrentBoard() {
+  if (localStorage.getItem(SOCIAL_RESET_KEY)) {
+    state.board = null;
+    localStorage.removeItem(SOCIAL_BOARD_KEY);
+    renderBoard();
+    return;
+  }
   try {
     state.board = JSON.parse(localStorage.getItem(SOCIAL_BOARD_KEY) || "null");
   } catch {
     state.board = null;
   }
   renderBoard();
+}
+
+function refreshCurrentBoard() {
+  localStorage.removeItem(SOCIAL_RESET_KEY);
+  loadCurrentBoard();
+}
+
+function currentSelectedGraphicId() {
+  if (!state.selectedContent?.id) return "";
+  const graphics = state.graphicsByContent.get(state.selectedContent.id) || [];
+  const active = graphics.find((graphic) => graphic.status !== "archived") || graphics[0];
+  return active?.id || "";
+}
+
+function clearTestingWorkspaceView(message = "Testing workspace cleared.") {
+  state.board = null;
+  state.snapshots = [];
+  state.content = [];
+  state.selectedContent = null;
+  state.graphicsByContent = new Map();
+  state.instagramDiagnostics = null;
+  state.publications = [];
+  localStorage.removeItem(SOCIAL_BOARD_KEY);
+  localStorage.setItem(SOCIAL_RESET_KEY, JSON.stringify({ resetAt: new Date().toISOString() }));
+  renderBoard();
+  renderQueue();
+  renderContentDetail(null);
+  renderInstagramDiagnostics();
+  renderPublishing();
+  showStatus(message);
+}
+
+async function resetTestingWorkspace() {
+  const ok = window.confirm("Clear the current Social Studio testing workspace? Official snapshots, finalized results, and live publication history will be kept.");
+  if (!ok) return;
+  const selectedContentId = state.selectedContent?.id || "";
+  const selectedGraphicId = currentSelectedGraphicId();
+  const slateDate = state.board?.slateDate || "";
+  showStatus("Clearing Social Studio testing workspace...");
+  const payload = await api("/api/social/testing/reset", {
+    method: "POST",
+    body: JSON.stringify({ slateDate, selectedContentId, selectedGraphicId })
+  });
+  clearTestingWorkspaceView("Testing workspace cleared.");
+  state.instagramStatus = (await api("/api/social/instagram/status").catch(() => state.instagramStatus)) || state.instagramStatus;
+  renderPublishing();
+  return payload;
 }
 
 function formatOdds(odds) {
@@ -146,6 +201,7 @@ function renderBoard() {
 
 async function refreshQueue() {
   if (!state.authorized) return;
+  localStorage.removeItem(SOCIAL_RESET_KEY);
   const slateDate = state.board?.slateDate || "";
   const status = els.queueStatus.value || "all";
   const query = new URLSearchParams();
@@ -487,6 +543,7 @@ async function generateContent(contentType, pickIndex = 0) {
     return;
   }
   showStatus(`Generating ${contentType} social draft...`);
+  localStorage.removeItem(SOCIAL_RESET_KEY);
   let finalStatus = "";
   try {
     const payload = await api("/api/social/generate", {
@@ -591,7 +648,14 @@ async function bootstrap() {
   els.socialApp.classList.toggle("hidden", !state.authorized);
   if (state.authorized) {
     loadCurrentBoard();
-    await refreshQueue();
+    if (localStorage.getItem(SOCIAL_RESET_KEY)) {
+      renderQueue();
+      renderContentDetail(null);
+      await refreshPublishing();
+      showStatus("Testing workspace cleared.");
+    } else {
+      await refreshQueue();
+    }
   }
 }
 
@@ -613,7 +677,10 @@ els.loginForm.addEventListener("submit", async (event) => {
   }
 });
 
-els.refreshBoard.addEventListener("click", loadCurrentBoard);
+els.refreshBoard.addEventListener("click", refreshCurrentBoard);
+if (els.resetTestingWorkspace) {
+  els.resetTestingWorkspace.addEventListener("click", () => resetTestingWorkspace().catch((error) => showStatus(error.message)));
+}
 els.refreshQueue.addEventListener("click", refreshQueue);
 els.refreshPublishing.addEventListener("click", () => refreshPublishing().catch((error) => showStatus(error.message)));
 if (els.runInstagramDiagnostics) {

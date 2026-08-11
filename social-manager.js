@@ -1358,12 +1358,87 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
     const local = await readLocalPublications();
     const rows = [...remote, ...local]
       .filter((publication) => !query.socialGraphicId || publication.socialGraphicId === query.socialGraphicId)
-      .filter((publication) => !query.socialContentId || publication.socialContentId === query.socialContentId);
+      .filter((publication) => !query.socialContentId || publication.socialContentId === query.socialContentId)
+      .filter((publication) => query.includeArchived || publication.status !== "archived");
     const byId = new Map();
     rows.forEach((publication) => {
       if (!byId.has(publication.id)) byId.set(publication.id, publication);
     });
     return Array.from(byId.values()).sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+  }
+
+  function livePublicationReferences(publications = []) {
+    return publications.reduce((acc, publication) => {
+      if (!publication?.dryRun && ["published", "verified"].includes(publication?.status)) {
+        if (publication.socialContentId) acc.contentIds.add(publication.socialContentId);
+        if (publication.socialGraphicId) acc.graphicIds.add(publication.socialGraphicId);
+      }
+      return acc;
+    }, { contentIds: new Set(), graphicIds: new Set() });
+  }
+
+  async function resetSocialTestingWorkspace(payload = {}) {
+    const slateDate = cleanString(payload.slateDate || "");
+    const selectedContentId = cleanString(payload.selectedContentId || "");
+    const selectedGraphicId = cleanString(payload.selectedGraphicId || "");
+    const allPublications = await getPublications({ includeArchived: true });
+    const liveRefs = livePublicationReferences(allPublications);
+    const dryRunPublications = allPublications.filter((publication) =>
+      publication?.dryRun === true &&
+      !["published", "verified", "archived"].includes(publication.status)
+    );
+    const now = new Date().toISOString();
+    let dryRunPublicationCount = 0;
+    for (const publication of dryRunPublications) {
+      await savePublication({
+        ...publication,
+        status: "archived",
+        archivedAt: now,
+        updatedAt: now,
+        metadata: {
+          ...(publication.metadata || {}),
+          archivedBy: "social-testing-reset"
+        }
+      });
+      dryRunPublicationCount += 1;
+    }
+
+    let testContentCount = 0;
+    if (selectedContentId && !liveRefs.contentIds.has(selectedContentId)) {
+      const content = (await getContent({})).find((item) => item.id === selectedContentId);
+      if (content && content.status !== "archived") {
+        await saveContent(archiveSocialContent(content, now));
+        testContentCount += 1;
+      }
+    }
+
+    let testGraphicCount = 0;
+    if (selectedGraphicId && !liveRefs.graphicIds.has(selectedGraphicId)) {
+      const graphic = (await getGraphics({})).find((item) => item.id === selectedGraphicId);
+      if (graphic && graphic.status !== "archived") {
+        await saveGraphic(archiveSocialGraphic(graphic, now));
+        testGraphicCount += 1;
+      }
+    }
+
+    return {
+      ok: true,
+      cleared: {
+        currentSelections: true,
+        currentBoardCache: true,
+        dryRunPublications: dryRunPublicationCount,
+        testContent: testContentCount,
+        testGraphics: testGraphicCount
+      },
+      preserved: {
+        officialSnapshots: true,
+        results: true,
+        performanceHistory: true,
+        livePublications: true,
+        instagramPosts: true
+      },
+      slateDate
+    };
   }
 
   async function savePublication(publication) {
@@ -2060,9 +2135,21 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
       sendJson(res, 200, {
         publications: await getPublications({
           socialGraphicId: url.searchParams.get("socialGraphicId") || "",
-          socialContentId: url.searchParams.get("socialContentId") || ""
+          socialContentId: url.searchParams.get("socialContentId") || "",
+          includeArchived: url.searchParams.get("includeArchived") === "true"
         })
       });
+      return true;
+    }
+
+    if (url.pathname === "/api/social/testing/reset") {
+      if (req.method !== "POST") {
+        sendJson(res, 405, { error: "Method not allowed" });
+        return true;
+      }
+      const payload = JSON.parse((await readRequestBody(req)) || "{}");
+      const summary = await resetSocialTestingWorkspace(payload);
+      sendJson(res, 200, summary);
       return true;
     }
 
