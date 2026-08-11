@@ -178,6 +178,7 @@ function createPublicationRecord({
   apiVersion = "",
   status = "asset_ready",
   dryRun = false,
+  assetUploaded = false,
   now = new Date().toISOString()
 }) {
   if (!PUBLICATION_STATUSES.has(status)) throw new Error("Unsupported publication status");
@@ -196,8 +197,10 @@ function createPublicationRecord({
     accountUsername: account.username || "",
     publicationType: graphic.format === "story" ? "STORY_IMAGE" : "FEED_IMAGE",
     caption,
+    captionHash: sha256(caption),
     assetUrl: asset.assetUrl || "",
     assetHash: asset.assetHash,
+    assetUploaded: Boolean(assetUploaded),
     graphicRenderVersion: graphic.renderVersion,
     status,
     containerId: "",
@@ -213,12 +216,15 @@ function createPublicationRecord({
     lastError: "",
     apiVersion,
     provider: dryRun ? "dry-run" : "meta-instagram",
+    simulatedProvider: Boolean(dryRun),
     publicationVersion: PUBLICATION_VERSION,
     dryRun,
     metadata: {
       assetMimeType: asset.mimeType,
       assetWidth: asset.width,
-      assetHeight: asset.height
+      assetHeight: asset.height,
+      dryRunUploadEnabled: Boolean(dryRun && assetUploaded),
+      safetyGate: dryRun ? "SOCIAL_PUBLISH_DRY_RUN" : ""
     }
   };
   const publicationHash = computePublicationHash(core);

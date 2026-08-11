@@ -1468,6 +1468,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
     const localOutput = path.join(publicationAssetsDir, `${graphic.id}_${graphic.renderVersionNumber || 1}.png`);
     const asset = await rasterizeApprovedSvg({ svg, format: graphic.format, outputPath: localOutput });
     let assetUrl = "";
+    let assetUploaded = false;
     if (instagram.dryRun && !uploadDryRunAssets) {
       assetUrl = `https://dry-run.same-game-heat.local/${objectPrefix}/dry-run${asset.extension}`;
     } else {
@@ -1476,6 +1477,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
         bytes: asset.bytes,
         contentType: asset.mimeType
       });
+      assetUploaded = true;
       await verifyAssetAccessible(assetUrl);
     }
     await verifyAssetHash(localOutput, asset.assetHash);
@@ -1487,7 +1489,8 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
       account: { accountId: env.INSTAGRAM_USER_ID || env.INSTAGRAM_ACCOUNT_ID || "", username: account.username || "" },
       apiVersion: instagram.apiVersion,
       status: instagram.dryRun ? "prepared" : "asset_ready",
-      dryRun: instagram.dryRun
+      dryRun: instagram.dryRun,
+      assetUploaded
     });
     return savePublication(publication);
   }

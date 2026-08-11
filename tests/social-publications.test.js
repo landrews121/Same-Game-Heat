@@ -296,12 +296,22 @@ test("prohibited caption blocks publication preparation", async () => {
 
 test("dry-run prepare creates prepared publication and does not publish", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-dry-run-"));
-  const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_PUBLISH_DRY_RUN: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123" } });
+  const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_PUBLISH_DRY_RUN: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "sg_heater" } });
   const cookie = await login(manager);
   const { graphic } = await approvedContentAndGraphic(manager, cookie);
   const prepared = await route(manager, { method: "POST", path: `/api/social/graphics/${graphic.id}/prepare-publication`, headers: { cookie }, body: {} });
   assert.equal(prepared.status, 200);
   assert.equal(prepared.json.publication.status, "prepared");
+  assert.equal(prepared.json.publication.dryRun, true);
+  assert.equal(prepared.json.publication.provider, "dry-run");
+  assert.equal(prepared.json.publication.simulatedProvider, true);
+  assert.equal(prepared.json.publication.accountUsername, "sg_heater");
+  assert.equal(prepared.json.publication.assetUploaded, false);
+  assert.equal(prepared.json.publication.platformMediaId, "");
+  assert.equal(prepared.json.publication.containerId, "");
+  assert.match(prepared.json.publication.assetUrl, /^https:\/\/dry-run\.same-game-heat\.local\//);
+  assert.equal(prepared.json.publication.captionHash.length, 64);
+  assert.equal(prepared.json.publication.metadata.safetyGate, "SOCIAL_PUBLISH_DRY_RUN");
   const published = await route(manager, { method: "POST", path: `/api/social/publications/${prepared.json.publication.id}/publish`, headers: { cookie }, body: {} });
   assert.equal(published.json.publication.status, "prepared");
   assert.equal(published.json.publication.platformMediaId, "");
@@ -338,6 +348,8 @@ test("dry-run can prepare a real public Supabase asset without publishing", asyn
     const prepared = await route(manager, { method: "POST", path: `/api/social/graphics/${graphic.id}/prepare-publication`, headers: { cookie }, body: {} });
     assert.equal(prepared.status, 200);
     assert.equal(prepared.json.publication.status, "prepared");
+    assert.equal(prepared.json.publication.assetUploaded, true);
+    assert.equal(prepared.json.publication.simulatedProvider, true);
     assert.match(prepared.json.publication.assetUrl, /^https:\/\/project\.supabase\.co\/storage\/v1\/object\/public\/social-media-assets\//);
     assert.equal(prepared.json.publication.platformMediaId, "");
     assert.ok(calls.some((call) => call.method === "POST" && call.href.includes("/storage/v1/object/")));

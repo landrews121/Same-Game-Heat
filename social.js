@@ -195,8 +195,11 @@ function renderPublishing() {
             <span class="studio-pill">${escapeHtml(publication.status)}</span>
             <span class="studio-pill">${escapeHtml(publication.slateDate)}</span>
             <span class="studio-pill">${escapeHtml(publication.provider)}</span>
+            ${publication.dryRun ? `<span class="studio-pill">DRY-RUN RECEIPT</span>` : ""}
+            <span class="studio-pill">Asset uploaded ${publication.assetUploaded ? "YES" : "NO"}</span>
           </div>
           <p>${escapeHtml(publication.caption || "")}</p>
+          ${publication.accountUsername ? `<p>Account: @${escapeHtml(publication.accountUsername)}</p>` : ""}
           <code>${escapeHtml(publication.assetHash || "")}</code>
         </div>
         <div class="graphic-actions">
@@ -382,6 +385,9 @@ function renderContentDetail(content) {
   );
   const graphics = state.graphicsByContent.get(content.id) || [];
   const warnings = Array.isArray(content.metadata?.warnings) ? content.metadata.warnings : [];
+  const publishingStatus = state.instagramStatus || {};
+  const dryRunPublicationMode = Boolean(publishingStatus.dryRun);
+  const dryRunPublicationReady = Boolean(publishingStatus.connected && publishingStatus.dryRun);
   els.contentDetail.innerHTML = `
     <div class="studio-meta">
       <span class="studio-pill">${escapeHtml(content.contentType)}</span>
@@ -448,7 +454,7 @@ function renderContentDetail(content) {
                 ${graphic.assetUrl ? `<a class="studio-button secondary" href="${escapeHtml(graphic.assetUrl)}" download>Download</a>` : ""}
                 <button class="studio-button secondary" type="button" data-graphic-action="regenerate" data-graphic-id="${escapeHtml(graphic.id)}">Regenerate</button>
                 <button class="studio-button" type="button" data-graphic-action="approve" data-graphic-id="${escapeHtml(graphic.id)}" ${graphic.status === "approved" ? "disabled" : ""}>Approve Graphic</button>
-                <button class="studio-button secondary" type="button" data-prepare-publication="${escapeHtml(graphic.id)}" ${graphic.status !== "approved" || content.status !== "approved" ? "disabled" : ""}>Prepare for Instagram</button>
+                <button class="studio-button secondary" type="button" data-prepare-publication="${escapeHtml(graphic.id)}" ${graphic.status !== "approved" || content.status !== "approved" || (dryRunPublicationMode && !dryRunPublicationReady) ? "disabled" : ""}>${dryRunPublicationMode ? "Run Dry-Run Publication Test" : "Prepare for Instagram"}</button>
                 <button class="studio-button danger" type="button" data-graphic-action="archive" data-graphic-id="${escapeHtml(graphic.id)}">Archive Graphic</button>
               </div>
             </div>
@@ -545,12 +551,15 @@ async function handleGraphicAction(action, graphicId) {
 }
 
 async function preparePublication(graphicId) {
-  showStatus("Preparing approved graphic for Instagram...");
+  const dryRun = Boolean(state.instagramStatus?.dryRun);
+  showStatus(dryRun ? "Running dry-run publication test..." : "Preparing approved graphic for Instagram...");
   const payload = await api(`/api/social/graphics/${encodeURIComponent(graphicId)}/prepare-publication`, {
     method: "POST",
     body: "{}"
   });
-  showStatus(`Publication asset ready: ${payload.publication.status}`);
+  showStatus(payload.publication.dryRun
+    ? `Dry-run publication receipt prepared: ${payload.publication.status}`
+    : `Publication asset ready: ${payload.publication.status}`);
   await refreshPublishing();
 }
 

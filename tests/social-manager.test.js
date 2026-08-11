@@ -938,6 +938,13 @@ test("frontend social generation clears loading status in finally", async () => 
   assert.match(source, /showStatus\(finalStatus\)/);
 });
 
+test("frontend dry-run publication action is explicit", async () => {
+  const source = await fs.readFile(path.join(__dirname, "../social.js"), "utf8");
+  assert.match(source, /Run Dry-Run Publication Test/);
+  assert.match(source, /Dry-run publication receipt prepared/);
+  assert.match(source, /DRY-RUN RECEIPT/);
+});
+
 test("forged high modelWinProbability is rejected", () => {
   assert.throws(() => createSocialPickSnapshot(samplePick({ modelWinProbability: 99 })), /modelWinProbability/);
 });
