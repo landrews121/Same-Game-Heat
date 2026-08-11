@@ -1091,9 +1091,20 @@ test("frontend dry-run publication action is explicit", async () => {
 
 test("social studio cache version is bumped for live publish safety UI", async () => {
   const html = await fs.readFile(path.join(__dirname, "../social.html"), "utf8");
-  assert.match(html, /social\.js\?v=social-studio-v17/);
+  assert.match(html, /social\.js\?v=social-studio-v18/);
   assert.match(html, /livePublishConfirmPanel/);
   assert.match(html, /livePublishUnderstand/);
+});
+
+test("story graphic generation gives clear frontend feedback", async () => {
+  const source = await fs.readFile(path.join(__dirname, "../social.js"), "utf8");
+  assert.match(source, /Select a content item before generating a graphic\./);
+  assert.match(source, /graphicGenerationInFlight/);
+  assert.match(source, /Generating \$\{graphicLabel\(normalizedFormat\)\}\.\.\./);
+  assert.match(source, /JSON\.stringify\(\{ format: normalizedFormat \}\)/);
+  assert.match(source, /button\.disabled = true/);
+  assert.match(source, /button\.disabled = false/);
+  assert.match(source, /button\.textContent = originalText/);
 });
 
 test("frontend testing reset clears local workspace and avoids refresh rehydration", async () => {
@@ -1385,12 +1396,41 @@ test("graphic uses frozen snapshot odds instead of live-looking content values",
   assert.doesNotMatch(graphic.svg, /\+999/);
 });
 
-test("Story graphic dimensions are 1080x1920", () => {
-  const snapshot = createSocialPickSnapshot(samplePick());
-  const content = sampleContent("BEST_BET", [snapshot]);
-  const graphic = renderSocialGraphic({ content, snapshots: [snapshot], format: "story" });
+test("Daily 3 story graphic renders clean 1080x1920 public pick cards", () => {
+  const snapshots = [
+    createSocialPickSnapshot(samplePickForTeam("Los Angeles Angels", "Houston Astros", 1, { reasons: ["Starting-pitching edge with ace on the mound."] })),
+    createSocialPickSnapshot(samplePickForTeam("Detroit Tigers", "Baltimore Orioles", 2, { reasons: ["Home-field advantage in a favorable matchup."] })),
+    createSocialPickSnapshot(samplePickForTeam("New York Mets", "Atlanta Braves", 3, { reasons: ["Schedule advantage and favorable rest matchup."] }))
+  ];
+  const content = sampleContent("DAILY_3", snapshots);
+  const graphic = renderSocialGraphic({ content, snapshots, format: "Story" });
   assert.equal(graphic.width, 1080);
   assert.equal(graphic.height, 1920);
+  assert.equal(graphic.format, "story");
+  assert.match(graphic.svg, /width="1080" height="1920" viewBox="0 0 1080 1920"/);
+  assert.match(graphic.svg, /SAME GAME HEAT/);
+  assert.match(graphic.svg, /DAILY 3/);
+  assert.match(graphic.svg, /07\/27\/2026/);
+  assert.match(graphic.svg, /Los Angeles Angels/);
+  assert.match(graphic.svg, /Detroit Tigers/);
+  assert.match(graphic.svg, /New York Mets/);
+  assert.match(graphic.svg, /LAA/);
+  assert.match(graphic.svg, /DET/);
+  assert.match(graphic.svg, /NYM/);
+  assert.match(graphic.svg, /MONEYLINE/);
+  assert.match(graphic.svg, /@sg_heater/);
+  assert.ok(graphic.svg.includes(RESPONSIBLE_FOOTER));
+  assert.doesNotMatch(graphic.svg, /\d+(?:\.\d)?%\s*WIN/i);
+  assert.doesNotMatch(graphic.svg, /Fair|Playable|Confidence|Model/i);
+});
+
+test("unsupported graphic formats do not silently fall back to feed", () => {
+  const snapshot = createSocialPickSnapshot(samplePick());
+  const content = sampleContent("BEST_BET", [snapshot]);
+  assert.throws(
+    () => renderSocialGraphic({ content, snapshots: [snapshot], format: "poster" }),
+    /Unsupported graphic format: poster/
+  );
 });
 
 test("responsible gambling footer is present", () => {
@@ -1418,6 +1458,37 @@ test("graphic record stores snapshot hashes", async () => {
   });
   assert.equal(graphicResponse.status, 200);
   assert.deepEqual(graphicResponse.json.graphic.snapshotHashes, generated.json.snapshots.map((snapshot) => snapshot.snapshotHash));
+});
+
+test("content graphic route normalizes Story and rejects unsupported formats visibly", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-social-story-format-"));
+  const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret" } });
+  const cookie = await login(manager);
+  const generated = await route(manager, {
+    method: "POST",
+    path: "/api/social/generate",
+    headers: { cookie },
+    body: { contentType: "BEST_BET", board: { slateDate: "2026-07-27", sport: "baseball_mlb", officialPicks: [samplePick()] } }
+  });
+  const storyResponse = await route(manager, {
+    method: "POST",
+    path: `/api/social/content/${generated.json.content.id}/graphics`,
+    headers: { cookie },
+    body: { format: "Story" }
+  });
+  assert.equal(storyResponse.status, 200);
+  assert.equal(storyResponse.json.graphic.format, "story");
+  assert.equal(storyResponse.json.graphic.width, 1080);
+  assert.equal(storyResponse.json.graphic.height, 1920);
+
+  const unsupportedResponse = await route(manager, {
+    method: "POST",
+    path: `/api/social/content/${generated.json.content.id}/graphics`,
+    headers: { cookie },
+    body: { format: "poster" }
+  });
+  assert.equal(unsupportedResponse.status, 400);
+  assert.equal(unsupportedResponse.json.error, "Unsupported graphic format: poster");
 });
 
 test("approved graphic is not overwritten on regeneration and new render version is created", async () => {
