@@ -42,13 +42,39 @@ function clean(value, fallback = "") {
   return String(value ?? fallback).trim();
 }
 
+function disclaimerRegex() {
+  return /21\+\s*\|\s*Bet responsibly\.?/gi;
+}
+
 function publicationId(payload) {
   return `pub_${sha256(canonicalStringify(payload)).slice(0, 18)}`;
 }
 
 function ensureDisclaimer(caption) {
+  const text = clean(caption).replace(disclaimerRegex(), "").replace(/\n{3,}/g, "\n\n").trim();
+  return text ? `${text}\n\n21+ | Bet responsibly.` : "21+ | Bet responsibly.";
+}
+
+function firstDuplicateDaily3LineIndex(lines) {
+  const pickOnePattern = /^\s*(?:1[.)]|1️⃣|🥇)\s+/;
+  const first = lines.findIndex((line) => pickOnePattern.test(line));
+  if (first < 0) return -1;
+  return lines.findIndex((line, index) => index > first && pickOnePattern.test(line));
+}
+
+function truncateRepeatedDaily3Blocks(caption) {
   const text = clean(caption);
-  return /21\+|bet responsibly/i.test(text) ? text : `${text}\n\n21+ | Bet responsibly.`;
+  if (!/DAILY\s*3/i.test(text)) return text;
+  const lines = text.split(/\r?\n/);
+  const duplicateHeaderIndex = lines.findIndex((line, index) => index > 0 && /SAME GAME HEAT\s*[—-]\s*DAILY\s*3|SGH\s+DAILY\s*3/i.test(line));
+  const duplicatePickIndex = firstDuplicateDaily3LineIndex(lines);
+  const cutIndex = [duplicateHeaderIndex, duplicatePickIndex].filter((index) => index > 0).sort((a, b) => a - b)[0];
+  if (!cutIndex) return text;
+  return lines.slice(0, cutIndex).join("\n").trim();
+}
+
+function approvedCaptionForPublication(content = {}) {
+  return ensureDisclaimer(truncateRepeatedDaily3Blocks(content.caption || ""));
 }
 
 function rejectLocalAssetUrl(assetUrl) {
@@ -185,7 +211,7 @@ function createPublicationRecord({
   now = new Date().toISOString()
 }) {
   if (!PUBLICATION_STATUSES.has(status)) throw new Error("Unsupported publication status");
-  const caption = ensureDisclaimer(content.caption || "");
+  const caption = approvedCaptionForPublication(content);
   const core = {
     socialContentId: content.id,
     socialGraphicId: graphic.id,
@@ -252,6 +278,7 @@ module.exports = {
   sha256,
   rejectLocalAssetUrl,
   ensureDisclaimer,
+  approvedCaptionForPublication,
   rasterizeApprovedSvg,
   verifyAssetHash,
   readPngDimensions,

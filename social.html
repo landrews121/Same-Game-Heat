@@ -70,8 +70,57 @@
       margin: 48px auto 0;
     }
     .studio-login.hidden,
-    .social-app.hidden {
+    .social-app.hidden,
+    .hidden {
       display: none;
+    }
+    .live-confirm-panel {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      background: rgba(16, 24, 39, 0.58);
+    }
+    .live-confirm-card {
+      width: min(620px, 100%);
+      max-height: min(760px, 92vh);
+      overflow: auto;
+      background: #fff;
+      border: 2px solid var(--studio-red);
+      border-radius: 10px;
+      padding: 22px;
+      box-shadow: 0 22px 70px rgba(16, 24, 39, 0.34);
+    }
+    .live-confirm-card h2 { color: var(--studio-red); }
+    .live-confirm-warning {
+      padding: 12px;
+      border-radius: 7px;
+      color: #7d1725;
+      background: #fff0f2;
+      border: 1px solid #f2b6bf;
+      font-weight: 800;
+    }
+    .live-confirm-preview {
+      margin: 14px 0;
+      padding: 12px;
+      background: var(--studio-soft);
+      border: 1px solid var(--studio-border);
+      border-radius: 7px;
+    }
+    .live-confirm-preview p { margin: 7px 0; }
+    .live-confirm-caption {
+      white-space: pre-wrap;
+      max-height: 150px;
+      overflow: auto;
+    }
+    .live-confirm-check {
+      display: flex;
+      gap: 9px;
+      align-items: flex-start;
+      margin: 16px 0;
+      font-weight: 800;
     }
     .studio-row {
       display: flex;
@@ -385,6 +434,29 @@
         <div id="publicationList" class="graphic-list"></div>
       </section>
 
+      <div id="livePublishConfirmPanel" class="live-confirm-panel hidden" role="dialog" aria-modal="true" aria-labelledby="livePublishConfirmTitle">
+        <div class="live-confirm-card">
+          <h2 id="livePublishConfirmTitle">Confirm Live Publish</h2>
+          <div class="live-confirm-warning">This action can create a real Instagram post. Review every detail before continuing.</div>
+          <div class="live-confirm-preview">
+            <p><strong>Account:</strong> <span id="livePublishAccount"></span></p>
+            <p><strong>Content:</strong> <span id="livePublishContent"></span></p>
+            <p><strong>Graphic:</strong> <span id="livePublishGraphic"></span></p>
+            <p><strong>Asset:</strong> <span id="livePublishAsset"></span></p>
+            <p><strong>Caption preview:</strong></p>
+            <div id="livePublishCaption" class="live-confirm-caption"></div>
+          </div>
+          <label class="live-confirm-check" for="livePublishUnderstand">
+            <input id="livePublishUnderstand" type="checkbox">
+            <span>I understand this will publish a real post to <span id="livePublishAccountCheck">the configured Instagram account</span>.</span>
+          </label>
+          <div class="studio-row" style="justify-content:flex-end">
+            <button id="cancelLivePublish" class="studio-button secondary" type="button">Cancel</button>
+            <button id="confirmLivePublish" class="studio-button danger" type="button" disabled>Confirm Live Publish</button>
+          </div>
+        </div>
+      </div>
+
       <section class="studio-card" style="margin-top:18px">
         <div class="studio-row" style="justify-content:space-between">
           <div>
@@ -399,6 +471,6 @@
       </section>
     </section>
   </main>
-  <script src="/social.js?v=social-studio-v15"></script>
+  <script src="/social.js?v=social-studio-v16"></script>
 </body>
 </html>

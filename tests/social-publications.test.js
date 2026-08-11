@@ -10,7 +10,8 @@ const {
   rejectLocalAssetUrl,
   sha256,
   createPublicationRecord,
-  verifyPublicationIntegrity
+  verifyPublicationIntegrity,
+  approvedCaptionForPublication
 } = require("../social-publications");
 const { createResultRecord } = require("../social-results");
 const { createInstagramPublisher } = require("../instagram-publisher");
@@ -357,6 +358,64 @@ test("live publish endpoint keeps dry-run receipts blocked and never calls Meta"
     assert.equal(published.json.publication.status, "prepared");
     assert.equal(calls.some((call) => call.href.includes("graph.facebook.com")), false);
     assert.equal(calls.some((call) => call.href.includes("/media_publish")), false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("dry-run mode blocks a non-dry-run live publication before Meta writes", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-dry-mode-gate-"));
+  const calls = [];
+  const manager = createSocialManager({
+    root,
+    env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_PUBLISH_DRY_RUN: "true", SOCIAL_LIVE_PUBLISH_ENABLED: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123" },
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ href: String(url), method: options.method || "GET" });
+      throw new Error("Meta should not be called while dry run is enabled");
+    }
+  });
+  const cookie = await login(manager);
+  const saved = await manager.savePublication(publicationFixture({ dryRun: false, status: "asset_ready" }));
+  const response = await route(manager, { method: "POST", path: `/api/social/publications/${saved.id}/publish`, headers: { cookie }, body: { confirmLivePublish: true } });
+  assert.equal(response.status, 400);
+  assert.equal(response.json.stage, "preflight");
+  assert.match(response.json.error, /SOCIAL_PUBLISH_DRY_RUN/);
+  assert.equal(calls.length, 0);
+});
+
+test("live switch disabled blocks publishing before Meta writes", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-live-switch-gate-"));
+  const originalFetch = global.fetch;
+  global.fetch = fakeMetaFetch({ containerStatus: "FINISHED" });
+  try {
+    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "samegameheat", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
+    const cookie = await login(manager);
+    const saved = await liveReadyPublication(manager, cookie);
+    const response = await route(manager, { method: "POST", path: `/api/social/publications/${saved.id}/publish`, headers: { cookie }, body: { confirmLivePublish: true } });
+    assert.equal(response.status, 400);
+    assert.equal(response.json.stage, "preflight");
+    assert.match(response.json.error, /SOCIAL_LIVE_PUBLISH_ENABLED/);
+    assert.equal(global.fetch.calls.some((call) => call.href.includes("/media")), false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("live confirmation is required and false confirmation is rejected", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-live-confirmation-gate-"));
+  const originalFetch = global.fetch;
+  global.fetch = fakeMetaFetch({ containerStatus: "FINISHED" });
+  try {
+    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_LIVE_PUBLISH_ENABLED: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "samegameheat", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
+    const cookie = await login(manager);
+    const saved = await liveReadyPublication(manager, cookie);
+    for (const body of [{}, { confirmLivePublish: false }]) {
+      const response = await route(manager, { method: "POST", path: `/api/social/publications/${saved.id}/publish`, headers: { cookie }, body });
+      assert.equal(response.status, 400);
+      assert.equal(response.json.stage, "confirmation");
+      assert.match(response.json.error, /confirmation required/i);
+    }
+    assert.equal(global.fetch.calls.some((call) => call.href.includes("/media")), false);
   } finally {
     global.fetch = originalFetch;
   }
@@ -772,6 +831,52 @@ test("publication receipt preserves exact caption, hash, and snapshot hashes", (
   assert.equal(verifyPublicationIntegrity(record).integrityStatus, "verified");
 });
 
+test("Daily 3 publication caption stores approved caption once when duplicate blocks are present", () => {
+  const snapshot = createSocialPickSnapshot(pick(), { createdAt: "2026-07-27T12:00:00Z" });
+  const approvedOnce = [
+    "FIRE SAME GAME HEAT - DAILY 3",
+    "",
+    "1. Chicago White Sox ML +115",
+    "Model win probability: 56.2%",
+    "Fair price: +100. Playable through -105.",
+    "",
+    "2. Toronto Blue Jays ML -125",
+    "Model win probability: 58.4%",
+    "Fair price: -140. Playable through -150.",
+    "",
+    "3. Tampa Bay Rays ML -110",
+    "Model win probability: 57.1%",
+    "Fair price: -125. Playable through -135.",
+    "",
+    "Price matters. Confirm the current number before betting.",
+    "",
+    "21+ | Bet responsibly."
+  ].join("\n");
+  const duplicatedCaption = `${approvedOnce}\n\n${approvedOnce}\n\n${approvedOnce}`;
+  const content = {
+    id: "content_daily_3",
+    contentType: "DAILY_3",
+    slateDate: "2026-07-27",
+    caption: duplicatedCaption,
+    pickSnapshotIds: [snapshot.id],
+    metadata: { snapshotHashes: [snapshot.snapshotHash] }
+  };
+  const graphic = { id: "graphic_1", format: "feed", renderVersion: "v1", snapshotIds: [snapshot.id], snapshotHashes: [snapshot.snapshotHash] };
+  const record = createPublicationRecord({
+    content,
+    graphic,
+    asset: { assetUrl: "https://cdn.example.com/a.png", assetHash: "abc123", mimeType: "image/png", width: 1080, height: 1350 },
+    account: { accountId: "123", username: "samegameheat" },
+    apiVersion: "v23.0"
+  });
+  assert.equal(record.caption, approvedCaptionForPublication(content));
+  assert.equal((record.caption.match(/Chicago White Sox/g) || []).length, 1);
+  assert.equal((record.caption.match(/Toronto Blue Jays/g) || []).length, 1);
+  assert.equal((record.caption.match(/Tampa Bay Rays/g) || []).length, 1);
+  assert.equal((record.caption.match(/21\+ \| Bet responsibly\./g) || []).length, 1);
+  assert.equal(record.captionHash, sha256(record.caption));
+});
+
 test("same approved graphic cannot prepare a second publication after publish", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-no-duplicate-"));
   const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_PUBLISH_DRY_RUN: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123" } });
@@ -807,10 +912,10 @@ test("successful container creation does not equal successful publication", asyn
   const originalFetch = global.fetch;
   global.fetch = fakeMetaFetch({ containerStatus: "IN_PROGRESS" });
   try {
-    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "samegameheat", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
+    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_LIVE_PUBLISH_ENABLED: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "samegameheat", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
     const cookie = await login(manager);
     const saved = await liveReadyPublication(manager, cookie);
-    const result = await manager.publishPublication(saved.id);
+    const result = await manager.publishPublication(saved.id, { confirmLivePublish: true });
     assert.equal(result.status, "container_processing");
     assert.equal(result.containerId, "container_1");
     assert.equal(result.platformMediaId, "");
@@ -825,10 +930,10 @@ test("failed container processing does not publish", async () => {
   const originalFetch = global.fetch;
   global.fetch = fakeMetaFetch({ containerStatus: "ERROR" });
   try {
-    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "samegameheat", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
+    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_LIVE_PUBLISH_ENABLED: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "samegameheat", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
     const cookie = await login(manager);
     const saved = await liveReadyPublication(manager, cookie);
-    const result = await manager.publishPublication(saved.id);
+    const result = await manager.publishPublication(saved.id, { confirmLivePublish: true });
     assert.equal(result.status, "failed");
     assert.equal(result.platformMediaId, "");
     assert.equal(global.fetch.calls.some((call) => call.href.includes("/media_publish")), false);
@@ -842,10 +947,10 @@ test("published receipt stores platform media ID and permalink", async () => {
   const originalFetch = global.fetch;
   global.fetch = fakeMetaFetch({ containerStatus: "FINISHED" });
   try {
-    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "samegameheat", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
+    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_LIVE_PUBLISH_ENABLED: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "samegameheat", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
     const cookie = await login(manager);
     const saved = await liveReadyPublication(manager, cookie);
-    const result = await manager.publishPublication(saved.id);
+    const result = await manager.publishPublication(saved.id, { confirmLivePublish: true });
     assert.equal(result.status, "verified");
     assert.equal(result.platformMediaId, "ig_media_1");
     assert.equal(result.permalink, "https://www.instagram.com/p/test/");
@@ -866,10 +971,10 @@ test("live publish blocks username mismatch before Meta write mutations", async 
   const originalFetch = global.fetch;
   global.fetch = fakeMetaFetch({ containerStatus: "FINISHED" });
   try {
-    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "sg_heater", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
+    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_LIVE_PUBLISH_ENABLED: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "sg_heater", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
     const cookie = await login(manager);
     const saved = await liveReadyPublication(manager, cookie);
-    const published = await route(manager, { method: "POST", path: `/api/social/publications/${saved.id}/publish`, headers: { cookie }, body: {} });
+    const published = await route(manager, { method: "POST", path: `/api/social/publications/${saved.id}/publish`, headers: { cookie }, body: { confirmLivePublish: true } });
     assert.equal(published.status, 400);
     assert.equal(published.json.stage, "identity_check");
     assert.match(published.json.error, /username mismatch/i);
@@ -885,11 +990,11 @@ test("live publish blocks account ID mismatch before Meta write mutations", asyn
   const originalFetch = global.fetch;
   global.fetch = fakeMetaFetch({ containerStatus: "FINISHED" });
   try {
-    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "samegameheat", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
+    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_LIVE_PUBLISH_ENABLED: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "samegameheat", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
     const cookie = await login(manager);
     const saved = await liveReadyPublication(manager, cookie);
     const tampered = await manager.savePublication({ ...saved, accountId: "456", updatedAt: new Date().toISOString() });
-    const published = await route(manager, { method: "POST", path: `/api/social/publications/${tampered.id}/publish`, headers: { cookie }, body: {} });
+    const published = await route(manager, { method: "POST", path: `/api/social/publications/${tampered.id}/publish`, headers: { cookie }, body: { confirmLivePublish: true } });
     assert.equal(published.status, 400);
     assert.equal(published.json.stage, "identity_check");
     assert.match(published.json.error, /account does not match/i);
@@ -904,15 +1009,15 @@ test("live publish blocks duplicate live receipt but ignores dry-run receipt", a
   const originalFetch = global.fetch;
   global.fetch = fakeMetaFetch({ containerStatus: "FINISHED" });
   try {
-    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "samegameheat", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
+    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_LIVE_PUBLISH_ENABLED: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "samegameheat", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
     const cookie = await login(manager);
     const saved = await liveReadyPublication(manager, cookie);
     await manager.savePublication({ ...saved, id: "pub_dry_history", dryRun: true, status: "prepared", provider: "dry-run", updatedAt: new Date().toISOString() });
-    const stillAllowed = await route(manager, { method: "POST", path: `/api/social/publications/${saved.id}/publish`, headers: { cookie }, body: {} });
+    const stillAllowed = await route(manager, { method: "POST", path: `/api/social/publications/${saved.id}/publish`, headers: { cookie }, body: { confirmLivePublish: true } });
     assert.equal(stillAllowed.status, 200);
     assert.equal(stillAllowed.json.publication.status, "verified");
     const next = await manager.savePublication({ ...saved, id: "pub_second_same_key", status: "asset_ready", containerId: "", containerStatus: "", platformMediaId: "", permalink: "", dryRun: false, updatedAt: new Date().toISOString() });
-    const blocked = await route(manager, { method: "POST", path: `/api/social/publications/${next.id}/publish`, headers: { cookie }, body: {} });
+    const blocked = await route(manager, { method: "POST", path: `/api/social/publications/${next.id}/publish`, headers: { cookie }, body: { confirmLivePublish: true } });
     assert.equal(blocked.status, 200);
     assert.equal(blocked.json.publication.status, "verified");
     assert.equal(blocked.json.publication.id, stillAllowed.json.publication.id);
@@ -926,11 +1031,11 @@ test("live publish blocks caption mutation and missing disclaimer before Meta wr
   const originalFetch = global.fetch;
   global.fetch = fakeMetaFetch({ containerStatus: "FINISHED" });
   try {
-    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "samegameheat", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
+    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_LIVE_PUBLISH_ENABLED: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "samegameheat", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
     const cookie = await login(manager);
     const saved = await liveReadyPublication(manager, cookie);
     const tampered = await manager.savePublication({ ...saved, caption: "Changed caption", captionHash: sha256("Changed caption"), updatedAt: new Date().toISOString() });
-    const published = await route(manager, { method: "POST", path: `/api/social/publications/${tampered.id}/publish`, headers: { cookie }, body: {} });
+    const published = await route(manager, { method: "POST", path: `/api/social/publications/${tampered.id}/publish`, headers: { cookie }, body: { confirmLivePublish: true } });
     assert.equal(published.status, 400);
     assert.equal(published.json.stage, "approval_check");
     assert.match(published.json.error, /disclaimer|exact approved caption/i);
@@ -945,11 +1050,11 @@ test("live publish blocks invalid public asset URL before Meta write mutations",
   const originalFetch = global.fetch;
   global.fetch = fakeMetaFetch({ containerStatus: "FINISHED" });
   try {
-    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "samegameheat", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
+    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_LIVE_PUBLISH_ENABLED: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "samegameheat", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
     const cookie = await login(manager);
     const saved = await liveReadyPublication(manager, cookie);
     const tampered = await manager.savePublication({ ...saved, assetUrl: "http://localhost/a.png", updatedAt: new Date().toISOString() });
-    const published = await route(manager, { method: "POST", path: `/api/social/publications/${tampered.id}/publish`, headers: { cookie }, body: {} });
+    const published = await route(manager, { method: "POST", path: `/api/social/publications/${tampered.id}/publish`, headers: { cookie }, body: { confirmLivePublish: true } });
     assert.equal(published.status, 400);
     assert.equal(published.json.stage, "asset_validation");
     assert.equal(global.fetch.calls.some((call) => call.href.includes("/media_publish")), false);
@@ -963,11 +1068,11 @@ test("live publish blocks raster asset hash mismatch before Meta write mutations
   const originalFetch = global.fetch;
   global.fetch = fakeMetaFetch({ containerStatus: "FINISHED" });
   try {
-    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "samegameheat", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
+    const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret", SOCIAL_LIVE_PUBLISH_ENABLED: "true", INSTAGRAM_ACCESS_TOKEN: "token", INSTAGRAM_USER_ID: "123", INSTAGRAM_EXPECTED_USERNAME: "samegameheat", SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role" } });
     const cookie = await login(manager);
     const saved = await liveReadyPublication(manager, cookie);
     const tampered = await manager.savePublication({ ...saved, assetHash: "bad-hash", updatedAt: new Date().toISOString() });
-    const published = await route(manager, { method: "POST", path: `/api/social/publications/${tampered.id}/publish`, headers: { cookie }, body: {} });
+    const published = await route(manager, { method: "POST", path: `/api/social/publications/${tampered.id}/publish`, headers: { cookie }, body: { confirmLivePublish: true } });
     assert.equal(published.status, 400);
     assert.equal(published.json.stage, "asset_validation");
     assert.equal(global.fetch.calls.some((call) => call.href.includes("/media_publish")), false);

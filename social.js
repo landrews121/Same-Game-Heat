@@ -12,7 +12,9 @@ const state = {
   performance: {},
   instagramStatus: null,
   instagramDiagnostics: null,
-  publications: []
+  publications: [],
+  pendingLivePublish: null,
+  livePublishInFlight: false
 };
 
 const els = {
@@ -44,7 +46,17 @@ const els = {
   instagramDiagnosticsStatus: document.querySelector("#instagramDiagnosticsStatus"),
   instagramDiagnostics: document.querySelector("#instagramDiagnostics"),
   publicationStatus: document.querySelector("#publicationStatus"),
-  publicationList: document.querySelector("#publicationList")
+  publicationList: document.querySelector("#publicationList"),
+  livePublishConfirmPanel: document.querySelector("#livePublishConfirmPanel"),
+  livePublishAccount: document.querySelector("#livePublishAccount"),
+  livePublishAccountCheck: document.querySelector("#livePublishAccountCheck"),
+  livePublishContent: document.querySelector("#livePublishContent"),
+  livePublishGraphic: document.querySelector("#livePublishGraphic"),
+  livePublishAsset: document.querySelector("#livePublishAsset"),
+  livePublishCaption: document.querySelector("#livePublishCaption"),
+  livePublishUnderstand: document.querySelector("#livePublishUnderstand"),
+  cancelLivePublish: document.querySelector("#cancelLivePublish"),
+  confirmLivePublish: document.querySelector("#confirmLivePublish")
 };
 
 function escapeHtml(value) {
@@ -190,6 +202,7 @@ function canRenderLivePublish(publication, status) {
   return Boolean(
     status?.connected &&
     status?.dryRun !== true &&
+    status?.livePublishEnabled === true &&
     !isDryRunPublication(publication) &&
     publication?.status === "asset_ready" &&
     publication?.assetUrl &&
@@ -279,14 +292,17 @@ function renderPublishing() {
   if (!els.instagramStatus || !els.publicationList) return;
   const status = state.instagramStatus || {};
   const accountLabel = status.username ? `@${status.username}` : "configured Instagram account";
+  const liveEnabled = status.connected && !status.dryRun && status.livePublishEnabled === true;
+  const liveArmed = status.connected && !status.dryRun && status.livePublishEnabled !== true;
   els.instagramStatus.innerHTML = `
-    ${status.connected && !status.dryRun ? `<div class="studio-warning">LIVE INSTAGRAM PUBLISHING ENABLED · Account: ${escapeHtml(accountLabel)} · This can create a real Instagram post.</div>` : ""}
+    ${liveEnabled ? `<div class="studio-warning">LIVE INSTAGRAM PUBLISHING ENABLED · Account: ${escapeHtml(accountLabel)} · This can create a real Instagram post.</div>` : ""}
+    ${liveArmed ? `<div class="studio-warning">LIVE MODE ARMED — PUBLISHING DISABLED · Account: ${escapeHtml(accountLabel)} · Set SOCIAL_LIVE_PUBLISH_ENABLED=true only for a controlled live post.</div>` : ""}
     <div class="studio-meta">
       <span class="studio-pill">${status.connected ? "CONNECTED" : "NOT CONNECTED"}</span>
       <span class="studio-pill">Token ${status.tokenConfigured ? "configured" : "missing"}</span>
       <span class="studio-pill">API ${escapeHtml(status.apiVersion || "default")}</span>
       ${status.username ? `<span class="studio-pill">@${escapeHtml(status.username)}</span>` : ""}
-      ${status.dryRun ? `<span class="studio-pill">DRY RUN</span>` : `<span class="studio-pill">LIVE MODE</span>`}
+      ${status.dryRun ? `<span class="studio-pill">DRY RUN</span>` : liveEnabled ? `<span class="studio-pill">LIVE ENABLED</span>` : `<span class="studio-pill">LIVE MODE ARMED — PUBLISHING DISABLED</span>`}
     </div>
     ${status.lastError ? `<div class="studio-warning">${escapeHtml(status.lastError)}</div>` : ""}
   `;
@@ -322,6 +338,62 @@ function renderPublishing() {
       </article>
     `}).join("")
     : "<p>No publication records prepared yet.</p>";
+}
+
+function openLivePublishConfirm(publication) {
+  if (!els.livePublishConfirmPanel || !publication) return;
+  const account = publication.accountUsername ? `@${publication.accountUsername}` : (state.instagramStatus?.username ? `@${state.instagramStatus.username}` : "the configured Instagram account");
+  state.pendingLivePublish = publication;
+  state.livePublishInFlight = false;
+  els.livePublishAccount.textContent = account;
+  els.livePublishAccountCheck.textContent = account;
+  els.livePublishContent.textContent = publication.contentType || "Approved content";
+  els.livePublishGraphic.textContent = publication.publicationType || "Approved graphic";
+  els.livePublishAsset.textContent = publication.assetUrl ? "Validated public asset" : "Asset not validated";
+  els.livePublishCaption.textContent = publication.caption || "No caption available";
+  els.livePublishUnderstand.checked = false;
+  els.confirmLivePublish.disabled = true;
+  els.confirmLivePublish.textContent = "Confirm Live Publish";
+  els.livePublishConfirmPanel.classList.remove("hidden");
+}
+
+function closeLivePublishConfirm() {
+  state.pendingLivePublish = null;
+  state.livePublishInFlight = false;
+  els.livePublishConfirmPanel?.classList.add("hidden");
+}
+
+async function confirmLivePublish() {
+  const publication = state.pendingLivePublish;
+  if (!publication || state.livePublishInFlight || !els.livePublishUnderstand.checked) return;
+  state.livePublishInFlight = true;
+  els.confirmLivePublish.disabled = true;
+  els.cancelLivePublish.disabled = true;
+  els.confirmLivePublish.textContent = "Publishing Live...";
+  showStatus("Publishing Live...", els.publicationStatus);
+  try {
+    const payload = await api(`/api/social/publications/${encodeURIComponent(publication.id)}/publish`, {
+      method: "POST",
+      body: JSON.stringify({ confirmLivePublish: true })
+    });
+    const published = payload.publication || {};
+    if (!['verified', 'published'].includes(String(published.status))) {
+      throw new Error(`Live publish did not verify: ${published.status || "unknown status"}`);
+    }
+    showStatus(`LIVE POST PUBLISHED · Account: @${published.accountUsername || state.instagramStatus?.username || "configured Instagram account"} · Media ID: ${published.platformMediaId || "not returned"} · Permalink: ${published.permalink || "not returned"} · Published: ${published.publishedAt || published.updatedAt || "now"}`, els.publicationStatus);
+    closeLivePublishConfirm();
+    await refreshPublishing();
+  } catch (error) {
+    const message = error.message || "Live publication failed.";
+    showStatus(message, els.publicationStatus);
+    els.confirmLivePublish.disabled = false;
+  } finally {
+    state.livePublishInFlight = false;
+    els.cancelLivePublish.disabled = false;
+    if (!els.livePublishConfirmPanel.classList.contains("hidden")) {
+      els.confirmLivePublish.textContent = "Confirm Live Publish";
+    }
+  }
 }
 
 function diagnosticMatchMessage(diagnostics) {
@@ -721,9 +793,13 @@ async function preparePublication(graphicId, button = null) {
 
 async function handlePublicationAction(action, publicationId, button = null) {
   if (action === "publish") {
-    const username = state.instagramStatus?.username ? `@${state.instagramStatus.username}` : "the configured Instagram account";
-    const ok = window.confirm(`Publish this approved post live to ${username}? This will create a real Instagram post.`);
-    if (!ok) return;
+    const publication = state.publications.find((item) => item.id === publicationId);
+    if (!publication) {
+      showStatus("The selected publication could not be found.", els.publicationStatus);
+      return;
+    }
+    openLivePublishConfirm(publication);
+    return;
   }
   const previousText = button?.textContent || "";
   if (button) {
@@ -850,5 +926,11 @@ els.publicationList.addEventListener("click", (event) => {
       showStatus(message, els.publicationStatus);
     });
 });
+
+els.livePublishUnderstand?.addEventListener("change", () => {
+  els.confirmLivePublish.disabled = !els.livePublishUnderstand.checked || state.livePublishInFlight;
+});
+els.cancelLivePublish?.addEventListener("click", closeLivePublishConfirm);
+els.confirmLivePublish?.addEventListener("click", () => confirmLivePublish().catch((error) => showStatus(error.message, els.publicationStatus)));
 
 bootstrap();

@@ -1020,6 +1020,7 @@ test("frontend social generation clears loading status in finally", async () => 
 
 test("frontend dry-run publication action is explicit", async () => {
   const source = await fs.readFile(path.join(__dirname, "../social.js"), "utf8");
+  const html = await fs.readFile(path.join(__dirname, "../social.html"), "utf8");
   assert.match(source, /Run Dry-Run Publication Test/);
   assert.match(source, /Dry-run publication receipt prepared/);
   assert.match(source, /DRY-RUN RECEIPT/);
@@ -1039,7 +1040,12 @@ test("frontend dry-run publication action is explicit", async () => {
   assert.match(source, /function canRenderLivePublish/);
   assert.match(source, /status\?\.dryRun !== true/);
   assert.match(source, /publication\?\.status === "asset_ready"/);
-  assert.match(source, /Publish this approved post live to/);
+  assert.match(source, /Confirm Live Publish/);
+  assert.match(source, /confirmLivePublish: true/);
+  assert.match(html, /I understand this will publish a real post/);
+  assert.match(source, /Publishing Live\.\.\./);
+  assert.match(source, /LIVE MODE ARMED — PUBLISHING DISABLED/);
+  assert.match(source, /LIVE ENABLED/);
   assert.match(source, /Approved content is not selected/);
   assert.match(source, /Approved graphic is not selected/);
   assert.match(source, /contentId: selectedContent\.id/);
@@ -1049,7 +1055,9 @@ test("frontend dry-run publication action is explicit", async () => {
 
 test("social studio cache version is bumped for live publish safety UI", async () => {
   const html = await fs.readFile(path.join(__dirname, "../social.html"), "utf8");
-  assert.match(html, /social\.js\?v=social-studio-v15/);
+  assert.match(html, /social\.js\?v=social-studio-v16/);
+  assert.match(html, /livePublishConfirmPanel/);
+  assert.match(html, /livePublishUnderstand/);
 });
 
 test("frontend testing reset clears local workspace and avoids refresh rehydration", async () => {

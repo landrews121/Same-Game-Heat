@@ -23,7 +23,8 @@ const {
   createPublicationRecord,
   computePublicationHash,
   verifyPublicationIntegrity,
-  ensureDisclaimer
+  ensureDisclaimer,
+  approvedCaptionForPublication
 } = require("./social-publications");
 const { createInstagramPublisher, safeErrorMessage } = require("./instagram-publisher");
 const { runInstagramDiagnostics } = require("./instagram-diagnostics");
@@ -1009,6 +1010,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
   const publicationAssetsDir = env.SOCIAL_PUBLICATION_ASSETS_DIR || path.join(root, ".social-publication-assets");
   const publicationBucket = env.SOCIAL_MEDIA_ASSETS_BUCKET || "social-media-assets";
   const uploadDryRunAssets = env.SOCIAL_DRY_RUN_UPLOAD_ASSET === "true";
+  const livePublishEnabled = env.SOCIAL_LIVE_PUBLISH_ENABLED === "true";
   const livePublishLocks = new Set();
   const supabaseUrl = env.SUPABASE_URL || "";
   const supabaseKey = env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -1622,7 +1624,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
     const snapshots = (await getSnapshots({})).filter((snapshot) => (graphic.snapshotIds || content.pickSnapshotIds || []).includes(snapshot.id));
     const badSnapshot = snapshots.find((snapshot) => snapshot.integrityStatus === "failed");
     if (badSnapshot) throw validationError(`Snapshot integrity failed: ${badSnapshot.integrityError}`);
-    const hits = validateNoProhibitedLanguage({ caption: ensureDisclaimer(content.caption || "") });
+    const hits = validateNoProhibitedLanguage({ caption: approvedCaptionForPublication(content) });
     if (hits.length) throw validationError(`Caption failed claim safety: ${hits.join(", ")}`);
     if (content.contentType === "DAILY_RESULTS") {
       const results = (content.metadata?.results || []).map(verifyResultIntegrity);
@@ -1799,8 +1801,8 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
     if (content.status !== "approved") throw publicationStep("approval_check", "Social Content must still be approved before live publishing.", diagnostics);
     if (graphic.status !== "approved") throw publicationStep("approval_check", "Social Graphic must still be approved before live publishing.", diagnostics);
     if (graphic.socialContentId !== content.id) throw publicationStep("approval_check", "Approved graphic no longer belongs to approved content.", diagnostics);
-    if (ensureDisclaimer(content.caption || "") !== publication.caption) throw publicationStep("approval_check", "Live publish must use the exact approved caption.", diagnostics);
-    if (sha256(ensureDisclaimer(content.caption || "")) !== publication.captionHash) throw publicationStep("approval_check", "Approved content caption hash mismatch.", diagnostics);
+    if (approvedCaptionForPublication(content) !== publication.caption) throw publicationStep("approval_check", "Live publish must use the exact approved caption.", diagnostics);
+    if (sha256(approvedCaptionForPublication(content)) !== publication.captionHash) throw publicationStep("approval_check", "Approved content caption hash mismatch.", diagnostics);
     if ((graphic.snapshotHashes || []).join("|") !== (publication.snapshotHashes || []).join("|")) {
       throw publicationStep("approval_check", "Approved graphic snapshot hash mismatch.", diagnostics);
     }
@@ -1830,11 +1832,32 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
     return { content, graphic, account, diagnostics };
   }
 
-  async function publishPublication(publicationId) {
+  async function publishPublication(publicationId, options = {}) {
     const publication = (await getPublications({})).find((item) => item.id === publicationId);
     if (!publication) throw validationError("Publication not found");
     if (["published", "verified"].includes(publication.status)) return publication;
     if (publication.dryRun) return savePublication({ ...publication, status: "prepared", updatedAt: new Date().toISOString() });
+    if (instagram.dryRun) {
+      throw publicationStep("preflight", "Live publish is blocked while SOCIAL_PUBLISH_DRY_RUN=true.", {
+        publicationId: publication.id,
+        dryRun: true,
+        livePublishEnabled
+      });
+    }
+    if (!livePublishEnabled) {
+      throw publicationStep("preflight", "Live publishing is disabled. Set SOCIAL_LIVE_PUBLISH_ENABLED=true for the first controlled live post.", {
+        publicationId: publication.id,
+        dryRun: false,
+        livePublishEnabled
+      });
+    }
+    if (options.confirmLivePublish !== true) {
+      throw publicationStep("confirmation", "Live publishing confirmation required.", {
+        publicationId: publication.id,
+        dryRun: false,
+        livePublishEnabled
+      });
+    }
     const existingLiveReceipt = await findLivePublicationDuplicate(publication, { excludeId: publication.id });
     if (existingLiveReceipt) return existingLiveReceipt;
     const lockKey = livePublicationKey(publication);
@@ -2418,7 +2441,11 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
         return true;
       }
       const status = await instagram.validateConnection();
-      sendJson(res, 200, status);
+      sendJson(res, 200, {
+        ...status,
+        livePublishEnabled,
+        liveModeArmed: Boolean(status.connected && !status.dryRun && !livePublishEnabled)
+      });
       return true;
     }
 
@@ -2478,7 +2505,10 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
       const [, publicationIdValue, action] = publicationActionMatch;
       try {
         if (action === "publish") {
-          const publication = await publishPublication(publicationIdValue);
+          const payload = JSON.parse((await readRequestBody(req)) || "{}");
+          const publication = await publishPublication(publicationIdValue, {
+            confirmLivePublish: payload.confirmLivePublish === true
+          });
           sendJson(res, 200, { publication });
           return true;
         }
