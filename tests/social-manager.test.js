@@ -12,7 +12,7 @@ const {
   normalizeGeneratedContent,
   validateNoProhibitedLanguage
 } = require("../social-manager");
-const { renderSocialGraphic, RESPONSIBLE_FOOTER } = require("../social-graphics");
+const { renderSocialGraphic, RESPONSIBLE_FOOTER, GRAPHIC_TEMPLATE_VERSION } = require("../social-graphics");
 
 function samplePick(overrides = {}) {
   return {
@@ -596,7 +596,7 @@ test("OpenAI prompt includes SGH brand voice and no-invention rules", async () =
   });
 });
 
-test("OpenAI response with string hashtags preserves AI caption and provider", async () => {
+test("OpenAI response with string hashtags preserves provider and canonicalizes Daily 3 caption", async () => {
   await withMockedSocialAi({
     fetchImpl: async () => mockOpenAiResponse({
       body: {
@@ -617,9 +617,15 @@ test("OpenAI response with string hashtags preserves AI caption and provider", a
     run: async ({ response }) => {
       assert.equal(response.status, 200);
       assert.equal(response.json.content.generationProvider, "openai");
-      assert.equal(response.json.content.caption, "🔥 SAME GAME HEAT — DAILY 3\n\nThis AI caption should stay for Los Angeles Angels ML -105 with 55.1% model win probability.\n\n21+ | Bet responsibly.");
+      assert.match(response.json.content.caption, /^🔥 SAME GAME HEAT — DAILY 3/);
+      assert.match(response.json.content.caption, /1️⃣ Los Angeles Angels ML -105/);
+      assert.match(response.json.content.caption, /Model win probability: 55\.1%/);
+      assert.doesNotMatch(response.json.content.caption, /This AI caption should stay/);
       assert.deepEqual(response.json.content.hashtags, ["#SameGameHeat", "#MLB", "#SportsBetting"]);
-      assert.deepEqual(response.json.content.metadata.warnings, ["Confirm lineups before posting."]);
+      assert.deepEqual(response.json.content.metadata.warnings, [
+        "Confirm lineups before posting.",
+        "AI copy was reformatted to SGH publishing standards."
+      ]);
     }
   });
 });
@@ -690,7 +696,7 @@ test("one-paragraph three-pick OpenAI DAILY_3 is repaired and preserves provider
       assert.equal(response.status, 200);
       assert.equal(response.json.content.generationProvider, "openai");
       assert.equal(response.json.content.metadata.presentationRepaired, true);
-      assert.match(response.json.content.metadata.repairReasons.join(" "), /daily_3_caption_rebuilt/);
+      assert.match(response.json.content.metadata.repairReasons.join(" "), /daily_3_caption_canonicalized/);
       assert.match(response.json.content.caption, /1️⃣ Milwaukee Brewers/);
       assert.match(response.json.content.caption, /2️⃣ Philadelphia Phillies/);
       assert.match(response.json.content.caption, /3️⃣ St\. Louis Cardinals/);
@@ -734,7 +740,7 @@ test("missing headline disclaimer shortCaption teams and weak hook are repaired 
       assert.equal(response.json.content.generationProvider, "openai");
       assert.equal(response.json.content.metadata.presentationRepaired, true);
       assert.match(response.json.content.caption, /^🔥 SAME GAME HEAT — DAILY 3/);
-      assert.match(response.json.content.caption, /Milwaukee Brewers are backed by the starter edge/);
+      assert.match(response.json.content.caption, /Starting-pitching edge/);
       assert.ok(response.json.content.caption.trim().endsWith("21+ | Bet responsibly."));
       assert.match(response.json.content.shortCaption, /Milwaukee Brewers ML -247 \(63\.1%\)/);
       assert.match(response.json.content.shortCaption, /Philadelphia Phillies ML -190 \(60\.6%\)/);
@@ -1256,18 +1262,40 @@ test("duplicate snapshot_hash reuses immutable existing snapshot", async () => {
 
 test("Daily 3 feed graphic renders three frozen picks", () => {
   const snapshots = [
-    createSocialPickSnapshot(samplePickForTeam("Los Angeles Angels", "Houston Astros", 1)),
-    createSocialPickSnapshot(samplePickForTeam("Detroit Tigers", "Baltimore Orioles", 2)),
-    createSocialPickSnapshot(samplePickForTeam("New York Mets", "Atlanta Braves", 3))
+    createSocialPickSnapshot(samplePickForTeam("Los Angeles Angels", "Houston Astros", 1, { reasons: ["Starting-pitching edge with ace on the mound."] })),
+    createSocialPickSnapshot(samplePickForTeam("Detroit Tigers", "Baltimore Orioles", 2, { reasons: ["Home-field advantage in a favorable matchup."] })),
+    createSocialPickSnapshot(samplePickForTeam("New York Mets", "Atlanta Braves", 3, { reasons: ["Schedule advantage and favorable rest matchup."] }))
   ];
   const content = sampleContent("DAILY_3", snapshots);
   const graphic = renderSocialGraphic({ content, snapshots, format: "feed" });
   assert.equal(graphic.width, 1080);
   assert.equal(graphic.height, 1350);
+  assert.equal(graphic.templateVersion, GRAPHIC_TEMPLATE_VERSION);
+  assert.equal(graphic.templateVersion, "social-graphics-template-v2");
   assert.match(graphic.svg, /DAILY 3/);
+  assert.match(graphic.svg, /SAME GAME HEAT/);
+  assert.match(graphic.svg, /MLB/);
+  assert.match(graphic.svg, /07\/27\/2026/);
+  assert.equal((graphic.svg.match(/class="daily3-pick-card"/g) || []).length, 3);
+  assert.match(graphic.svg, /data-rank="1"/);
+  assert.match(graphic.svg, /data-rank="2"/);
+  assert.match(graphic.svg, /data-rank="3"/);
   assert.match(graphic.svg, /Los Angeles Angels/);
   assert.match(graphic.svg, /Detroit Tigers/);
   assert.match(graphic.svg, /New York Mets/);
+  assert.match(graphic.svg, /LAA/);
+  assert.match(graphic.svg, /DET/);
+  assert.match(graphic.svg, /NYM/);
+  assert.match(graphic.svg, /MONEYLINE/);
+  assert.match(graphic.svg, /-105/);
+  assert.match(graphic.svg, /\+145/);
+  assert.match(graphic.svg, /Starting-pitching edge/);
+  assert.match(graphic.svg, /Home-field advantage/);
+  assert.match(graphic.svg, /Schedule advantage/);
+  assert.match(graphic.svg, /Research, not a guarantee\./);
+  assert.ok(graphic.svg.includes(RESPONSIBLE_FOOTER));
+  assert.doesNotMatch(graphic.svg, /55\.1%|59%|61%/);
+  assert.doesNotMatch(graphic.svg, /Fair|Playable|Confidence|score/i);
 });
 
 test("Daily 3 graphic renders only two picks when two frozen selections exist", () => {
@@ -1282,13 +1310,13 @@ test("Daily 3 graphic renders only two picks when two frozen selections exist", 
   assert.doesNotMatch(graphic.svg, /San Francisco Giants/);
 });
 
-test("backfill indicator appears on Daily 3 graphic", () => {
+test("Daily 3 feed omits internal backfill indicator", () => {
   const snapshots = [
     createSocialPickSnapshot(samplePickForTeam("Seattle Mariners", "Texas Rangers", 1, { isBackfill: true }))
   ];
   const content = sampleContent("DAILY_3", snapshots);
   const graphic = renderSocialGraphic({ content, snapshots, format: "feed" });
-  assert.match(graphic.svg, /BEST AVAILABLE/);
+  assert.doesNotMatch(graphic.svg, /BEST AVAILABLE/);
 });
 
 test("Best Bet graphic uses snapshot number one", () => {
@@ -1315,6 +1343,8 @@ test("long team names stay inside supported feed dimensions", () => {
   assert.equal(graphic.height, 1350);
   assert.match(graphic.svg, /Arizona Diamondbacks/);
   assert.match(graphic.svg, /Philadelphia Phillies/);
+  assert.match(graphic.svg, /ARI/);
+  assert.match(graphic.svg, /PHI/);
 });
 
 test("prohibited language blocks graphic rendering", () => {

@@ -1,6 +1,6 @@
 const crypto = require("node:crypto");
 
-const GRAPHIC_TEMPLATE_VERSION = "social-graphics-template-v1";
+const GRAPHIC_TEMPLATE_VERSION = "social-graphics-template-v2";
 const GRAPHIC_RENDER_VERSION = "social-graphics-renderer-v1";
 const RESPONSIBLE_FOOTER = "21+ | Bet responsibly.";
 const GRAPHIC_FORMATS = {
@@ -84,6 +84,46 @@ function teamInitials(name) {
     .toUpperCase() || "SGH";
 }
 
+const MLB_TEAM_ABBREVIATIONS = new Map([
+  ["arizona diamondbacks", "ARI"],
+  ["atlanta braves", "ATL"],
+  ["baltimore orioles", "BAL"],
+  ["boston red sox", "BOS"],
+  ["chicago cubs", "CHC"],
+  ["chicago white sox", "CWS"],
+  ["cincinnati reds", "CIN"],
+  ["cleveland guardians", "CLE"],
+  ["colorado rockies", "COL"],
+  ["detroit tigers", "DET"],
+  ["houston astros", "HOU"],
+  ["kansas city royals", "KC"],
+  ["los angeles angels", "LAA"],
+  ["los angeles dodgers", "LAD"],
+  ["miami marlins", "MIA"],
+  ["milwaukee brewers", "MIL"],
+  ["minnesota twins", "MIN"],
+  ["new york mets", "NYM"],
+  ["new york yankees", "NYY"],
+  ["athletics", "ATH"],
+  ["oakland athletics", "OAK"],
+  ["philadelphia phillies", "PHI"],
+  ["pittsburgh pirates", "PIT"],
+  ["san diego padres", "SD"],
+  ["san francisco giants", "SF"],
+  ["seattle mariners", "SEA"],
+  ["st. louis cardinals", "STL"],
+  ["st louis cardinals", "STL"],
+  ["tampa bay rays", "TB"],
+  ["texas rangers", "TEX"],
+  ["toronto blue jays", "TOR"],
+  ["washington nationals", "WSH"]
+]);
+
+function teamAbbreviation(name) {
+  const key = clean(name).toLowerCase();
+  return MLB_TEAM_ABBREVIATIONS.get(key) || teamInitials(name).slice(0, 3);
+}
+
 function wrapText(text, maxChars, maxLines = 3) {
   const words = clean(text).split(/\s+/).filter(Boolean);
   const lines = [];
@@ -114,6 +154,14 @@ function tspanLines(text, x, y, size, options = {}) {
   const lines = wrapText(text, maxChars, options.maxLines || 3);
   return lines.map((line, index) =>
     `<text x="${x}" y="${y + index * (size * 1.22)}" font-size="${size}" font-weight="${options.weight || 700}" fill="${options.fill || "#101827"}">${escapeXml(line)}</text>`
+  ).join("");
+}
+
+function textLines(text, x, y, size, options = {}) {
+  const maxChars = options.maxChars || Math.max(18, Math.floor(680 / (size * 0.55)));
+  const lines = wrapText(text, maxChars, options.maxLines || 3);
+  return lines.map((line, index) =>
+    `<text x="${x}" y="${y + index * (options.lineHeight || size * 1.16)}" font-size="${size}" font-weight="${options.weight || 800}" fill="${options.fill || "#101827"}" ${options.anchor ? `text-anchor="${options.anchor}"` : ""}>${escapeXml(line)}</text>`
   ).join("");
 }
 
@@ -167,7 +215,7 @@ function pickRow(snapshot, index, x, y, width, height) {
   ].join("");
 }
 
-function renderDaily3({ content, snapshots, width, height, format }) {
+function renderClassicDaily3({ content, snapshots, width, height, format }) {
   const rowHeight = format === "story" ? 250 : 220;
   const startY = format === "story" ? 330 : 285;
   const gap = format === "story" ? 34 : 24;
@@ -177,6 +225,170 @@ function renderDaily3({ content, snapshots, width, height, format }) {
     snapshots.slice(0, 3).map((snapshot, index) => pickRow(snapshot, index, 66, startY + index * (rowHeight + gap), width - 132, rowHeight)).join(""),
     footer(width, height)
   ].join("");
+}
+
+function daily3Reason(snapshot) {
+  const reason = clean(snapshot.reasons?.[0] || snapshot.passReasons?.[0] || "Model liked the matchup profile.");
+  return reason.replace(/\s+/g, " ");
+}
+
+function reasonIconType(reason) {
+  const text = clean(reason).toLowerCase();
+  if (/starter|pitch|ace|mound|rotation/.test(text)) return "baseball";
+  if (/home|park|stadium|field/.test(text)) return "home";
+  if (/rest|schedule|travel|day off/.test(text)) return "calendar";
+  if (/bullpen|relief|closer/.test(text)) return "bullpen";
+  if (/market|odds|price|line/.test(text)) return "chart";
+  return "baseball";
+}
+
+function reasonIcon(type, x, y) {
+  const color = "#0b4c9c";
+  if (type === "home") {
+    return `<path d="M${x} ${y + 22} L${x + 24} ${y} L${x + 48} ${y + 22} V${y + 54} H${x + 12} V${y + 28} H${x + 36} V${y + 54} H${x} Z" fill="none" stroke="${color}" stroke-width="5" stroke-linejoin="round"/>`;
+  }
+  if (type === "calendar") {
+    return `<rect x="${x + 3}" y="${y + 8}" width="45" height="44" rx="5" fill="none" stroke="${color}" stroke-width="5"/><path d="M${x + 3} ${y + 22} H${x + 48}" stroke="${color}" stroke-width="5"/><path d="M${x + 15} ${y} V${y + 14} M${x + 36} ${y} V${y + 14}" stroke="${color}" stroke-width="5" stroke-linecap="round"/>`;
+  }
+  if (type === "bullpen") {
+    return `<path d="M${x + 8} ${y + 48} C${x + 8} ${y + 12}, ${x + 42} ${y + 12}, ${x + 42} ${y + 48}" fill="none" stroke="${color}" stroke-width="5"/><path d="M${x + 16} ${y + 48} V${y + 28} H${x + 34} V${y + 48}" fill="none" stroke="${color}" stroke-width="5"/>`;
+  }
+  if (type === "chart") {
+    return `<path d="M${x + 2} ${y + 52} H${x + 52}" stroke="${color}" stroke-width="5"/><path d="M${x + 10} ${y + 42} L${x + 22} ${y + 30} L${x + 32} ${y + 35} L${x + 48} ${y + 12}" fill="none" stroke="${color}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>`;
+  }
+  return `<circle cx="${x + 26}" cy="${y + 28}" r="23" fill="none" stroke="#b10f24" stroke-width="5"/><path d="M${x + 12} ${y + 12} C${x + 22} ${y + 24}, ${x + 22} ${y + 34}, ${x + 12} ${y + 44} M${x + 40} ${y + 12} C${x + 30} ${y + 24}, ${x + 30} ${y + 34}, ${x + 40} ${y + 44}" fill="none" stroke="#b10f24" stroke-width="4"/>`;
+}
+
+function stadiumDefs(width, height) {
+  return `
+    <radialGradient id="daily3Light" cx="12%" cy="4%" r="38%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="18%" stop-color="#b8d7ff" stop-opacity="0.38"/>
+      <stop offset="100%" stop-color="#07162f" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="stadiumBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#061733"/>
+      <stop offset="50%" stop-color="#0b2448"/>
+      <stop offset="100%" stop-color="#070b16"/>
+    </linearGradient>
+    <linearGradient id="redHeat" x1="80%" y1="10%" x2="100%" y2="70%">
+      <stop offset="0%" stop-color="#ff293f" stop-opacity="0.82"/>
+      <stop offset="100%" stop-color="#860014" stop-opacity="0.96"/>
+    </linearGradient>
+    <linearGradient id="fieldDirt" x1="0%" y1="35%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#153916"/>
+      <stop offset="42%" stop-color="#6b351b"/>
+      <stop offset="100%" stop-color="#091f18"/>
+    </linearGradient>
+    <pattern id="daily3Grain" patternUnits="userSpaceOnUse" width="18" height="18">
+      <circle cx="2" cy="3" r="1.1" fill="#ffffff" opacity="0.12"/>
+      <circle cx="12" cy="11" r="0.9" fill="#ffffff" opacity="0.08"/>
+      <circle cx="7" cy="16" r="0.8" fill="#c83243" opacity="0.12"/>
+    </pattern>
+    <pattern id="distress" patternUnits="userSpaceOnUse" width="46" height="30">
+      <rect width="46" height="30" fill="#ffffff"/>
+      <path d="M4 4 H18 M25 8 H43 M8 18 H29 M35 24 H45" stroke="#0b1d3e" stroke-width="3" opacity="0.32"/>
+      <circle cx="32" cy="15" r="3" fill="#0b1d3e" opacity="0.22"/>
+    </pattern>
+    <clipPath id="daily3SafeClip"><rect x="0" y="0" width="${width}" height="${height}" rx="0"/></clipPath>`;
+}
+
+function renderDaily3BrandMark(width) {
+  return [
+    `<g transform="translate(${width - 270},72)">`,
+    `<path d="M96 0 C134 4 159 30 165 67 C137 82 108 100 92 132 C70 103 40 86 3 72 C9 31 42 2 96 0 Z" fill="#c90924" opacity="0.96"/>`,
+    `<path d="M42 88 C66 48 106 33 154 29 C124 45 107 68 98 96 C84 75 66 76 42 88 Z" fill="#ff394c"/>`,
+    `<text x="83" y="90" text-anchor="middle" font-size="58" font-weight="900" font-style="italic" fill="#ffffff" stroke="#07162f" stroke-width="3">SGH</text>`,
+    `</g>`,
+    `<g transform="translate(${width - 250},250)">`,
+    `<rect x="0" y="0" width="170" height="55" rx="8" fill="#ffffff"/>`,
+    `<rect x="7" y="7" width="156" height="41" rx="6" fill="#153f7c"/>`,
+    `<text x="76" y="39" text-anchor="middle" font-size="34" font-weight="900" fill="#ffffff" font-style="italic">MLB</text>`,
+    `<circle cx="136" cy="27" r="11" fill="#ffffff"/>`,
+    `<path d="M148 17 L159 27 L148 37" fill="#c83243"/>`,
+    `</g>`
+  ].join("");
+}
+
+function renderDaily3Header({ width, slateDate }) {
+  return [
+    `<rect x="0" y="0" width="${width}" height="1350" fill="url(#stadiumBg)"/>`,
+    `<path d="M0 420 C240 320 500 365 720 290 C870 238 1002 166 1080 92 V1350 H0 Z" fill="url(#fieldDirt)" opacity="0.95"/>`,
+    `<path d="M755 -40 L1080 -40 V432 C946 377 845 328 746 277 Z" fill="url(#redHeat)" opacity="0.95"/>`,
+    `<path d="M716 0 L650 405" stroke="#ffffff" stroke-width="5" opacity="0.88"/>`,
+    `<path d="M0 0 H1080 V1350 H0 Z" fill="url(#daily3Light)"/>`,
+    `<rect x="0" y="0" width="${width}" height="1350" fill="url(#daily3Grain)" opacity="0.8"/>`,
+    `<g opacity="0.55">`,
+    `<circle cx="54" cy="40" r="9" fill="#ffffff"/><circle cx="84" cy="52" r="7" fill="#ffffff"/><circle cx="41" cy="72" r="6" fill="#ffffff"/>`,
+    `<path d="M0 372 C230 330 372 340 548 302 C632 284 703 261 760 232" fill="none" stroke="#d9e8ff" stroke-width="4" opacity="0.25"/>`,
+    `<path d="M0 524 C190 470 348 490 520 432 C646 390 733 337 806 277" fill="none" stroke="#ffffff" stroke-width="3" opacity="0.18"/>`,
+    `</g>`,
+    `<text x="86" y="98" font-size="48" font-weight="900" letter-spacing="12" fill="#ffffff" opacity="0.96">SAME GAME HEAT</text>`,
+    `<text x="76" y="268" font-size="152" font-weight="900" letter-spacing="2" fill="url(#distress)" stroke="#ffffff" stroke-width="2">DAILY 3</text>`,
+    `<path d="M72 322 H160 M196 322 H240 M276 322 H320 M356 322 H400" stroke="#c90924" stroke-width="8"/>`,
+    `<text x="128" y="398" font-size="48" font-weight="900" letter-spacing="4" fill="#ffffff">${escapeXml(shortDate(slateDate))}</text>`,
+    `<path d="M80 350 H410 L382 426 H52 Z" fill="#c90924"/>`,
+    `<text x="128" y="398" font-size="48" font-weight="900" letter-spacing="4" fill="#ffffff">${escapeXml(shortDate(slateDate))}</text>`,
+    renderDaily3BrandMark(width)
+  ].join("");
+}
+
+function renderDaily3Card(snapshot, index, y) {
+  const x = 58;
+  const width = 970;
+  const height = 218;
+  const teamName = clean(snapshot.selectedTeam, "Team TBD");
+  const abbreviation = teamAbbreviation(teamName);
+  const reason = daily3Reason(snapshot);
+  const iconType = reasonIconType(reason);
+  const teamFont = teamName.length > 24 ? 39 : teamName.length > 18 ? 43 : 56;
+  const teamLines = wrapText(teamName, teamName.length > 24 ? 21 : 19, 2);
+  const moneylineY = teamLines.length > 1 ? y + 144 : y + 126;
+  return [
+    `<g class="daily3-pick-card" data-rank="${index + 1}">`,
+    `<title>${escapeXml(`${index + 1}. ${teamName} ${formatOdds(snapshot.sportsbookOdds)}`)}</title>`,
+    `<desc>${escapeXml(`${teamName} moneyline ${formatOdds(snapshot.sportsbookOdds)}. ${reason}`)}</desc>`,
+    `<path d="M${x + 12} ${y} H${x + width - 12} Q${x + width} ${y} ${x + width} ${y + 24} V${y + height - 24} Q${x + width} ${y + height} ${x + width - 24} ${y + height} H${x + 12} Q${x} ${y + height} ${x + 5} ${y + height - 24} L${x + 52} ${y + 26} Q${x + 58} ${y} ${x + 82} ${y} Z" fill="#fdfdfd" stroke="#ffffff" stroke-width="3"/>`,
+    `<path d="M${x + 54} ${y + 5} L${x + 2} ${y + height - 2} H${x + 48} L${x + 104} ${y + 5} Z" fill="#0b4c9c"/>`,
+    `<circle cx="${x + 30}" cy="${y + 66}" r="46" fill="#061733" stroke="#ffffff" stroke-width="5"/>`,
+    `<text x="${x + 30}" y="${y + 83}" text-anchor="middle" font-size="54" font-weight="900" fill="#ffffff">${index + 1}</text>`,
+    `<circle cx="${x + 176}" cy="${y + 110}" r="76" fill="#07162f" stroke="#d6dde8" stroke-width="6"/>`,
+    `<circle cx="${x + 176}" cy="${y + 110}" r="66" fill="#0b2e63" stroke="#6fa4d8" stroke-width="4"/>`,
+    `<text x="${x + 176}" y="${y + 132}" text-anchor="middle" font-size="${abbreviation.length > 3 ? 46 : 58}" font-weight="900" fill="#ffffff" letter-spacing="1">${escapeXml(abbreviation)}</text>`,
+    teamLines.map((line, lineIndex) => `<text x="${x + 290}" y="${y + 78 + lineIndex * (teamFont * 1.08)}" font-size="${teamFont}" font-weight="900" fill="#071943">${escapeXml(line)}</text>`).join(""),
+    `<text x="${x + 292}" y="${moneylineY}" font-size="29" font-weight="900" fill="#b10f24" letter-spacing="2">MONEYLINE</text>`,
+    `<text x="${x + width - 34}" y="${y + 96}" text-anchor="end" font-size="74" font-weight="900" font-style="italic" fill="#071943">${escapeXml(formatOdds(snapshot.sportsbookOdds))}</text>`,
+    `<line x1="${x + 692}" y1="${y + 126}" x2="${x + 692}" y2="${y + 180}" stroke="#c9ced8" stroke-width="3"/>`,
+    reasonIcon(iconType, x + 724, y + 128),
+    textLines(reason, x + 790, y + 150, 25, { maxChars: 19, maxLines: 2, weight: 900, fill: "#071943", lineHeight: 31 }),
+    `</g>`
+  ].join("");
+}
+
+function renderDaily3Footer(width, height) {
+  return [
+    `<path d="M0 ${height - 126} C212 ${height - 88} 410 ${height - 134} 600 ${height - 102} C812 ${height - 68} 958 ${height - 100} ${width} ${height - 76} V${height} H0 Z" fill="#061733" opacity="0.96"/>`,
+    `<path d="M824 ${height - 92} C906 ${height - 132} 1005 ${height - 153} 1080 ${height - 172} V${height} H760 Z" fill="#c90924" opacity="0.86"/>`,
+    `<path d="M66 ${height - 80} l26 -14 l26 14 v38 l-26 18 l-26 -18 z" fill="#0b4c9c" stroke="#ffffff" stroke-width="3"/>`,
+    `<path d="M82 ${height - 62} C90 ${height - 82} 104 ${height - 82} 112 ${height - 62} C104 ${height - 69} 91 ${height - 69} 82 ${height - 62} Z" fill="#c90924"/>`,
+    `<text x="158" y="${height - 55}" font-size="30" font-weight="900" fill="#ffffff">${escapeXml(RESPONSIBLE_FOOTER)}</text>`,
+    `<line x1="445" y1="${height - 90}" x2="445" y2="${height - 34}" stroke="#c90924" stroke-width="4"/>`,
+    `<text x="506" y="${height - 55}" font-size="30" font-weight="900" fill="#ffffff">Research, not a guarantee.</text>`
+  ].join("");
+}
+
+function renderDaily3Feed({ content, snapshots, width, height }) {
+  const picks = snapshots.slice(0, 3);
+  return [
+    renderDaily3Header({ width, slateDate: content.slateDate || picks[0]?.slateDate }),
+    picks.map((snapshot, index) => renderDaily3Card(snapshot, index, 448 + index * 250)).join(""),
+    renderDaily3Footer(width, height)
+  ].join("");
+}
+
+function renderDaily3({ content, snapshots, width, height, format }) {
+  if (format === "feed") return renderDaily3Feed({ content, snapshots, width, height });
+  return renderClassicDaily3({ content, snapshots, width, height, format });
 }
 
 function renderBestBet({ content, snapshots, width, height }) {
@@ -325,6 +537,7 @@ function renderSocialGraphic({ content, snapshots, format = "feed" }) {
       <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
         <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#123361" flood-opacity="0.16"/>
       </filter>
+      ${stadiumDefs(width, height)}
     </defs>`;
   const background = `<rect width="${width}" height="${height}" fill="#edf4ff"/><path d="M0 ${height * 0.68} L${width} ${height * 0.34} L${width} ${height} L0 ${height} Z" fill="#fff7f8" opacity="0.9"/>`;
   const contentType = safeContent.contentType || "DAILY_3";
