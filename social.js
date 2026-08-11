@@ -75,6 +75,28 @@ function showStatus(message, target = els.studioStatus) {
   target.classList.toggle("hidden", !message);
 }
 
+function showStartupFailure(error) {
+  state.authorized = false;
+  els.loginPanel?.classList.remove("hidden");
+  els.socialApp?.classList.add("hidden");
+  showStatus("Social Studio failed to initialize. Refresh the page and try again.", els.loginStatus);
+  // The error can help diagnose a broken optional control without exposing credentials in the UI.
+  console.error("Social Studio startup error", error);
+}
+
+function bindIfPresent(element, eventName, handler) {
+  if (!element) return false;
+  element.addEventListener(eventName, handler);
+  return true;
+}
+
+function setLoginBusy(isBusy) {
+  const submitButton = els.loginForm?.querySelector('button[type="submit"]');
+  if (!submitButton) return;
+  submitButton.disabled = isBusy;
+  submitButton.textContent = isBusy ? "Unlocking..." : "Unlock Studio";
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     credentials: "same-origin",
@@ -926,9 +948,11 @@ async function bootstrap() {
   }
 }
 
-els.loginForm.addEventListener("submit", async (event) => {
+async function submitSocialLogin(event) {
   event.preventDefault();
   showStatus("", els.loginStatus);
+  setLoginBusy(true);
+  let unlocked = false;
   try {
     const login = await api("/api/social/login", {
       method: "POST",
@@ -941,81 +965,97 @@ els.loginForm.addEventListener("submit", async (event) => {
     els.socialSecret.value = "";
     els.loginPanel.classList.add("hidden");
     els.socialApp.classList.remove("hidden");
+    unlocked = true;
     loadCurrentBoard();
     await refreshQueue();
   } catch (error) {
-    showStatus(error.message, els.loginStatus);
+    showStatus(error.message || "Unable to create Social Studio session.", unlocked ? els.studioStatus : els.loginStatus);
+  } finally {
+    setLoginBusy(false);
   }
-});
-
-els.refreshBoard.addEventListener("click", refreshCurrentBoard);
-if (els.resetTestingWorkspace) {
-  els.resetTestingWorkspace.addEventListener("click", () => resetTestingWorkspace().catch((error) => showStatus(error.message)));
 }
-els.refreshQueue.addEventListener("click", refreshQueue);
-els.refreshPublishing.addEventListener("click", () => refreshPublishing().catch((error) => showStatus(error.message)));
-if (els.runInstagramDiagnostics) {
-  els.runInstagramDiagnostics.addEventListener("click", () => runInstagramDiagnostics().catch((error) => showStatus(error.message, els.instagramDiagnosticsStatus)));
+
+function initializeSocialStudio() {
+  if (!els.loginForm || !els.socialSecret || !els.loginPanel || !els.socialApp) {
+    showStartupFailure(new Error("Required Social Studio login elements are missing."));
+    return;
+  }
+
+  els.loginForm.addEventListener("submit", submitSocialLogin);
+
+  try {
+    bindIfPresent(els.refreshBoard, "click", refreshCurrentBoard);
+    bindIfPresent(els.resetTestingWorkspace, "click", () => resetTestingWorkspace().catch((error) => showStatus(error.message)));
+    bindIfPresent(els.refreshQueue, "click", refreshQueue);
+    bindIfPresent(els.refreshPublishing, "click", () => refreshPublishing().catch((error) => showStatus(error.message)));
+    bindIfPresent(els.runInstagramDiagnostics, "click", () => runInstagramDiagnostics().catch((error) => showStatus(error.message, els.instagramDiagnosticsStatus)));
+    bindIfPresent(els.checkResults, "click", () => checkResults().catch((error) => showStatus(error.message, els.resultsStatus)));
+    bindIfPresent(els.queueStatus, "change", refreshQueue);
+    bindIfPresent(els.createDaily3, "click", () => generateContent("DAILY_3"));
+    bindIfPresent(els.createBestBet, "click", () => generateContent("BEST_BET"));
+    bindIfPresent(els.createBreakdown, "click", () => generateContent("PICK_BREAKDOWN", els.breakdownPick?.value));
+    bindIfPresent(els.contentQueue, "click", (event) => {
+      const row = event.target.closest("[data-content-id]");
+      if (!row) return;
+      selectContent(state.content.find((content) => content.id === row.dataset.contentId))
+        .catch((error) => showStatus(error.message));
+    });
+    bindIfPresent(els.contentDetail, "click", (event) => {
+      const copyMusicButton = event.target.closest("[data-copy-story-music]");
+      if (copyMusicButton) {
+        copyStoryMusic();
+        return;
+      }
+      const graphicGenerateButton = event.target.closest("[data-generate-graphic]");
+      if (graphicGenerateButton) {
+        generateGraphic(graphicGenerateButton.dataset.generateGraphic, graphicGenerateButton).catch((error) => showStatus(error.message));
+        return;
+      }
+      const graphicActionButton = event.target.closest("[data-graphic-action]");
+      if (graphicActionButton) {
+        handleGraphicAction(graphicActionButton.dataset.graphicAction, graphicActionButton.dataset.graphicId)
+          .catch((error) => showStatus(error.message));
+        return;
+      }
+      const prepareButton = event.target.closest("[data-prepare-publication]");
+      if (prepareButton) {
+        preparePublication(prepareButton.dataset.preparePublication, prepareButton).catch((error) => {
+          const message = error.message || "Publication preparation failed.";
+          showStatus(message);
+          showStatus(message, els.publicationStatus);
+        });
+        return;
+      }
+      const button = event.target.closest("[data-action]");
+      if (!button) return;
+      handleContentAction(button.dataset.action).catch((error) => showStatus(error.message));
+    });
+    bindIfPresent(els.publicationList, "click", (event) => {
+      const button = event.target.closest("[data-publication-action]");
+      if (!button) return;
+      handlePublicationAction(button.dataset.publicationAction, button.dataset.publicationId, button)
+        .catch((error) => {
+          const message = error.message || "Publication action failed.";
+          showStatus(message);
+          showStatus(message, els.publicationStatus);
+        });
+    });
+    bindIfPresent(els.livePublishUnderstand, "change", () => {
+      if (els.confirmLivePublish) {
+        els.confirmLivePublish.disabled = !els.livePublishUnderstand.checked || state.livePublishInFlight;
+      }
+    });
+    bindIfPresent(els.cancelLivePublish, "click", closeLivePublishConfirm);
+    bindIfPresent(els.confirmLivePublish, "click", () => confirmLivePublish().catch((error) => showStatus(error.message, els.publicationStatus)));
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !els.livePublishConfirmPanel?.classList.contains("hidden")) closeLivePublishConfirm(event);
+    });
+  } catch (error) {
+    showStartupFailure(error);
+    return;
+  }
+
+  bootstrap().catch(showStartupFailure);
 }
-els.checkResults.addEventListener("click", () => checkResults().catch((error) => showStatus(error.message, els.resultsStatus)));
-els.queueStatus.addEventListener("change", refreshQueue);
-els.createDaily3.addEventListener("click", () => generateContent("DAILY_3"));
-els.createBestBet.addEventListener("click", () => generateContent("BEST_BET"));
-els.createBreakdown.addEventListener("click", () => generateContent("PICK_BREAKDOWN", els.breakdownPick.value));
-els.contentQueue.addEventListener("click", (event) => {
-  const row = event.target.closest("[data-content-id]");
-  if (!row) return;
-  selectContent(state.content.find((content) => content.id === row.dataset.contentId))
-    .catch((error) => showStatus(error.message));
-});
-els.contentDetail.addEventListener("click", (event) => {
-  const copyMusicButton = event.target.closest("[data-copy-story-music]");
-  if (copyMusicButton) {
-    copyStoryMusic();
-    return;
-  }
-  const graphicGenerateButton = event.target.closest("[data-generate-graphic]");
-  if (graphicGenerateButton) {
-    generateGraphic(graphicGenerateButton.dataset.generateGraphic, graphicGenerateButton).catch((error) => showStatus(error.message));
-    return;
-  }
-  const graphicActionButton = event.target.closest("[data-graphic-action]");
-  if (graphicActionButton) {
-    handleGraphicAction(graphicActionButton.dataset.graphicAction, graphicActionButton.dataset.graphicId)
-      .catch((error) => showStatus(error.message));
-    return;
-  }
-  const prepareButton = event.target.closest("[data-prepare-publication]");
-  if (prepareButton) {
-    preparePublication(prepareButton.dataset.preparePublication, prepareButton).catch((error) => {
-      const message = error.message || "Publication preparation failed.";
-      showStatus(message);
-      showStatus(message, els.publicationStatus);
-    });
-    return;
-  }
-  const button = event.target.closest("[data-action]");
-  if (!button) return;
-  handleContentAction(button.dataset.action).catch((error) => showStatus(error.message));
-});
-els.publicationList.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-publication-action]");
-  if (!button) return;
-  handlePublicationAction(button.dataset.publicationAction, button.dataset.publicationId, button)
-    .catch((error) => {
-      const message = error.message || "Publication action failed.";
-      showStatus(message);
-      showStatus(message, els.publicationStatus);
-    });
-});
 
-els.livePublishUnderstand?.addEventListener("change", () => {
-  els.confirmLivePublish.disabled = !els.livePublishUnderstand.checked || state.livePublishInFlight;
-});
-els.cancelLivePublish?.addEventListener("click", closeLivePublishConfirm);
-els.confirmLivePublish?.addEventListener("click", () => confirmLivePublish().catch((error) => showStatus(error.message, els.publicationStatus)));
-document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && !els.livePublishConfirmPanel?.classList.contains("hidden")) closeLivePublishConfirm(event);
-});
-
-bootstrap();
+initializeSocialStudio();

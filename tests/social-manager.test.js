@@ -1093,7 +1093,7 @@ test("frontend dry-run publication action is explicit", async () => {
 
 test("social studio cache version is bumped for Social Studio UI updates", async () => {
   const html = await fs.readFile(path.join(__dirname, "../social.html"), "utf8");
-  assert.match(html, /social\.js\?v=social-studio-v20/);
+  assert.match(html, /social\.js\?v=social-studio-v21/);
   assert.match(html, /livePublishConfirmPanel/);
   assert.match(html, /livePublishUnderstand/);
 });
@@ -1245,7 +1245,30 @@ test("Social Studio browser login posts the secret key and verifies its new sess
   assert.match(client, /JSON\.stringify\(\{ secret: els\.socialSecret\.value\.trim\(\) \}\)/);
   assert.match(client, /const session = await api\("\/api\/social\/session"\)/);
   assert.match(client, /if \(!session\.authorized\) throw new Error\("Unable to create Social Studio session\."\)/);
-  assert.match(page, /social\.js\?v=social-studio-v20/);
+  assert.match(page, /social\.js\?v=social-studio-v21/);
+});
+
+test("Social Studio login startup keeps the required form independent from optional Story Music controls", async () => {
+  const client = await fs.readFile(path.join(__dirname, "..", "social.js"), "utf8");
+  const page = await fs.readFile(path.join(__dirname, "..", "social.html"), "utf8");
+  assert.match(page, /<form id="loginForm"/);
+  assert.match(page, /<button class="studio-button" type="submit">Unlock Studio<\/button>/);
+  assert.match(client, /els\.loginForm\.addEventListener\("submit", submitSocialLogin\)/);
+  assert.match(client, /function bindIfPresent\(element, eventName, handler\)/);
+  assert.match(client, /bindIfPresent\(els\.contentDetail, "click"/);
+  assert.match(client, /window\.SGHStoryMusic\?\.getStoryMusicRecommendation/);
+  assert.match(client, /function showStartupFailure\(error\)/);
+  assert.match(client, /Social Studio failed to initialize\. Refresh the page and try again\./);
+  assert.match(client, /bootstrap\(\)\.catch\(showStartupFailure\)/);
+});
+
+test("Social Studio login exposes submit progress and restores the button after a failed request", async () => {
+  const client = await fs.readFile(path.join(__dirname, "..", "social.js"), "utf8");
+  assert.match(client, /function setLoginBusy\(isBusy\)/);
+  assert.match(client, /submitButton\.textContent = isBusy \? "Unlocking\.\.\." : "Unlock Studio"/);
+  assert.match(client, /setLoginBusy\(true\)/);
+  assert.match(client, /finally \{\s*setLoginBusy\(false\);\s*\}/);
+  assert.match(client, /showStatus\(error\.message \|\| "Unable to create Social Studio session\."/);
 });
 
 test("production cookie includes Secure", async () => {
