@@ -1009,6 +1009,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
   const publicationAssetsDir = env.SOCIAL_PUBLICATION_ASSETS_DIR || path.join(root, ".social-publication-assets");
   const publicationBucket = env.SOCIAL_MEDIA_ASSETS_BUCKET || "social-media-assets";
   const uploadDryRunAssets = env.SOCIAL_DRY_RUN_UPLOAD_ASSET === "true";
+  const livePublishLocks = new Set();
   const supabaseUrl = env.SUPABASE_URL || "";
   const supabaseKey = env.SUPABASE_SERVICE_ROLE_KEY || "";
   const instagram = createInstagramPublisher({ env, fetchImpl });
@@ -1551,9 +1552,15 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
   async function verifyAssetAccessible(assetUrl) {
     rejectLocalAssetUrl(assetUrl);
     const response = await fetch(assetUrl, { method: "HEAD" });
-    if (response.ok) return true;
+    if (response.ok) {
+      const contentType = response.headers?.get?.("content-type") || response.headers?.get?.("Content-Type") || "";
+      if (contentType && !/^image\//i.test(contentType)) throw new Error("Publication asset URL must return an image content type.");
+      return true;
+    }
     const getResponse = await fetch(assetUrl, { method: "GET", headers: { Range: "bytes=0-31" } });
     if (!getResponse.ok) throw new Error(`Publication asset is not reachable: ${response.status}`);
+    const contentType = getResponse.headers?.get?.("content-type") || getResponse.headers?.get?.("Content-Type") || "";
+    if (contentType && !/^image\//i.test(contentType)) throw new Error("Publication asset URL must return an image content type.");
     return true;
   }
 
@@ -1670,54 +1677,196 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
     }
   }
 
+  function livePublicationKey(publication) {
+    return [
+      publication?.accountId || "",
+      publication?.socialContentId || "",
+      publication?.socialGraphicId || "",
+      publication?.captionHash || "",
+      publication?.assetHash || ""
+    ].join(":");
+  }
+
+  function isLiveDuplicateCandidate(publication) {
+    return publication &&
+      publication.dryRun !== true &&
+      ["creating_container", "container_processing", "ready_to_publish", "publishing", "published", "verified"].includes(publication.status);
+  }
+
+  async function findLivePublicationDuplicate(publication, { excludeId = "" } = {}) {
+    const key = livePublicationKey(publication);
+    return (await getPublications({ socialGraphicId: publication.socialGraphicId, includeArchived: true }))
+      .find((item) => item.id !== excludeId && isLiveDuplicateCandidate(item) && livePublicationKey(item) === key);
+  }
+
+  async function assertLivePublicationPreflight(publication, { stage = "preflight", requireContainerReady = false } = {}) {
+    const diagnostics = {
+      publicationId: publication?.id || "",
+      contentId: publication?.socialContentId || "",
+      graphicId: publication?.socialGraphicId || "",
+      dryRun: Boolean(instagram.dryRun),
+      accountIdConfigured: Boolean(env.INSTAGRAM_USER_ID || env.INSTAGRAM_ACCOUNT_ID)
+    };
+    if (instagram.dryRun) throw publicationStep(stage, "Live publish is blocked while SOCIAL_PUBLISH_DRY_RUN=true.", diagnostics);
+    if (!publication) throw publicationStep(stage, "Publication receipt not found.", diagnostics);
+    if (publication.dryRun) throw publicationStep(stage, "Dry-run receipts cannot be published live.", diagnostics);
+    if (publication.integrityStatus === "failed") throw publicationStep(stage, "Publication receipt integrity failed.", diagnostics);
+    if (!publication.accountId) throw publicationStep("identity_check", "Instagram user ID is missing from the publication receipt.", diagnostics);
+    if (publication.accountId !== (env.INSTAGRAM_USER_ID || env.INSTAGRAM_ACCOUNT_ID || "")) {
+      throw publicationStep("identity_check", "Publication account does not match configured Instagram account.", diagnostics);
+    }
+    if (!publication.caption || !publication.captionHash) throw publicationStep("approval_check", "Approved caption is missing.", diagnostics);
+    if (sha256(publication.caption) !== publication.captionHash) throw publicationStep("approval_check", "Approved caption hash mismatch.", diagnostics);
+    if (!publication.caption.includes(DEFAULT_DISCLAIMER)) throw publicationStep("approval_check", "Responsible gambling disclaimer is missing.", diagnostics);
+
+    let account;
+    try {
+      account = await instagram.verifyLiveIdentity(env.INSTAGRAM_EXPECTED_USERNAME || env.INSTAGRAM_USERNAME || "sg_heater");
+    } catch (error) {
+      throw attachPublicationStage(error, "identity_check", diagnostics);
+    }
+    diagnostics.accountUsername = account.username || "";
+    if ((publication.accountUsername || "").toLowerCase() !== (account.username || "").toLowerCase()) {
+      throw publicationStep("identity_check", "Publication username does not match verified Instagram account.", diagnostics);
+    }
+
+    const content = (await getContent({})).find((item) => item.id === publication.socialContentId);
+    const graphic = (await getGraphics({})).find((item) => item.id === publication.socialGraphicId);
+    if (!content) throw publicationStep("approval_check", "Approved content no longer exists.", diagnostics);
+    if (!graphic) throw publicationStep("approval_check", "Approved graphic no longer exists.", diagnostics);
+    diagnostics.contentStatus = content.status || "";
+    diagnostics.graphicStatus = graphic.status || "";
+    if (content.status !== "approved") throw publicationStep("approval_check", "Social Content must still be approved before live publishing.", diagnostics);
+    if (graphic.status !== "approved") throw publicationStep("approval_check", "Social Graphic must still be approved before live publishing.", diagnostics);
+    if (graphic.socialContentId !== content.id) throw publicationStep("approval_check", "Approved graphic no longer belongs to approved content.", diagnostics);
+    if (ensureDisclaimer(content.caption || "") !== publication.caption) throw publicationStep("approval_check", "Live publish must use the exact approved caption.", diagnostics);
+    if (sha256(ensureDisclaimer(content.caption || "")) !== publication.captionHash) throw publicationStep("approval_check", "Approved content caption hash mismatch.", diagnostics);
+    if ((graphic.snapshotHashes || []).join("|") !== (publication.snapshotHashes || []).join("|")) {
+      throw publicationStep("approval_check", "Approved graphic snapshot hash mismatch.", diagnostics);
+    }
+    const hits = validateNoProhibitedLanguage({ caption: publication.caption });
+    if (hits.length) throw publicationStep("approval_check", `Caption failed claim safety: ${hits.join(", ")}`, diagnostics);
+
+    const duplicate = await findLivePublicationDuplicate(publication, { excludeId: publication.id });
+    if (duplicate) throw publicationStep("duplicate_check", "Live publication already exists for this approved content and graphic.", { ...diagnostics, duplicatePublicationId: duplicate.id });
+
+    try {
+      await verifyAssetAccessible(publication.assetUrl);
+    } catch (error) {
+      throw attachPublicationStage(error, "asset_validation", diagnostics);
+    }
+    const localOutput = path.join(publicationAssetsDir, `${graphic.id}_${graphic.renderVersionNumber || 1}.png`);
+    try {
+      await verifyAssetHash(localOutput, publication.assetHash);
+    } catch (error) {
+      throw attachPublicationStage(error, "asset_validation", diagnostics);
+    }
+    if (publication.assetUrl.includes(env.SUPABASE_SERVICE_ROLE_KEY || "__never__") || publication.assetUrl.includes(env.INSTAGRAM_ACCESS_TOKEN || "__never__")) {
+      throw publicationStep("asset_validation", "Publication asset URL contains secret material.", diagnostics);
+    }
+    if (requireContainerReady && !["FINISHED", "READY"].includes(String(publication.containerStatus || "").toUpperCase())) {
+      throw publicationStep("container_status", "Instagram media container is not ready to publish.", diagnostics);
+    }
+    return { content, graphic, account, diagnostics };
+  }
+
   async function publishPublication(publicationId) {
     const publication = (await getPublications({})).find((item) => item.id === publicationId);
     if (!publication) throw validationError("Publication not found");
     if (["published", "verified"].includes(publication.status)) return publication;
     if (publication.dryRun) return savePublication({ ...publication, status: "prepared", updatedAt: new Date().toISOString() });
-    rejectLocalAssetUrl(publication.assetUrl);
-    await verifyAssetAccessible(publication.assetUrl);
-    const container = await instagram.createMediaContainer({
-      imageUrl: publication.assetUrl,
-      caption: publication.caption,
-      mediaType: publication.publicationType === "STORY_IMAGE" ? "STORIES" : "IMAGE"
-    });
-    let next = {
-      ...publication,
-      status: "container_processing",
-      containerId: container.id || "",
-      containerStatus: container.status_code || "",
-      containerCreatedAt: new Date().toISOString(),
-      attemptCount: (Number(publication.attemptCount) || 0) + 1,
-      updatedAt: new Date().toISOString()
-    };
-    await savePublication(next);
-    const status = await instagram.checkContainerStatus(next.containerId);
-    next = { ...next, containerStatus: status.status_code || status.status || "", updatedAt: new Date().toISOString() };
-    if (/ERROR|EXPIRED|FAILED/i.test(next.containerStatus)) {
-      return savePublication({
-        ...next,
-        status: "failed",
-        failedAt: new Date().toISOString(),
-        lastError: `Instagram container failed: ${next.containerStatus}`,
+    const existingLiveReceipt = await findLivePublicationDuplicate(publication, { excludeId: publication.id });
+    if (existingLiveReceipt) return existingLiveReceipt;
+    const lockKey = livePublicationKey(publication);
+    if (livePublishLocks.has(lockKey)) {
+      const duplicate = await findLivePublicationDuplicate(publication, { excludeId: "" });
+      if (duplicate) return duplicate;
+      throw publicationStep("duplicate_check", "Live publication is already in progress for this approved content and graphic.", { publicationId: publication.id });
+    }
+    livePublishLocks.add(lockKey);
+    try {
+      await assertLivePublicationPreflight(publication, { stage: "preflight" });
+      let container;
+      try {
+        container = await instagram.createMediaContainer({
+          imageUrl: publication.assetUrl,
+          caption: publication.caption,
+          mediaType: publication.publicationType === "STORY_IMAGE" ? "STORIES" : "IMAGE"
+        });
+      } catch (error) {
+        throw attachPublicationStage(error, "container_create", { publicationId: publication.id });
+      }
+      let next = {
+        ...publication,
+        status: "container_processing",
+        containerId: container.id || "",
+        containerStatus: container.status_code || "",
+        containerCreatedAt: new Date().toISOString(),
+        attemptCount: (Number(publication.attemptCount) || 0) + 1,
         updatedAt: new Date().toISOString()
-      });
-    }
-    if (next.containerStatus && !/FINISHED|READY/i.test(next.containerStatus)) {
+      };
+      await savePublication(next);
+      let status;
+      try {
+        status = await instagram.checkContainerStatus(next.containerId);
+      } catch (error) {
+        throw attachPublicationStage(error, "container_status", { publicationId: publication.id, containerId: next.containerId });
+      }
+      next = { ...next, containerStatus: status.status_code || status.status || "", updatedAt: new Date().toISOString() };
+      if (/ERROR|EXPIRED|FAILED/i.test(next.containerStatus)) {
+        return savePublication({
+          ...next,
+          status: "failed",
+          failedAt: new Date().toISOString(),
+          lastError: `Instagram container failed: ${next.containerStatus}`,
+          updatedAt: new Date().toISOString()
+        });
+      }
+      if (next.containerStatus && !/FINISHED|READY/i.test(next.containerStatus)) {
+        return savePublication(next);
+      }
+      await assertLivePublicationPreflight(next, { stage: "media_publish", requireContainerReady: true });
+      let published;
+      try {
+        published = await instagram.publishContainer(next.containerId);
+      } catch (error) {
+        throw attachPublicationStage(error, "media_publish", { publicationId: publication.id, containerId: next.containerId });
+      }
+      const mediaId = published.id || published.media_id || "";
+      let media = {};
+      try {
+        media = mediaId ? await instagram.fetchPublishedMedia(mediaId) : {};
+      } catch (error) {
+        throw attachPublicationStage(error, "media_verify", { publicationId: publication.id, mediaId });
+      }
+      if (!mediaId || !media.permalink) {
+        return savePublication({
+          ...next,
+          status: "failed",
+          platformMediaId: mediaId,
+          failedAt: new Date().toISOString(),
+          lastError: "Published media verification failed.",
+          updatedAt: new Date().toISOString()
+        });
+      }
+      next = {
+        ...next,
+        status: "verified",
+        platformMediaId: mediaId,
+        permalink: media.permalink,
+        publishedAt: new Date().toISOString(),
+        verifiedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        metadata: {
+          ...(next.metadata || {}),
+          livePostCreated: true,
+          metaPublishBlocked: false
+        }
+      };
       return savePublication(next);
+    } finally {
+      livePublishLocks.delete(lockKey);
     }
-    const published = await instagram.publishContainer(next.containerId);
-    const media = await instagram.fetchPublishedMedia(published.id);
-    next = {
-      ...next,
-      status: media.permalink ? "verified" : "published",
-      platformMediaId: published.id || media.id || "",
-      permalink: media.permalink || "",
-      publishedAt: new Date().toISOString(),
-      verifiedAt: media.permalink ? new Date().toISOString() : "",
-      updatedAt: new Date().toISOString()
-    };
-    return savePublication(next);
   }
 
   async function getOfficialTrackedSnapshots() {
@@ -2291,7 +2440,13 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
         sendJson(res, 200, { publication: updated });
         return true;
       } catch (error) {
-        sendJson(res, error.statusCode || 400, { error: safeErrorMessage(error) });
+        sendJson(res, error.statusCode || 400, {
+          ok: false,
+          stage: error.stage || "preflight",
+          error: safeErrorMessage(error),
+          message: safeErrorMessage(error),
+          diagnostics: error.diagnostics || {}
+        });
         return true;
       }
     }

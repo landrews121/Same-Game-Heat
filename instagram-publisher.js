@@ -79,7 +79,7 @@ function createInstagramPublisher({ env = process.env, fetchImpl = fetch } = {})
     }
     try {
       const account = await graphRequest(`/${encodeURIComponent(accountId)}`, {
-        params: { fields: "id,username,media_count" }
+        params: { fields: "id,username" }
       });
       return {
         ...base,
@@ -90,6 +90,20 @@ function createInstagramPublisher({ env = process.env, fetchImpl = fetch } = {})
     } catch (error) {
       return { ...base, lastError: safeErrorMessage(error) };
     }
+  }
+
+  async function verifyLiveIdentity(expectedUsername = "") {
+    if (dryRun) throw new Error("Live identity check is unavailable while dry run is enabled.");
+    const expected = clean(expectedUsername || env.INSTAGRAM_EXPECTED_USERNAME || env.INSTAGRAM_USERNAME || "");
+    if (!accessToken) throw new Error("Instagram access token is not configured.");
+    if (!accountId) throw new Error("Instagram user ID is not configured.");
+    if (!expected) throw new Error("Expected Instagram username is not configured.");
+    const account = await graphRequest(`/${encodeURIComponent(accountId)}`, {
+      params: { fields: "id,username" }
+    });
+    if (clean(account.id) !== clean(accountId)) throw new Error("Instagram account ID mismatch.");
+    if (clean(account.username).toLowerCase() !== expected.toLowerCase()) throw new Error("Instagram username mismatch.");
+    return { id: account.id, username: account.username };
   }
 
   async function createMediaContainer({ imageUrl, caption, mediaType = "IMAGE" }) {
@@ -130,6 +144,7 @@ function createInstagramPublisher({ env = process.env, fetchImpl = fetch } = {})
     apiVersion,
     dryRun,
     validateConnection,
+    verifyLiveIdentity,
     createMediaContainer,
     checkContainerStatus,
     publishContainer,

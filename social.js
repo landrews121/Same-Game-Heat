@@ -172,8 +172,39 @@ function graphicLabel(format) {
 }
 
 function publicationDisplayStatus(publication) {
-  if (publication?.dryRun && publication.status === "prepared") return "dry_run_prepared";
+  if (isDryRunPublication(publication) && publication?.status === "prepared") return "dry_run_prepared";
   return publication?.status || "";
+}
+
+function isDryRunPublication(publication) {
+  const status = String(publication?.status || "").toLowerCase();
+  const provider = String(publication?.provider || "").toLowerCase();
+  return publication?.dryRun === true ||
+    publication?.simulated === true ||
+    status === "dry_run_prepared" ||
+    provider === "dry-run" ||
+    publication?.metadata?.metaPublishBlocked === true;
+}
+
+function canRenderLivePublish(publication, status) {
+  return Boolean(
+    status?.connected &&
+    status?.dryRun !== true &&
+    !isDryRunPublication(publication) &&
+    publication?.status === "asset_ready" &&
+    publication?.assetUrl &&
+    publication?.accountUsername
+  );
+}
+
+function publicationActionControl(publication, status, accountLabel) {
+  if (status?.dryRun === true || isDryRunPublication(publication)) {
+    return `<button class="studio-button secondary" type="button" disabled>Dry Run Only</button>`;
+  }
+  if (canRenderLivePublish(publication, status)) {
+    return `<button class="studio-button" type="button" data-publication-action="publish" data-publication-id="${escapeHtml(publication.id)}">Publish Live to ${escapeHtml(accountLabel)}</button>`;
+  }
+  return `<button class="studio-button secondary" type="button" disabled>Live Publish Locked</button>`;
 }
 
 function selectedGraphicById(graphicId) {
@@ -247,18 +278,22 @@ async function refreshPublishing() {
 function renderPublishing() {
   if (!els.instagramStatus || !els.publicationList) return;
   const status = state.instagramStatus || {};
+  const accountLabel = status.username ? `@${status.username}` : "configured Instagram account";
   els.instagramStatus.innerHTML = `
+    ${status.connected && !status.dryRun ? `<div class="studio-warning">LIVE INSTAGRAM PUBLISHING ENABLED · Account: ${escapeHtml(accountLabel)} · This can create a real Instagram post.</div>` : ""}
     <div class="studio-meta">
       <span class="studio-pill">${status.connected ? "CONNECTED" : "NOT CONNECTED"}</span>
       <span class="studio-pill">Token ${status.tokenConfigured ? "configured" : "missing"}</span>
       <span class="studio-pill">API ${escapeHtml(status.apiVersion || "default")}</span>
       ${status.username ? `<span class="studio-pill">@${escapeHtml(status.username)}</span>` : ""}
-      ${status.dryRun ? `<span class="studio-pill">DRY RUN</span>` : ""}
+      ${status.dryRun ? `<span class="studio-pill">DRY RUN</span>` : `<span class="studio-pill">LIVE MODE</span>`}
     </div>
     ${status.lastError ? `<div class="studio-warning">${escapeHtml(status.lastError)}</div>` : ""}
   `;
   els.publicationList.innerHTML = state.publications.length
-    ? state.publications.map((publication) => `
+    ? state.publications.map((publication) => {
+      const isDryRunReceipt = isDryRunPublication(publication);
+      return `
       <article class="graphic-row">
         <div>
           <strong>${escapeHtml(publication.contentType)} · ${escapeHtml(publication.publicationType)}</strong>
@@ -266,25 +301,25 @@ function renderPublishing() {
             <span class="studio-pill">${escapeHtml(publicationDisplayStatus(publication))}</span>
             <span class="studio-pill">${escapeHtml(publication.slateDate)}</span>
             <span class="studio-pill">${escapeHtml(publication.provider)}</span>
-            ${publication.dryRun ? `<span class="studio-pill">DRY-RUN RECEIPT</span>` : ""}
+            ${isDryRunReceipt ? `<span class="studio-pill">DRY-RUN RECEIPT</span>` : ""}
             <span class="studio-pill">Asset uploaded ${publication.assetUploaded ? "YES" : "NO"}</span>
             ${publication.metadata?.assetPublicUrlValidated ? `<span class="studio-pill">Public URL validated</span>` : ""}
-            ${publication.dryRun ? `<span class="studio-pill">Meta publish BLOCKED</span><span class="studio-pill">Live post NO</span>` : ""}
+            ${isDryRunReceipt ? `<span class="studio-pill">Meta publish BLOCKED</span><span class="studio-pill">Live post NO</span>` : ""}
           </div>
           <p>${escapeHtml(publication.caption || "")}</p>
           ${publication.accountUsername ? `<p>Account: @${escapeHtml(publication.accountUsername)}</p>` : ""}
           ${publication.assetUrl ? `<p>Asset URL: ${escapeHtml(publication.assetUrl)}</p>` : ""}
-          ${publication.permalink ? `<p>Permalink: ${escapeHtml(publication.permalink)}</p>` : publication.dryRun ? "<p>Permalink: none</p>" : ""}
+          ${publication.permalink ? `<p>Permalink: ${escapeHtml(publication.permalink)}</p>` : isDryRunReceipt ? "<p>Permalink: none</p>" : ""}
           <code>${escapeHtml(publication.assetHash || "")}</code>
         </div>
         <div class="graphic-actions">
           ${publication.assetUrl ? `<a class="studio-button secondary" href="${escapeHtml(publication.assetUrl)}" target="_blank" rel="noopener">Asset</a>` : ""}
           ${publication.permalink ? `<a class="studio-button" href="${escapeHtml(publication.permalink)}" target="_blank" rel="noopener">View Instagram Post</a>` : ""}
           <button class="studio-button secondary" type="button" data-publication-action="refresh" data-publication-id="${escapeHtml(publication.id)}">Refresh Status</button>
-          <button class="studio-button" type="button" data-publication-action="publish" data-publication-id="${escapeHtml(publication.id)}" ${["published", "verified", "prepared"].includes(publication.status) ? "disabled" : ""}>Publish to Instagram</button>
+          ${publicationActionControl(publication, status, accountLabel)}
         </div>
       </article>
-    `).join("")
+    `}).join("")
     : "<p>No publication records prepared yet.</p>";
 }
 
@@ -683,18 +718,37 @@ async function preparePublication(graphicId, button = null) {
   }
 }
 
-async function handlePublicationAction(action, publicationId) {
+async function handlePublicationAction(action, publicationId, button = null) {
   if (action === "publish") {
-    const ok = window.confirm("Publish this approved Same Game Heat post to Instagram? This is externally visible.");
+    const username = state.instagramStatus?.username ? `@${state.instagramStatus.username}` : "the configured Instagram account";
+    const ok = window.confirm(`Publish this approved post live to ${username}? This will create a real Instagram post.`);
     if (!ok) return;
   }
+  const previousText = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = action === "publish" ? "Publishing..." : "Refreshing...";
+  }
   showStatus(`${action} publication in progress...`);
-  const payload = await api(`/api/social/publications/${encodeURIComponent(publicationId)}/${action}`, {
-    method: "POST",
-    body: "{}"
-  });
-  showStatus(`Publication status: ${payload.publication.status}`);
-  await refreshPublishing();
+  showStatus("", els.publicationStatus);
+  try {
+    const payload = await api(`/api/social/publications/${encodeURIComponent(publicationId)}/${action}`, {
+      method: "POST",
+      body: "{}"
+    });
+    showStatus(`Publication status: ${payload.publication.status}`);
+    showStatus(`Publication status: ${payload.publication.status}`, els.publicationStatus);
+    await refreshPublishing();
+  } catch (error) {
+    const message = error.message || "Publication action failed.";
+    showStatus(message);
+    showStatus(message, els.publicationStatus);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = previousText;
+    }
+  }
 }
 
 async function bootstrap() {
@@ -788,8 +842,12 @@ els.contentDetail.addEventListener("click", (event) => {
 els.publicationList.addEventListener("click", (event) => {
   const button = event.target.closest("[data-publication-action]");
   if (!button) return;
-  handlePublicationAction(button.dataset.publicationAction, button.dataset.publicationId)
-    .catch((error) => showStatus(error.message));
+  handlePublicationAction(button.dataset.publicationAction, button.dataset.publicationId, button)
+    .catch((error) => {
+      const message = error.message || "Publication action failed.";
+      showStatus(message);
+      showStatus(message, els.publicationStatus);
+    });
 });
 
 bootstrap();

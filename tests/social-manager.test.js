@@ -1023,11 +1023,32 @@ test("frontend dry-run publication action is explicit", async () => {
   assert.match(source, /Run Dry-Run Publication Test/);
   assert.match(source, /Dry-run publication receipt prepared/);
   assert.match(source, /DRY-RUN RECEIPT/);
+  assert.match(source, /Dry Run Only/);
+  assert.match(source, /function isDryRunPublication/);
+  assert.match(source, /publication\?\.dryRun === true/);
+  assert.match(source, /status === "dry_run_prepared"/);
+  assert.match(source, /provider === "dry-run"/);
+  assert.match(source, /publication\?\.metadata\?\.metaPublishBlocked === true/);
+  assert.match(source, /status\?\.dryRun === true \|\| isDryRunPublication\(publication\)/);
+  assert.match(source, /disabled>Dry Run Only<\/button>/);
+  assert.doesNotMatch(source, /disabled>Dry Run Only<\/button>`[^`]*data-publication-action="publish"/s);
+  assert.match(source, /LIVE INSTAGRAM PUBLISHING ENABLED/);
+  assert.match(source, /Publish Live to/);
+  assert.doesNotMatch(source, /Publish to Instagram/);
+  assert.match(source, /function canRenderLivePublish/);
+  assert.match(source, /status\?\.dryRun !== true/);
+  assert.match(source, /publication\?\.status === "asset_ready"/);
+  assert.match(source, /Publish this approved post live to/);
   assert.match(source, /Approved content is not selected/);
   assert.match(source, /Approved graphic is not selected/);
   assert.match(source, /contentId: selectedContent\.id/);
   assert.match(source, /els\.publicationStatus/);
   assert.match(source, /finally\s*{/);
+});
+
+test("social studio cache version is bumped for live publish safety UI", async () => {
+  const html = await fs.readFile(path.join(__dirname, "../social.html"), "utf8");
+  assert.match(html, /social\.js\?v=social-studio-v14/);
 });
 
 test("frontend testing reset clears local workspace and avoids refresh rehydration", async () => {
