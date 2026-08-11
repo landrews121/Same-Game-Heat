@@ -26,6 +26,7 @@ const {
   ensureDisclaimer
 } = require("./social-publications");
 const { createInstagramPublisher, safeErrorMessage } = require("./instagram-publisher");
+const { runInstagramDiagnostics } = require("./instagram-diagnostics");
 
 const SNAPSHOT_VERSION = "social-pick-v1";
 const GENERATION_VERSION = "social-content-v1";
@@ -932,7 +933,56 @@ function socialResultsFromRows(rows = []) {
   return rows.map((row) => row.payload || row).filter(Boolean).map(verifyResultIntegrity);
 }
 
-function createSocialManager({ root, env = process.env, supabaseEnabled = () => false, supabaseRequest = async () => null, fetchGameResult = fetchFinalGameFromMlbStats } = {}) {
+function safeDiagnosticError(candidate) {
+  const error = candidate.instagramProfile?.error || candidate.media?.error || candidate.profile?.error || null;
+  if (!error) return null;
+  return {
+    httpStatus: error.httpStatus || 0,
+    type: cleanString(error.type),
+    code: error.code ?? null,
+    subcode: error.error_subcode ?? null,
+    message: cleanString(error.message),
+    traceId: cleanString(error.fbtrace_id)
+  };
+}
+
+function buildSafeInstagramDiagnosticsPayload(diagnostics, env = process.env) {
+  const configuredInstagramUserId = cleanString(env.INSTAGRAM_USER_ID || env.INSTAGRAM_ACCOUNT_ID || "");
+  const recommendedInstagramUserId = cleanString(diagnostics.recommendedInstagramUserId || "");
+  let configuredIdMatchStatus = "unknown";
+  if (configuredInstagramUserId && recommendedInstagramUserId) {
+    configuredIdMatchStatus = configuredInstagramUserId === recommendedInstagramUserId ? "match" : "mismatch";
+  } else if (configuredInstagramUserId) {
+    configuredIdMatchStatus = "configured_no_recommendation";
+  } else if (recommendedInstagramUserId) {
+    configuredIdMatchStatus = "recommendation_available";
+  }
+
+  return {
+    tokenConfigured: Boolean(diagnostics.tokenConfigured),
+    graphApiVersion: cleanString(diagnostics.graphApiVersion),
+    expectedUsername: cleanString(diagnostics.expectedUsername),
+    dryRun: Boolean(diagnostics.dryRun),
+    configuredInstagramUserId,
+    configuredIdMatchStatus,
+    recommendedInstagramUserId,
+    ambiguous: Boolean(diagnostics.ambiguous),
+    readyForDryRunPublishing: Boolean(diagnostics.readyForDryRunPublishing),
+    checkedAt: diagnostics.checkedAt,
+    candidates: (diagnostics.candidates || []).map((candidate) => ({
+      id: cleanString(candidate.id),
+      classification: cleanString(candidate.classification || "unknown"),
+      username: cleanString(candidate.username),
+      mediaEdgeReadable: Boolean(candidate.mediaEdgeReadable),
+      mediaCount: candidate.mediaCount ?? null,
+      matchesExpectedInstagramAccount: Boolean(candidate.matchesExpectedInstagramAccount),
+      recommended: Boolean(candidate.recommended),
+      error: safeDiagnosticError(candidate)
+    }))
+  };
+}
+
+function createSocialManager({ root, env = process.env, supabaseEnabled = () => false, supabaseRequest = async () => null, fetchGameResult = fetchFinalGameFromMlbStats, fetchImpl = fetch } = {}) {
   const snapshotFile = env.SOCIAL_PICK_SNAPSHOTS_FILE || path.join(root, ".social-pick-snapshots.json");
   const contentFile = env.SOCIAL_CONTENT_FILE || path.join(root, ".social-content.json");
   const graphicsFile = env.SOCIAL_GRAPHICS_FILE || path.join(root, ".social-graphics.json");
@@ -944,7 +994,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
   const uploadDryRunAssets = env.SOCIAL_DRY_RUN_UPLOAD_ASSET === "true";
   const supabaseUrl = env.SUPABASE_URL || "";
   const supabaseKey = env.SUPABASE_SERVICE_ROLE_KEY || "";
-  const instagram = createInstagramPublisher({ env });
+  const instagram = createInstagramPublisher({ env, fetchImpl });
   const adminSecret = env.SOCIAL_ADMIN_SECRET || "";
   const openAiKey = env.OPENAI_API_KEY || "";
   const aiModel = env.SOCIAL_AI_MODEL || "gpt-4o-mini";
@@ -1970,6 +2020,20 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
       }
       const status = await instagram.validateConnection();
       sendJson(res, 200, status);
+      return true;
+    }
+
+    if (url.pathname === "/api/social/instagram/diagnostics") {
+      if (req.method !== "GET") {
+        sendJson(res, 405, { error: "Method not allowed" });
+        return true;
+      }
+      const diagnostics = await runInstagramDiagnostics({
+        ids: url.searchParams.get("ids") || "",
+        env,
+        fetchImpl
+      });
+      sendJson(res, 200, buildSafeInstagramDiagnosticsPayload(diagnostics, env));
       return true;
     }
 

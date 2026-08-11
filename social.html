@@ -371,6 +371,15 @@
           <button id="refreshPublishing" class="studio-button secondary" type="button">Refresh Publishing</button>
         </div>
         <div id="instagramStatus"></div>
+        <div class="studio-row" style="justify-content:space-between;align-items:flex-start;margin-top:12px">
+          <div>
+            <h3>Instagram Diagnostics</h3>
+            <p>GET-only account check. No publishing or container creation.</p>
+          </div>
+          <button id="runInstagramDiagnostics" class="studio-button secondary" type="button">Run Diagnostics</button>
+        </div>
+        <div id="instagramDiagnosticsStatus" class="studio-warning hidden"></div>
+        <div id="instagramDiagnostics" class="graphic-list"></div>
         <div id="publicationList" class="graphic-list"></div>
       </section>
 
@@ -388,6 +397,6 @@
       </section>
     </section>
   </main>
-  <script src="/social.js?v=social-studio-v5"></script>
+  <script src="/social.js?v=social-studio-v6"></script>
 </body>
 </html>

@@ -10,6 +10,7 @@ const state = {
   results: [],
   performance: {},
   instagramStatus: null,
+  instagramDiagnostics: null,
   publications: []
 };
 
@@ -37,6 +38,9 @@ const els = {
   resultsList: document.querySelector("#resultsList"),
   refreshPublishing: document.querySelector("#refreshPublishing"),
   instagramStatus: document.querySelector("#instagramStatus"),
+  runInstagramDiagnostics: document.querySelector("#runInstagramDiagnostics"),
+  instagramDiagnosticsStatus: document.querySelector("#instagramDiagnosticsStatus"),
+  instagramDiagnostics: document.querySelector("#instagramDiagnostics"),
   publicationList: document.querySelector("#publicationList")
 };
 
@@ -204,6 +208,76 @@ function renderPublishing() {
       </article>
     `).join("")
     : "<p>No publication records prepared yet.</p>";
+}
+
+function diagnosticMatchMessage(diagnostics) {
+  if (!diagnostics) return "";
+  if (diagnostics.recommendedInstagramUserId) {
+    return `Recommended ID: ${diagnostics.recommendedInstagramUserId}`;
+  }
+  if (diagnostics.ambiguous) {
+    return "Ambiguous: more than one candidate matched the expected account.";
+  }
+  return "No matching Instagram Graph user found.";
+}
+
+function renderInstagramDiagnostics() {
+  if (!els.instagramDiagnostics) return;
+  const diagnostics = state.instagramDiagnostics;
+  if (!diagnostics) {
+    els.instagramDiagnostics.innerHTML = "";
+    return;
+  }
+  const candidates = diagnostics.candidates || [];
+  const configuredText = diagnostics.configuredInstagramUserId
+    ? `Configured ID ${diagnostics.configuredInstagramUserId} · ${diagnostics.configuredIdMatchStatus || "unknown"}`
+    : "No configured Instagram ID";
+  els.instagramDiagnostics.innerHTML = `
+    <article class="graphic-row">
+      <div>
+        <strong>${escapeHtml(diagnosticMatchMessage(diagnostics))}</strong>
+        <div class="studio-meta">
+          <span class="studio-pill">Token ${diagnostics.tokenConfigured ? "configured" : "missing"}</span>
+          <span class="studio-pill">API ${escapeHtml(diagnostics.graphApiVersion || "default")}</span>
+          <span class="studio-pill">Expected @${escapeHtml(diagnostics.expectedUsername || "sg_heater")}</span>
+          <span class="studio-pill">${diagnostics.dryRun ? "DRY RUN" : "LIVE MODE"}</span>
+          <span class="studio-pill">${diagnostics.readyForDryRunPublishing ? "Ready dry-run" : "Not dry-run ready"}</span>
+        </div>
+        <p>${escapeHtml(configuredText)}</p>
+      </div>
+    </article>
+    ${candidates.length ? candidates.map((candidate) => `
+      <article class="graphic-row">
+        <div>
+          <strong>${escapeHtml(candidate.id)} ${candidate.recommended ? "· Recommended" : ""}</strong>
+          <div class="studio-meta">
+            <span class="studio-pill">${escapeHtml(candidate.classification || "unknown")}</span>
+            <span class="studio-pill">${candidate.username ? `@${escapeHtml(candidate.username)}` : "Username not resolved"}</span>
+            <span class="studio-pill">Media edge ${candidate.mediaEdgeReadable ? "readable" : "blocked"}</span>
+            <span class="studio-pill">Matches expected ${candidate.matchesExpectedInstagramAccount ? "YES" : "NO"}</span>
+          </div>
+          ${candidate.mediaCount !== null && candidate.mediaCount !== undefined ? `<p>Media count: ${escapeHtml(candidate.mediaCount)}</p>` : ""}
+          ${candidate.error ? `<div class="studio-warning">${escapeHtml(candidate.error.message || "Meta request failed")}</div>` : ""}
+        </div>
+      </article>
+    `).join("") : "<p>No candidates were checked.</p>"}
+  `;
+}
+
+async function runInstagramDiagnostics() {
+  if (!state.authorized || !els.instagramDiagnostics) return;
+  const ids = "1235870939610391,17841404477734906";
+  let finalMessage = "";
+  showStatus("Running diagnostics...", els.instagramDiagnosticsStatus);
+  try {
+    const query = new URLSearchParams({ ids });
+    state.instagramDiagnostics = await api(`/api/social/instagram/diagnostics?${query.toString()}`);
+    renderInstagramDiagnostics();
+  } catch (error) {
+    finalMessage = error.message;
+  } finally {
+    showStatus(finalMessage, els.instagramDiagnosticsStatus);
+  }
 }
 
 async function refreshResults() {
@@ -531,6 +605,9 @@ els.loginForm.addEventListener("submit", async (event) => {
 els.refreshBoard.addEventListener("click", loadCurrentBoard);
 els.refreshQueue.addEventListener("click", refreshQueue);
 els.refreshPublishing.addEventListener("click", () => refreshPublishing().catch((error) => showStatus(error.message)));
+if (els.runInstagramDiagnostics) {
+  els.runInstagramDiagnostics.addEventListener("click", () => runInstagramDiagnostics().catch((error) => showStatus(error.message, els.instagramDiagnosticsStatus)));
+}
 els.checkResults.addEventListener("click", () => checkResults().catch((error) => showStatus(error.message, els.resultsStatus)));
 els.queueStatus.addEventListener("change", refreshQueue);
 els.createDaily3.addEventListener("click", () => generateContent("DAILY_3"));
