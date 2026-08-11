@@ -70,7 +70,13 @@ function createInstagramPublisher({ env = process.env, fetchImpl = fetch } = {})
       dryRun
     };
     if (!configured) return base;
-    if (dryRun) return { ...base, connected: true, username: env.INSTAGRAM_USERNAME || "dry-run-account" };
+    if (dryRun) {
+      return {
+        ...base,
+        connected: true,
+        username: clean(env.INSTAGRAM_EXPECTED_USERNAME || env.INSTAGRAM_USERNAME || accountId)
+      };
+    }
     try {
       const account = await graphRequest(`/${encodeURIComponent(accountId)}`, {
         params: { fields: "id,username,media_count" }

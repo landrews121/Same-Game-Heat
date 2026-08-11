@@ -193,11 +193,18 @@ test("missing Instagram token reports not configured and never exposes token", a
 test("dry-run validates connection without contacting Meta", async () => {
   let called = false;
   const publisher = createInstagramPublisher({
-    env: { INSTAGRAM_ACCESS_TOKEN: "secret-token", INSTAGRAM_USER_ID: "1789", SOCIAL_PUBLISH_DRY_RUN: "true" },
+    env: {
+      INSTAGRAM_ACCESS_TOKEN: "secret-token",
+      INSTAGRAM_USER_ID: "17841404477734906",
+      INSTAGRAM_EXPECTED_USERNAME: "sg_heater",
+      SOCIAL_PUBLISH_DRY_RUN: "true"
+    },
     fetchImpl: async () => { called = true; }
   });
   const status = await publisher.validateConnection();
   assert.equal(status.connected, true);
+  assert.equal(status.username, "sg_heater");
+  assert.equal(status.dryRun, true);
   assert.equal(called, false);
 });
 
