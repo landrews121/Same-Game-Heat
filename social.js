@@ -354,13 +354,24 @@ function openLivePublishConfirm(publication) {
   els.livePublishUnderstand.checked = false;
   els.confirmLivePublish.disabled = true;
   els.confirmLivePublish.textContent = "Confirm Live Publish";
+  els.cancelLivePublish.disabled = false;
   els.livePublishConfirmPanel.classList.remove("hidden");
+  document.body.classList.add("live-modal-open");
 }
 
-function closeLivePublishConfirm() {
+function closeLivePublishConfirm(event) {
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
   state.pendingLivePublish = null;
   state.livePublishInFlight = false;
+  if (els.livePublishUnderstand) els.livePublishUnderstand.checked = false;
+  if (els.confirmLivePublish) {
+    els.confirmLivePublish.disabled = true;
+    els.confirmLivePublish.textContent = "Confirm Live Publish";
+  }
+  if (els.cancelLivePublish) els.cancelLivePublish.disabled = false;
   els.livePublishConfirmPanel?.classList.add("hidden");
+  document.body.classList.remove("live-modal-open");
 }
 
 async function confirmLivePublish() {
@@ -932,5 +943,8 @@ els.livePublishUnderstand?.addEventListener("change", () => {
 });
 els.cancelLivePublish?.addEventListener("click", closeLivePublishConfirm);
 els.confirmLivePublish?.addEventListener("click", () => confirmLivePublish().catch((error) => showStatus(error.message, els.publicationStatus)));
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !els.livePublishConfirmPanel?.classList.contains("hidden")) closeLivePublishConfirm(event);
+});
 
 bootstrap();

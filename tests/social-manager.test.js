@@ -1043,6 +1043,16 @@ test("frontend dry-run publication action is explicit", async () => {
   assert.match(source, /Confirm Live Publish/);
   assert.match(source, /confirmLivePublish: true/);
   assert.match(html, /I understand this will publish a real post/);
+  assert.match(html, /\.live-confirm-panel\.hidden\s*{\s*display: none;/);
+  assert.match(html, /body\.live-modal-open\s*{\s*overflow: hidden;/);
+  assert.match(html, /\.live-confirm-check\s*{[^}]*overflow-wrap: anywhere;/s);
+  assert.match(source, /function closeLivePublishConfirm\(event\)/);
+  assert.match(source, /event\?\.preventDefault\?\.\(\)/);
+  assert.match(source, /state\.pendingLivePublish = null/);
+  assert.match(source, /els\.livePublishUnderstand\) els\.livePublishUnderstand\.checked = false/);
+  assert.match(source, /els\.confirmLivePublish\.disabled = true/);
+  assert.match(source, /document\.body\.classList\.remove\("live-modal-open"\)/);
+  assert.match(source, /event\.key === "Escape"/);
   assert.match(source, /Publishing Live\.\.\./);
   assert.match(source, /LIVE MODE ARMED — PUBLISHING DISABLED/);
   assert.match(source, /LIVE ENABLED/);
@@ -1055,7 +1065,7 @@ test("frontend dry-run publication action is explicit", async () => {
 
 test("social studio cache version is bumped for live publish safety UI", async () => {
   const html = await fs.readFile(path.join(__dirname, "../social.html"), "utf8");
-  assert.match(html, /social\.js\?v=social-studio-v16/);
+  assert.match(html, /social\.js\?v=social-studio-v17/);
   assert.match(html, /livePublishConfirmPanel/);
   assert.match(html, /livePublishUnderstand/);
 });
