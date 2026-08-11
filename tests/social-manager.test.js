@@ -1093,7 +1093,7 @@ test("frontend dry-run publication action is explicit", async () => {
 
 test("social studio cache version is bumped for Social Studio UI updates", async () => {
   const html = await fs.readFile(path.join(__dirname, "../social.html"), "utf8");
-  assert.match(html, /social\.js\?v=social-studio-v21/);
+  assert.match(html, /social\.js\?v=social-studio-v22/);
   assert.match(html, /livePublishConfirmPanel/);
   assert.match(html, /livePublishUnderstand/);
 });
@@ -1244,8 +1244,10 @@ test("Social Studio browser login posts the secret key and verifies its new sess
   assert.match(client, /api\("\/api\/social\/login"/);
   assert.match(client, /JSON\.stringify\(\{ secret: els\.socialSecret\.value\.trim\(\) \}\)/);
   assert.match(client, /const session = await api\("\/api\/social\/session"\)/);
-  assert.match(client, /if \(!session\.authorized\) throw new Error\("Unable to create Social Studio session\."\)/);
-  assert.match(page, /social\.js\?v=social-studio-v21/);
+  assert.match(client, /if \(!session\.authorized\) \{/);
+  assert.match(client, /error\.code = "missing_session_cookie"/);
+  assert.match(page, /social\.js\?v=social-studio-v22/);
+  assert.match(page, /story-music\.js\?v=story-music-v2/);
 });
 
 test("Social Studio login startup keeps the required form independent from optional Story Music controls", async () => {
@@ -1254,21 +1256,32 @@ test("Social Studio login startup keeps the required form independent from optio
   assert.match(page, /<form id="loginForm"/);
   assert.match(page, /<button class="studio-button" type="submit">Unlock Studio<\/button>/);
   assert.match(client, /els\.loginForm\.addEventListener\("submit", submitSocialLogin\)/);
+  assert.match(client, /els\.loginForm\.dataset\.loginHandlerReady = "true"/);
   assert.match(client, /function bindIfPresent\(element, eventName, handler\)/);
   assert.match(client, /bindIfPresent\(els\.contentDetail, "click"/);
   assert.match(client, /window\.SGHStoryMusic\?\.getStoryMusicRecommendation/);
-  assert.match(client, /function showStartupFailure\(error\)/);
+  assert.match(client, /function showStartupFailure\(\)/);
   assert.match(client, /Social Studio failed to initialize\. Refresh the page and try again\./);
   assert.match(client, /bootstrap\(\)\.catch\(showStartupFailure\)/);
 });
 
 test("Social Studio login exposes submit progress and restores the button after a failed request", async () => {
   const client = await fs.readFile(path.join(__dirname, "..", "social.js"), "utf8");
+  assert.match(client, /function showLoginStatus\(message\)/);
+  assert.match(client, /target\.classList\.toggle\("hidden", !message\)/);
   assert.match(client, /function setLoginBusy\(isBusy\)/);
   assert.match(client, /submitButton\.textContent = isBusy \? "Unlocking\.\.\." : "Unlock Studio"/);
   assert.match(client, /setLoginBusy\(true\)/);
   assert.match(client, /finally \{\s*setLoginBusy\(false\);\s*\}/);
-  assert.match(client, /showStatus\(error\.message \|\| "Unable to create Social Studio session\."/);
+  assert.match(client, /Login request started\.\.\./);
+  assert.match(client, /Checking credentials\.\.\./);
+  assert.match(client, /Credentials accepted\. Verifying session\.\.\./);
+  assert.match(client, /Session verified\. Opening Social Studio\.\.\./);
+  assert.match(client, /Login failed during credential check:/);
+  assert.match(client, /Login failed during session verification\. Social Studio session was not created\./);
+  assert.match(client, /Login request could not reach the server\./);
+  assert.match(client, /window\.addEventListener\("error", showClientError\)/);
+  assert.match(client, /window\.addEventListener\("unhandledrejection", showClientError\)/);
 });
 
 test("production cookie includes Secure", async () => {

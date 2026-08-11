@@ -75,13 +75,22 @@ function showStatus(message, target = els.studioStatus) {
   target.classList.toggle("hidden", !message);
 }
 
-function showStartupFailure(error) {
+function showLoginStatus(message) {
+  showStatus(message, els.loginStatus);
+}
+
+function showStartupFailure() {
   state.authorized = false;
   els.loginPanel?.classList.remove("hidden");
   els.socialApp?.classList.add("hidden");
-  showStatus("Social Studio failed to initialize. Refresh the page and try again.", els.loginStatus);
-  // The error can help diagnose a broken optional control without exposing credentials in the UI.
-  console.error("Social Studio startup error", error);
+  showLoginStatus("Social Studio failed to initialize. Refresh the page and try again.");
+  console.error("Social Studio startup error");
+}
+
+function showClientError() {
+  const target = state.authorized ? els.studioStatus : els.loginStatus;
+  showStatus("Social Studio encountered a client error. Refresh and try again.", target);
+  console.error("Social Studio client error");
 }
 
 function bindIfPresent(element, eventName, handler) {
@@ -98,18 +107,37 @@ function setLoginBusy(isBusy) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    credentials: "same-origin",
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    },
-    ...options
-  });
-  const payload = await response.json().catch(() => ({}));
+  let response;
+  try {
+    response = await fetch(path, {
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {})
+      },
+      ...options
+    });
+  } catch {
+    const error = new Error("Unable to reach the server.");
+    error.code = "network";
+    throw error;
+  }
+
+  let payload = {};
+  try {
+    const text = await response.text();
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    const error = new Error("Server returned an invalid response.");
+    error.code = "invalid_response";
+    throw error;
+  }
   if (!response.ok) {
     const stage = payload.stage ? `${payload.stage}: ` : "";
-    throw new Error(`${stage}${payload.error || payload.message || `${response.status} ${response.statusText}`}`);
+    const error = new Error(`${stage}${payload.error || payload.message || `${response.status} ${response.statusText}`}`);
+    error.code = "http";
+    error.httpStatus = response.status;
+    throw error;
   }
   return payload;
 }
@@ -928,10 +956,11 @@ async function bootstrap() {
     const session = await api("/api/social/session");
     state.authorized = Boolean(session.authorized);
     if (!session.configured) {
-      showStatus("SOCIAL_ADMIN_SECRET is not configured on the server.", els.loginStatus);
+      showLoginStatus("SOCIAL_ADMIN_SECRET is not configured on the server.");
     }
   } catch {
     state.authorized = false;
+    showLoginStatus("Unable to verify your Social Studio session. Sign in again.");
   }
   els.loginPanel.classList.toggle("hidden", state.authorized);
   els.socialApp.classList.toggle("hidden", !state.authorized);
@@ -948,19 +977,50 @@ async function bootstrap() {
   }
 }
 
+function loginFailureMessage(stage, error) {
+  const safeMessage = String(error?.message || "");
+  if (error?.code === "network") return "Login request could not reach the server.";
+  if (error?.code === "invalid_response") return `Login failed during ${stage}: Server returned an invalid response.`;
+  if (stage === "credential check") {
+    if ([
+      "Invalid Social Studio secret.",
+      "SOCIAL_ADMIN_SECRET is not configured on the server.",
+      "Invalid Social Studio login request."
+    ].includes(safeMessage)) {
+      return `Login failed during credential check: ${safeMessage}`;
+    }
+    return "Login failed during credential check.";
+  }
+  if (stage === "session verification") return "Login failed during session verification. Social Studio session was not created.";
+  return "Unable to open Social Studio.";
+}
+
 async function submitSocialLogin(event) {
   event.preventDefault();
-  showStatus("", els.loginStatus);
+  showLoginStatus("Login request started...");
   setLoginBusy(true);
   let unlocked = false;
+  let stage = "credential check";
   try {
+    showLoginStatus("Checking credentials...");
     const login = await api("/api/social/login", {
       method: "POST",
       body: JSON.stringify({ secret: els.socialSecret.value.trim() })
     });
-    if (!login.authorized) throw new Error("Unable to create Social Studio session.");
+    if (!login.authorized) {
+      const error = new Error("Social Studio session was not created.");
+      error.code = "missing_login_session";
+      throw error;
+    }
+    stage = "session verification";
+    showLoginStatus("Credentials accepted. Verifying session...");
     const session = await api("/api/social/session");
-    if (!session.authorized) throw new Error("Unable to create Social Studio session.");
+    if (!session.authorized) {
+      const error = new Error("Social Studio session was not created.");
+      error.code = "missing_session_cookie";
+      throw error;
+    }
+    showLoginStatus("Session verified. Opening Social Studio...");
     state.authorized = true;
     els.socialSecret.value = "";
     els.loginPanel.classList.add("hidden");
@@ -969,7 +1029,8 @@ async function submitSocialLogin(event) {
     loadCurrentBoard();
     await refreshQueue();
   } catch (error) {
-    showStatus(error.message || "Unable to create Social Studio session.", unlocked ? els.studioStatus : els.loginStatus);
+    const message = loginFailureMessage(stage, error);
+    showStatus(message, unlocked ? els.studioStatus : els.loginStatus);
   } finally {
     setLoginBusy(false);
   }
@@ -982,6 +1043,7 @@ function initializeSocialStudio() {
   }
 
   els.loginForm.addEventListener("submit", submitSocialLogin);
+  els.loginForm.dataset.loginHandlerReady = "true";
 
   try {
     bindIfPresent(els.refreshBoard, "click", refreshCurrentBoard);
@@ -1058,4 +1120,6 @@ function initializeSocialStudio() {
   bootstrap().catch(showStartupFailure);
 }
 
+window.addEventListener("error", showClientError);
+window.addEventListener("unhandledrejection", showClientError);
 initializeSocialStudio();
