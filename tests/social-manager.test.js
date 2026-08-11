@@ -265,13 +265,13 @@ test("null warnings are normalized to an empty list", () => {
 test("null hashtags safely fall back to local template hashtags", () => {
   const snapshot = createSocialPickSnapshot(samplePick());
   const result = normalizeGeneratedContent({ hashtags: null }, "DAILY_3", [snapshot]);
-  assert.deepEqual(result.normalized.hashtags, ["#SameGameHeat", "#MLB", "#SportsBetting"]);
+  assert.deepEqual(result.normalized.hashtags, ["#MLB", "#MLBPicks", "#MLBBetting", "#BaseballPicks", "#SportsBetting", "#SameGameHeat"]);
 });
 
 test("plain object hashtags and warnings do not crash normalization", () => {
   const snapshot = createSocialPickSnapshot(samplePick());
   const result = normalizeGeneratedContent({ hashtags: { tag: "#SameGameHeat" }, warnings: { text: "Confirm lineups" } }, "DAILY_3", [snapshot]);
-  assert.deepEqual(result.normalized.hashtags, ["#SameGameHeat", "#MLB", "#SportsBetting"]);
+  assert.deepEqual(result.normalized.hashtags, ["#MLB", "#MLBPicks", "#MLBBetting", "#BaseballPicks", "#SportsBetting", "#SameGameHeat"]);
   assert.deepEqual(result.normalized.warnings, []);
 });
 
@@ -294,7 +294,7 @@ test("disclaimer is still enforced after normalization", () => {
   assert.equal(result.normalized.disclaimer, "21+ | Bet responsibly.");
 });
 
-test("fallback DAILY_3 contains structured teams odds probabilities reasons and risks", () => {
+test("fallback DAILY_3 stays short human and contains frozen teams odds hashtags and disclaimer", () => {
   const snapshots = [
     createSocialPickSnapshot(samplePickForTeam("Milwaukee Brewers", "Atlanta Braves", 1, { sportsbookOdds: -247, modelWinProbability: 0.631, fairOdds: -171, playableThrough: -154, reasons: ["Starting-pitching matchup"], riskFlags: ["Selected book was unavailable, so consensus odds were used."] })),
     createSocialPickSnapshot(samplePickForTeam("Philadelphia Phillies", "Miami Marlins", 2, { sportsbookOdds: -190, modelWinProbability: 0.606, fairOdds: -154, playableThrough: -138, reasons: ["Home-field edge"] })),
@@ -302,29 +302,31 @@ test("fallback DAILY_3 contains structured teams odds probabilities reasons and 
   ];
   const result = normalizeGeneratedContent({}, "DAILY_3", snapshots);
   assert.match(result.normalized.caption, /^🔥 SAME GAME HEAT — DAILY 3/);
-  assert.match(result.normalized.caption, /1️⃣ Milwaukee Brewers ML -247\nModel win probability: 63\.1%/);
-  assert.match(result.normalized.caption, /2️⃣ Philadelphia Phillies ML -190\nModel win probability: 60\.6%/);
-  assert.match(result.normalized.caption, /3️⃣ St\. Louis Cardinals ML -158\nModel win probability: 58\.6%/);
+  assert.match(result.normalized.caption, /1️⃣ Milwaukee Brewers ML -247/);
+  assert.match(result.normalized.caption, /2️⃣ Philadelphia Phillies ML -190/);
+  assert.match(result.normalized.caption, /3️⃣ St\. Louis Cardinals ML -158/);
   assert.match(result.normalized.caption, /Milwaukee Brewers ML -247/);
-  assert.match(result.normalized.caption, /63\.1%/);
-  assert.match(result.normalized.caption, /Starting-pitching matchup/);
-  assert.match(result.normalized.caption, /Fanatics was unavailable at capture, so consensus odds were used/);
-  assert.match(result.normalized.caption, /SGH fair price: -171 \| Playable through: -154/);
-  assert.match(result.normalized.caption, /lower-confidence/);
+  assert.doesNotMatch(result.normalized.caption, /63\.1%|60\.6%|58\.6%/);
+  assert.doesNotMatch(result.normalized.caption, /Starting-pitching matchup|fair price|Playable through|lower-confidence/i);
+  assert.match(result.normalized.caption, /These are the three sides I like most/);
+  assert.match(result.normalized.caption, /#MLB #MLBPicks #MLBBetting #BaseballPicks #SportsBetting #SameGameHeat/);
   assert.ok(result.normalized.caption.trim().endsWith("21+ | Bet responsibly."));
-  assert.ok((result.normalized.caption.match(/\n/g) || []).length >= 10);
-  assert.match(result.normalized.reelHook, /three sides finished highest/i);
+  assert.ok(result.normalized.caption.length < 600);
+  assert.equal((result.normalized.caption.match(/21\+ \| Bet responsibly\./g) || []).length, 1);
+  assert.match(result.normalized.reelHook, /Three MLB sides I like today/i);
   assert.doesNotMatch(result.normalized.reelHook, /Curious about|winning picks/i);
   assert.match(result.normalized.reelScript, /Milwaukee Brewers/);
   assert.match(result.normalized.reelScript, /Philadelphia Phillies/);
   assert.match(result.normalized.reelScript, /St\. Louis Cardinals/);
   assert.ok(result.normalized.shortCaption.length < 280);
-  assert.match(result.normalized.shortCaption, /Milwaukee Brewers ML -247 \(63\.1%\)/);
+  assert.match(result.normalized.shortCaption, /Milwaukee Brewers ML -247/);
+  assert.doesNotMatch(result.normalized.shortCaption, /63\.1%/);
   assert.match(result.normalized.shortCaption, /21\+ \| Bet responsibly/);
   assert.ok(result.normalized.storyText.length < 280);
+  assert.doesNotMatch(result.normalized.storyText, /63\.1%|fair price|Playable through/i);
 });
 
-test("consensus odds warning appears once and internal warnings are not dumped into DAILY_3 caption", () => {
+test("internal warnings are not dumped into DAILY_3 caption", () => {
   const consensus = "Selected book was unavailable, so consensus odds were used.";
   const internal = "Bullpen workload estimates limited.";
   const snapshots = [
@@ -333,30 +335,29 @@ test("consensus odds warning appears once and internal warnings are not dumped i
     createSocialPickSnapshot(samplePickForTeam("St. Louis Cardinals", "Chicago Cubs", 3, { riskFlags: [consensus, internal] }))
   ];
   const result = normalizeGeneratedContent({}, "DAILY_3", snapshots);
-  assert.equal((result.normalized.caption.match(/consensus odds were used/g) || []).length, 1);
+  assert.doesNotMatch(result.normalized.caption, /consensus odds were used/);
   assert.doesNotMatch(result.normalized.caption, /Bullpen workload estimates limited/);
 });
 
-test("fallback BEST_BET includes selected team model context price and risk", () => {
+test("fallback BEST_BET uses short human tone", () => {
   const snapshot = createSocialPickSnapshot(samplePick({ selectedTeam: "Milwaukee Brewers", homeTeam: "Milwaukee Brewers", awayTeam: "Atlanta Braves", opponent: "Atlanta Braves", sportsbookOdds: -247, modelWinProbability: 0.631, fairOdds: -171, playableThrough: -154, reasons: ["Starting-pitching matchup"], riskFlags: ["Confirm lineups before posting."] }));
   const result = normalizeGeneratedContent({}, "BEST_BET", [snapshot]);
+  assert.match(result.normalized.caption, /^🔥 BEST BET/);
   assert.match(result.normalized.caption, /Milwaukee Brewers ML -247/);
-  assert.match(result.normalized.caption, /63\.1%/);
-  assert.match(result.normalized.caption, /SGH fair price: -171/);
-  assert.match(result.normalized.caption, /Playable through: -154/);
-  assert.match(result.normalized.caption, /Starting-pitching matchup/);
-  assert.match(result.normalized.caption, /Confirm lineups/);
+  assert.match(result.normalized.caption, /My favorite side on today’s board/);
+  assert.doesNotMatch(result.normalized.caption, /63\.1%|fair price|Playable through|WHY SGH LIKES IT|RISK TO WATCH/i);
+  assert.ok(result.normalized.caption.length < 240);
 });
 
-test("fallback PICK_BREAKDOWN includes reason risk and price check", () => {
+test("fallback PICK_BREAKDOWN stays concise", () => {
   const snapshot = createSocialPickSnapshot(samplePick({ reasons: ["Bullpen profile supports the pick"], riskFlags: ["Projected lineup data was incomplete."] }));
   const result = normalizeGeneratedContent({}, "PICK_BREAKDOWN", [snapshot]);
-  assert.match(result.normalized.caption, /🔥 SGH PICK BREAKDOWN/);
-  assert.match(result.normalized.caption, /PICK/);
-  assert.match(result.normalized.caption, /WHY IT RATES WELL/);
+  assert.match(result.normalized.caption, /🔥 PICK BREAKDOWN/);
+  assert.match(result.normalized.caption, /Los Angeles Angels ML -105/);
   assert.match(result.normalized.caption, /Bullpen profile supports the pick/);
-  assert.match(result.normalized.caption, /RISK TO WATCH/);
-  assert.match(result.normalized.caption, /Projected lineup data was incomplete/);
+  assert.match(result.normalized.caption, /Confirm the current number/);
+  assert.doesNotMatch(result.normalized.caption, /WHY IT RATES WELL|RISK TO WATCH|MODEL/i);
+  assert.ok(result.normalized.caption.length < 280);
 });
 
 test("local social manager blocks unauthorized protected endpoints", async () => {
@@ -536,8 +537,9 @@ test("successful OpenAI social response preserves provider and configured model"
             message: {
               content: JSON.stringify({
                 headline: "AI Daily 3",
-                caption: "🔥 SAME GAME HEAT — DAILY 3\n\n1️⃣ Los Angeles Angels ML -105\nModel win probability: 55.1%\nStarter advantage supports the read.\n\nPrice matters. Confirm the current number before betting.\n\n21+ | Bet responsibly.",
-                shortCaption: "Los Angeles Angels ML -105 (55.1%). 21+ | Bet responsibly.",
+                daily3Sentence: "These are the three sides I like most on today’s board.",
+                caption: "These are the three sides I like most on today’s board.",
+                shortCaption: "Daily 3.",
                 hashtags: ["#SameGameHeat"],
                 disclaimer: "21+ | Bet responsibly."
               })
@@ -551,6 +553,7 @@ test("successful OpenAI social response preserves provider and configured model"
       assert.equal(response.json.content.generationProvider, "openai");
       assert.equal(response.json.content.generationModel, "gpt-4o-mini");
       assert.equal(response.json.content.headline, "AI Daily 3");
+      assert.match(response.json.content.caption, /These are the three sides I like most/);
       assert.equal(capturedBody.model, "gpt-4o-mini");
       assert.equal(capturedBody.response_format.type, "json_object");
       assert.equal(warnings.length, 0);
@@ -569,11 +572,12 @@ test("OpenAI prompt includes SGH brand voice and no-invention rules", async () =
             message: {
               content: JSON.stringify({
                 headline: "Same Game Heat Daily 3",
-                caption: "🔥 SAME GAME HEAT — DAILY 3\n\n1️⃣ Los Angeles Angels ML -105\nModel win probability: 55.1%\nStarter advantage supports the read.\n\n21+ | Bet responsibly.",
-                shortCaption: "Los Angeles Angels ML -105 (55.1%). 21+ | Bet responsibly.",
-                reelHook: "SGH scanned today's MLB slate.",
-                reelScript: "Los Angeles Angels grade well because of starter advantage. Price matters. 21+ | Bet responsibly.",
-                storyText: "Los Angeles Angels ML -105\n55.1%\n21+ | Bet responsibly.",
+                daily3Sentence: "Keeping it simple today — this side stood out.",
+                caption: "Keeping it simple today — this side stood out.",
+                shortCaption: "Daily 3.",
+                reelHook: "Three MLB sides I like today.",
+                reelScript: "Three MLB sides I like today.",
+                storyText: "Los Angeles Angels ML -105",
                 hashtags: ["#SameGameHeat", "#MLB"],
                 disclaimer: "21+ | Bet responsibly.",
                 warnings: []
@@ -587,11 +591,13 @@ test("OpenAI prompt includes SGH brand voice and no-invention rules", async () =
       const system = capturedBody.messages[0].content;
       const user = JSON.parse(capturedBody.messages[1].content);
       assert.match(system, /Same Game Heat/);
-      assert.match(system, /Avoid generic marketing copy/);
-      assert.match(user.brandVoice.join(" "), /data-driven/);
+      assert.match(system, /daily3Sentence/);
+      assert.match(system, /max 20 words/);
+      assert.match(user.brandVoice.join(" "), /Short, natural, human/);
       assert.match(user.rules.join(" "), /Do not fabricate missing facts/);
       assert.match(user.rules.join(" "), /do not infer injuries, weather, bullpen status, lineups/);
-      assert.match(user.formatGuidance.DAILY_3, /model win probability/i);
+      assert.match(user.formatGuidance.DAILY_3, /ONE conversational sentence/i);
+      assert.doesNotMatch(user.formatGuidance.DAILY_3, /model win probability/i);
     }
   });
 });
@@ -606,6 +612,7 @@ test("OpenAI response with string hashtags preserves provider and canonicalizes 
               headline: "AI Daily 3",
               caption: "🔥 SAME GAME HEAT — DAILY 3\n\nThis AI caption should stay for Los Angeles Angels ML -105 with 55.1% model win probability.\n\n21+ | Bet responsibly.",
               shortCaption: "Los Angeles Angels ML -105 (55.1%). 21+ | Bet responsibly.",
+              daily3Sentence: "My top side for the slate.",
               hashtags: "#SameGameHeat #MLB #SportsBetting",
               warnings: "Confirm lineups before posting.",
               disclaimer: "21+ | Bet responsibly."
@@ -619,7 +626,8 @@ test("OpenAI response with string hashtags preserves provider and canonicalizes 
       assert.equal(response.json.content.generationProvider, "openai");
       assert.match(response.json.content.caption, /^🔥 SAME GAME HEAT — DAILY 3/);
       assert.match(response.json.content.caption, /1️⃣ Los Angeles Angels ML -105/);
-      assert.match(response.json.content.caption, /Model win probability: 55\.1%/);
+      assert.match(response.json.content.caption, /My top side for the slate/);
+      assert.doesNotMatch(response.json.content.caption, /Model win probability: 55\.1%/);
       assert.doesNotMatch(response.json.content.caption, /This AI caption should stay/);
       assert.deepEqual(response.json.content.hashtags, ["#SameGameHeat", "#MLB", "#SportsBetting"]);
       assert.deepEqual(response.json.content.metadata.warnings, [
@@ -644,6 +652,7 @@ test("three-pick OpenAI DAILY_3 with visual blocks preserves provider", async ()
           message: {
             content: JSON.stringify({
               headline: "Same Game Heat Daily 3",
+              daily3Sentence: "These are my top three sides for the slate.",
               caption: "🔥 SAME GAME HEAT — DAILY 3\n\n1️⃣ Milwaukee Brewers ML -247\nModel win probability: 63.1%\nMilwaukee grades well behind the supplied starting-pitching edge.\n\n2️⃣ Philadelphia Phillies ML -190\nModel win probability: 60.6%\nPhiladelphia gets support from the supplied matchup profile.\n\n3️⃣ St. Louis Cardinals ML -158\nModel win probability: 58.6%\nSt. Louis rounds out the board with the supplied model edge.\n\nPrice matters. Confirm the current number before betting.\n\n21+ | Bet responsibly.",
               shortCaption: "🔥 SGH Daily 3: Milwaukee Brewers ML -247 (63.1%), Philadelphia Phillies ML -190 (60.6%), St. Louis Cardinals ML -158 (58.6%). 21+ | Bet responsibly.",
               reelHook: "Three moneylines separated themselves from today's slate.",
@@ -661,6 +670,8 @@ test("three-pick OpenAI DAILY_3 with visual blocks preserves provider", async ()
       assert.equal(response.status, 200);
       assert.equal(response.json.content.generationProvider, "openai");
       assert.match(response.json.content.caption, /1️⃣ Milwaukee Brewers/);
+      assert.match(response.json.content.caption, /These are my top three sides for the slate/);
+      assert.doesNotMatch(response.json.content.caption, /Model win probability|fair price|Playable through/i);
     }
   });
 });
@@ -679,6 +690,7 @@ test("one-paragraph three-pick OpenAI DAILY_3 is repaired and preserves provider
           message: {
             content: JSON.stringify({
               headline: "Same Game Heat Daily 3",
+              daily3Sentence: "Three moneylines I’m rolling with today.",
               caption: "🔥 SAME GAME HEAT — DAILY 3 Milwaukee Brewers ML -247 63.1% Philadelphia Phillies ML -190 60.6% St. Louis Cardinals ML -158 58.6% 21+ | Bet responsibly.",
               shortCaption: "Milwaukee Brewers ML -247 (63.1%), Philadelphia Phillies ML -190 (60.6%), St. Louis Cardinals ML -158 (58.6%). 21+ | Bet responsibly.",
               reelHook: "Three moneylines separated themselves from today's slate.",
@@ -700,10 +712,13 @@ test("one-paragraph three-pick OpenAI DAILY_3 is repaired and preserves provider
       assert.match(response.json.content.caption, /1️⃣ Milwaukee Brewers/);
       assert.match(response.json.content.caption, /2️⃣ Philadelphia Phillies/);
       assert.match(response.json.content.caption, /3️⃣ St\. Louis Cardinals/);
+      assert.match(response.json.content.caption, /Three moneylines I’m rolling with today/);
+      assert.doesNotMatch(response.json.content.caption, /63\.1%|60\.6%|58\.6%/);
       assert.ok(response.json.content.caption.trim().endsWith("21+ | Bet responsibly."));
-      assert.match(response.json.content.shortCaption, /Milwaukee Brewers ML -247 \(63\.1%\)/);
-      assert.match(response.json.content.shortCaption, /Philadelphia Phillies ML -190 \(60\.6%\)/);
-      assert.match(response.json.content.shortCaption, /St\. Louis Cardinals ML -158 \(58\.6%\)/);
+      assert.match(response.json.content.shortCaption, /Milwaukee Brewers ML -247/);
+      assert.match(response.json.content.shortCaption, /Philadelphia Phillies ML -190/);
+      assert.match(response.json.content.shortCaption, /St\. Louis Cardinals ML -158/);
+      assert.doesNotMatch(response.json.content.shortCaption, /63\.1%|60\.6%|58\.6%/);
     }
   });
 });
@@ -722,6 +737,7 @@ test("missing headline disclaimer shortCaption teams and weak hook are repaired 
           message: {
             content: JSON.stringify({
               headline: "Daily Card",
+              daily3Sentence: "Keeping it simple today — these three stood out.",
               caption: "Milwaukee Brewers are backed by the starter edge. Philadelphia Phillies are supported by the home-field edge. St. Louis Cardinals round out the slate on matchup score.",
               shortCaption: "MLB Daily Picks: Brewers, Phillies, Cardinals",
               reelHook: "Curious about today's model insights for MLB matchups?",
@@ -740,12 +756,13 @@ test("missing headline disclaimer shortCaption teams and weak hook are repaired 
       assert.equal(response.json.content.generationProvider, "openai");
       assert.equal(response.json.content.metadata.presentationRepaired, true);
       assert.match(response.json.content.caption, /^🔥 SAME GAME HEAT — DAILY 3/);
-      assert.match(response.json.content.caption, /Starting-pitching edge/);
+      assert.match(response.json.content.caption, /Keeping it simple today/);
+      assert.doesNotMatch(response.json.content.caption, /Starting-pitching edge|63\.1%|fair price|Playable through/i);
       assert.ok(response.json.content.caption.trim().endsWith("21+ | Bet responsibly."));
-      assert.match(response.json.content.shortCaption, /Milwaukee Brewers ML -247 \(63\.1%\)/);
-      assert.match(response.json.content.shortCaption, /Philadelphia Phillies ML -190 \(60\.6%\)/);
-      assert.match(response.json.content.shortCaption, /St\. Louis Cardinals ML -158 \(58\.6%\)/);
-      assert.equal(response.json.content.reelHook, "SGH scanned today's MLB slate. These three moneylines finished at the top of the model.");
+      assert.match(response.json.content.shortCaption, /Milwaukee Brewers ML -247/);
+      assert.match(response.json.content.shortCaption, /Philadelphia Phillies ML -190/);
+      assert.match(response.json.content.shortCaption, /St\. Louis Cardinals ML -158/);
+      assert.equal(response.json.content.reelHook, "Three MLB sides I like today.");
       assert.match(response.json.content.metadata.repairReasons.join(" "), /reel_hook_rebuilt/);
     }
   });
@@ -765,6 +782,7 @@ test("duplicate disclaimer is normalized during DAILY_3 presentation repair", as
           message: {
             content: JSON.stringify({
               headline: "Same Game Heat Daily 3",
+              daily3Sentence: "These are the three that stood out on today’s board.",
               caption: "Milwaukee Brewers ML -247 63.1%. Philadelphia Phillies ML -190 60.6%. St. Louis Cardinals ML -158 58.6%. 21+ | Bet responsibly. 21+ | Bet responsibly.",
               shortCaption: "Milwaukee Brewers ML -247 (63.1%), Philadelphia Phillies ML -190 (60.6%), St. Louis Cardinals ML -158 (58.6%). 21+ | Bet responsibly.",
               reelHook: "Three moneylines separated themselves from today's slate.",
@@ -881,7 +899,7 @@ test("winning picks phrasing falls back to deterministic SGH template", async ()
   });
 });
 
-test("OpenAI DAILY_3 that omits a supplied team falls back safely", async () => {
+test("OpenAI DAILY_3 that omits supplied teams is repaired deterministically", async () => {
   await withMockedSocialAi({
     fetchImpl: async () => mockOpenAiResponse({
       body: {
@@ -904,9 +922,11 @@ test("OpenAI DAILY_3 that omits a supplied team falls back safely", async () => 
     }),
     run: async ({ response }) => {
       assert.equal(response.status, 200);
-      assert.equal(response.json.content.generationProvider, "local-template");
-      assert.match(response.json.content.metadata.warnings[0], /omitted supplied teams/);
+      assert.equal(response.json.content.generationProvider, "openai");
+      assert.equal(response.json.content.metadata.presentationRepaired, true);
+      assert.match(response.json.content.metadata.repairReasons.join(" "), /omitted_supplied_teams/);
       assert.match(response.json.content.caption, /Los Angeles Angels/);
+      assert.doesNotMatch(response.json.content.caption, /The model likes/);
     }
   });
 });

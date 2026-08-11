@@ -32,6 +32,15 @@ const { runInstagramDiagnostics } = require("./instagram-diagnostics");
 const SNAPSHOT_VERSION = "social-pick-v1";
 const GENERATION_VERSION = "social-content-v1";
 const DEFAULT_DISCLAIMER = "21+ | Bet responsibly.";
+const DEFAULT_SOCIAL_HASHTAGS = [
+  "#MLB",
+  "#MLBPicks",
+  "#MLBBetting",
+  "#BaseballPicks",
+  "#SportsBetting",
+  "#SameGameHeat"
+];
+const DAILY_3_FALLBACK_SENTENCE = "These are the three sides I like most on today’s board.";
 const SOCIAL_COOKIE = "sgh_social_admin";
 const SOCIAL_CONTENT_TYPES = new Set([
   "DAILY_3",
@@ -142,6 +151,11 @@ function normalizeHashtags(value) {
     .map((tag) => tag.startsWith("#") ? tag : `#${tag}`)
     .filter((tag) => /^#[A-Za-z0-9_]+$/.test(tag));
   return uniqueStrings(tags);
+}
+
+function captionHashtagBlock(hashtags = DEFAULT_SOCIAL_HASHTAGS) {
+  const normalized = normalizeHashtags(hashtags).slice(0, 8);
+  return normalized.length ? normalized.join(" ") : DEFAULT_SOCIAL_HASHTAGS.join(" ");
 }
 
 function isPlainObject(value) {
@@ -529,21 +543,15 @@ function assertDaily3CaptionComplete(content, snapshots) {
 }
 
 function deterministicDailyShortCaption(snapshots) {
-  return ensureInlineDisclaimer(`🔥 SGH Daily 3: ${snapshots.map((snapshot) => {
-    const probability = formatModelWinProbability(snapshot.modelWinProbability);
-    return `${pickLine(snapshot)}${probability ? ` (${probability})` : ""}`;
-  }).join(", ")}.`);
+  return ensureFinalDisclaimer(`🔥 DAILY 3: ${snapshots.slice(0, 3).map(pickLine).join(" | ")}\n\n${captionHashtagBlock(["#MLB", "#MLBPicks", "#SameGameHeat"])}`);
 }
 
 function deterministicDailyStoryText(snapshots) {
-  return ensureFinalDisclaimer(`🔥 SGH DAILY 3\n\n${snapshots.map((snapshot) => {
-    const probability = formatModelWinProbability(snapshot.modelWinProbability);
-    return `${pickLine(snapshot)}\n${probability || "Model probability unavailable"}`;
-  }).join("\n\n")}`);
+  return `🔥 DAILY 3\n\n${snapshots.slice(0, 3).map(pickLine).join("\n")}\n\n@sg_heater`;
 }
 
 function genericHookReplacement() {
-  return "SGH scanned today's MLB slate. These three moneylines finished at the top of the model.";
+  return "Three MLB sides I like today.";
 }
 
 function isGenericHook(text) {
@@ -556,6 +564,24 @@ function extractSentences(text) {
     .split(/(?<=[.!?])\s+|;\s+/)
     .map(cleanString)
     .filter(Boolean);
+}
+
+function safeDaily3Sentence(value, snapshots = []) {
+  const firstSentence = extractSentences(value)[0] || "";
+  const candidate = cleanString(firstSentence)
+    .replace(disclaimerRegex(), "")
+    .replace(/#[A-Za-z0-9_]+/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (!candidate) return "";
+  const words = candidate.split(/\s+/).filter(Boolean);
+  if (words.length > 20) return "";
+  if (validateNoProhibitedLanguage({ candidate }).length || brandStyleHits(candidate).length) return "";
+  if (/model|probability|fair|playable|edge|risk|guarantee|lock|cash|win rate|score|tier/i.test(candidate)) return "";
+  if (/[+-]\d{2,4}|\b\d{1,3}(?:\.\d)?%/.test(candidate)) return "";
+  const teamNames = snapshots.map((snapshot) => cleanString(snapshot.selectedTeam).toLowerCase()).filter(Boolean);
+  if (teamNames.some((team) => candidate.toLowerCase().includes(team))) return "";
+  return sentence(candidate);
 }
 
 function safeAiReason(value, snapshots, snapshot) {
@@ -599,28 +625,17 @@ function snapshotsForReasons(output, normalized) {
 }
 
 function buildDaily3Caption(snapshots, safeAiReasons = []) {
-  const pickBlocks = snapshots.map((snapshot, index) => {
-    const probability = formatModelWinProbability(snapshot.modelWinProbability);
-    const backfill = snapshot.isBackfill ? " Rounds out the board as SGH's best available lower-confidence side." : "";
-    return [
-      `${ordinalEmoji(index)} ${pickLine(snapshot)}`,
-      probability ? `Model win probability: ${probability}` : "",
-      `${safeAiReasons[index] || sentence(snapshotReason(snapshot))}${backfill}`,
-      snapshotPriceContext(snapshot)
-    ].filter(Boolean).join("\n");
-  });
-  const closingNotes = uniqueStrings([
-    "Price matters. Confirm the current number before betting.",
-    ...publicMaterialLimitations(snapshots)
-  ]).join("\n");
-  return ensureFinalDisclaimer(`🔥 SAME GAME HEAT — DAILY 3\n\n${pickBlocks.join("\n\n")}\n\n${closingNotes}`);
+  const sentenceLine = safeDaily3Sentence(Array.isArray(safeAiReasons) ? safeAiReasons[0] : safeAiReasons, snapshots) || DAILY_3_FALLBACK_SENTENCE;
+  const pickLines = snapshots.slice(0, 3).map((snapshot, index) => `${ordinalEmoji(index)} ${pickLine(snapshot)}`);
+  return ensureFinalDisclaimer(`🔥 SAME GAME HEAT — DAILY 3\n\n${pickLines.join("\n")}\n\n${sentenceLine}\n\n${captionHashtagBlock()}`);
 }
 
 function buildHybridDailyCaption(output, normalized, snapshots) {
-  const reasonContextOutput = { ...output, __snapshotsForReasons: snapshots };
-  const reasonContextNormalized = { ...normalized, __snapshotsForReasons: snapshots };
-  const safeAiReasons = snapshots.map((snapshot, index) => extractAiReasonForSnapshot(reasonContextOutput, reasonContextNormalized, snapshot, index));
-  return buildDaily3Caption(snapshots, safeAiReasons);
+  const aiSentence = safeDaily3Sentence(
+    output?.daily3Sentence || output?.sentence || output?.hook || normalized.reelHook || normalized.reasoningSummary || normalized.caption,
+    snapshots
+  );
+  return buildDaily3Caption(snapshots, aiSentence);
 }
 
 function snapshotAllowedNumbers(snapshots) {
@@ -662,10 +677,10 @@ function classifyAiCopyFailures(output, contentType, snapshots) {
       continue;
     }
     if (/DAILY_3 caption omitted supplied teams/.test(failure)) {
-      hardFailures.push(failure);
+      repairableFailures.push(failure);
       continue;
     }
-    if (/caption omitted supplied model win probabilities|caption omitted supplied frozen odds|caption did not start|lacked separate visual blocks|caption must end|short caption omitted|story text was too long|Responsible gambling disclaimer missing/.test(failure)) {
+    if (/caption omitted supplied frozen odds|caption did not start|lacked compact pick-list structure|caption must end|caption was too long|caption included internal metrics|caption must include|caption omitted #SameGameHeat|short caption omitted|short caption was too long|short caption included internal metrics|reel hook was too long|story text was too long|Responsible gambling disclaimer missing/.test(failure)) {
       repairableFailures.push(failure);
       continue;
     }
@@ -692,6 +707,8 @@ function repairGeneratedSocialCopy({ contentType, generated, snapshots }) {
     repaired.caption = buildHybridDailyCaption(safeOutput, normalized, snapshots);
     repaired.shortCaption = deterministicDailyShortCaption(snapshots);
     repaired.storyText = deterministicDailyStoryText(snapshots);
+    repaired.reelHook = safeDaily3Sentence(repaired.reelHook, snapshots) || genericHookReplacement();
+    repaired.reelScript = `${repaired.reelHook} ${snapshots.slice(0, 3).map(pickLine).join(", ")}. ${DEFAULT_DISCLAIMER}`;
     if (repaired.caption !== originalCaption) repairReasons.push("daily_3_caption_canonicalized");
     if (repaired.shortCaption !== originalShortCaption) repairReasons.push("short_caption_rebuilt");
     if (repaired.storyText !== originalStoryText) repairReasons.push("story_text_rebuilt");
@@ -707,10 +724,8 @@ function repairGeneratedSocialCopy({ contentType, generated, snapshots }) {
     repaired.hashtags = localSocialTemplate(contentType, snapshots).hashtags;
     repairReasons.push("hashtags_rebuilt");
   }
-  if (contentType === "DAILY_3" && isGenericHook(repaired.reelHook)) {
-    repaired.reelHook = genericHookReplacement();
-    repairReasons.push("reel_hook_rebuilt");
-  }
+  repaired.hashtags = normalizeHashtags(repaired.hashtags).slice(0, 8);
+  if (contentType === "DAILY_3" && repaired.reelHook === genericHookReplacement() && isGenericHook(normalized.reelHook)) repairReasons.push("reel_hook_rebuilt");
   if (repairReasons.length || repairableFailures.length) {
     repaired.presentationRepaired = true;
     repaired.repairReasons = uniqueStrings([...repairReasons, ...repairableFailures.map((failure) => failure.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""))]);
@@ -731,17 +746,6 @@ function repairGeneratedSocialCopy({ contentType, generated, snapshots }) {
 
 function localSocialTemplate(contentType, snapshots) {
   const first = snapshots[0];
-  const pickList = snapshots.map((snapshot, index) => {
-    const probability = formatModelWinProbability(snapshot.modelWinProbability);
-    const backfill = snapshot.isBackfill ? " Rounds out the board as SGH's best available lower-confidence side." : "";
-    const priceContext = snapshotPriceContext(snapshot);
-    return [
-      `${ordinalEmoji(index)} ${pickLine(snapshot)}`,
-      probability ? `Model win probability: ${probability}` : "",
-      `${sentence(snapshotReason(snapshot))}${backfill}`,
-      priceContext
-    ].filter(Boolean).join("\n");
-  });
   const headline = contentType === "BEST_BET"
     ? `Best Bet: ${pickLine(first || {})}`
     : contentType === "PICK_BREAKDOWN"
@@ -751,34 +755,33 @@ function localSocialTemplate(contentType, snapshots) {
     const probability = formatModelWinProbability(snapshot.modelWinProbability);
     return `${snapshot.selectedTeam}: ${probability ? `${probability} model win probability. ` : ""}${sentence(snapshotReason(snapshot))} Risk to watch: ${snapshotRisk(snapshot)}`;
   });
-  const priceNote = "Price matters. Confirm the current number before betting.";
-  const materialNotes = publicMaterialLimitations(snapshots);
-  const closingNotes = uniqueStrings([priceNote, ...materialNotes]).join("\n");
+  const priceNote = "Confirm the current number before betting.";
   const bestBetCaption = first
-    ? `🔥 SAME GAME HEAT — BEST BET\n\n${pickLine(first)}\n\n${formatModelWinProbability(first.modelWinProbability) ? `Model win probability: ${formatModelWinProbability(first.modelWinProbability)}\n` : ""}${snapshotPriceContext(first)}\n\nWHY SGH LIKES IT\n• ${snapshotReasons(first).slice(0, 2).map(sentence).join("\n• ")}\n\nRISK TO WATCH\n• ${sentence(snapshotRisk(first))}\n\n${DEFAULT_DISCLAIMER}`
+    ? ensureFinalDisclaimer(`🔥 BEST BET\n\n${pickLine(first)}\n\nMy favorite side on today’s board.\n\n${captionHashtagBlock(["#MLB", "#MLBPicks", "#SportsBetting", "#SameGameHeat"])}`)
     : `${headline}\n\n${DEFAULT_DISCLAIMER}`;
   const breakdownCaption = first
-    ? `🔥 SGH PICK BREAKDOWN\n\n${first.gameLabel || `${first.selectedTeam} vs ${first.opponent}`}\n\nPICK\n${pickLine(first)}\n\nMODEL\n${formatModelWinProbability(first.modelWinProbability) || "Model probability unavailable"} win probability\n\nWHY IT RATES WELL\n• ${snapshotReasons(first).slice(0, 2).map(sentence).join("\n• ")}\n\nPRICE CHECK\n${snapshotPriceContext(first) || "Confirm the current number before betting."}\n\nRISK TO WATCH\n• ${sentence(snapshotRisk(first))}\n\n${DEFAULT_DISCLAIMER}`
+    ? ensureFinalDisclaimer(`🔥 PICK BREAKDOWN\n\n${pickLine(first)}\n\n${sentence(snapshotReasons(first)[0] || snapshotReason(first))}\n${priceNote}\n\n${captionHashtagBlock(["#MLB", "#MLBPicks", "#SportsBetting", "#SameGameHeat"])}`)
     : `${headline}\n\n${DEFAULT_DISCLAIMER}`;
-  const dailyCaption = `🔥 SAME GAME HEAT — DAILY 3\n\n${pickList.join("\n\n")}\n\n${closingNotes}\n\n${DEFAULT_DISCLAIMER}`;
+  const dailyCaption = buildDaily3Caption(snapshots, DAILY_3_FALLBACK_SENTENCE);
 
   return {
     headline,
     subheadline: first?.slateDate ? `Slate date ${first.slateDate}` : "Same Game Heat read",
     caption: contentType === "BEST_BET" ? bestBetCaption : contentType === "PICK_BREAKDOWN" ? breakdownCaption : dailyCaption,
-    shortCaption: `${headline}: ${snapshots.map((snapshot) => {
-      const probability = formatModelWinProbability(snapshot.modelWinProbability);
-      return `${pickLine(snapshot)}${probability ? ` (${probability})` : ""}`;
-    }).join(", ")}. ${DEFAULT_DISCLAIMER}`,
+    shortCaption: contentType === "DAILY_3"
+      ? deterministicDailyShortCaption(snapshots)
+      : ensureInlineDisclaimer(`${headline}: ${snapshots.map(pickLine).join(", ")}.`),
     reelHook: contentType === "DAILY_3"
-      ? "The full MLB slate is in. These three sides finished highest in the SGH model."
+      ? genericHookReplacement()
       : `${first?.selectedTeam || "This side"} separated itself in the SGH model.`,
-    reelScript: `${contentType === "DAILY_3" ? "SGH scanned the MLB slate." : headline} ${reasoning.join(" ")} ${priceNote} ${DEFAULT_DISCLAIMER}`,
+    reelScript: contentType === "DAILY_3"
+      ? `${genericHookReplacement()} ${snapshots.slice(0, 3).map(pickLine).join(", ")}. ${DEFAULT_DISCLAIMER}`
+      : `${headline}. ${pickLine(first || {})}. ${sentence(snapshotReason(first || {}))} ${DEFAULT_DISCLAIMER}`,
     storyText: contentType === "DAILY_3"
-      ? `🔥 DAILY 3\n\n${snapshots.map((snapshot) => `${pickLine(snapshot)}\n${formatModelWinProbability(snapshot.modelWinProbability) || "Model probability unavailable"}`).join("\n\n")}\n\n${DEFAULT_DISCLAIMER}`
-      : `${headline}\n${pickLine(first || {})}\n${formatModelWinProbability(first?.modelWinProbability) || ""}\n${DEFAULT_DISCLAIMER}`,
+      ? deterministicDailyStoryText(snapshots)
+      : `🔥 ${contentType === "BEST_BET" ? "BEST BET" : "PICK"}\n\n${pickLine(first || {})}\n\n@sg_heater`,
     reasoningSummary: reasoning.join(" "),
-    hashtags: ["#SameGameHeat", "#MLB", "#SportsBetting"],
+    hashtags: DEFAULT_SOCIAL_HASHTAGS,
     disclaimer: DEFAULT_DISCLAIMER,
     warnings: []
   };
@@ -797,7 +800,7 @@ function normalizeGeneratedContent(output = {}, contentType, snapshots) {
     reelScript: cleanString(safeOutput.reelScript || fallback.reelScript),
     storyText: cleanString(safeOutput.storyText || fallback.storyText),
     reasoningSummary: cleanString(safeOutput.reasoningSummary || fallback.reasoningSummary),
-    hashtags: (hashtags.length ? hashtags : fallback.hashtags).slice(0, 12),
+    hashtags: (hashtags.length ? hashtags : fallback.hashtags).slice(0, 8),
     disclaimer: cleanString(safeOutput.disclaimer || DEFAULT_DISCLAIMER),
     warnings: uniqueStrings(safeOutput.warnings),
     presentationRepaired: Boolean(safeOutput.presentationRepaired),
@@ -822,24 +825,28 @@ function validateAiCopyQuality(output, contentType, snapshots) {
       .map((snapshot) => cleanString(snapshot.selectedTeam))
       .filter((team) => team && !normalized.caption.toLowerCase().includes(team.toLowerCase()));
     if (missingTeams.length) failures.push(`DAILY_3 caption omitted supplied teams: ${missingTeams.join(", ")}`);
-    const probabilitySnapshots = snapshots.filter((snapshot) => formatModelWinProbability(snapshot.modelWinProbability));
-    const missingProbabilities = probabilitySnapshots.filter((snapshot) => !normalized.caption.includes(formatModelWinProbability(snapshot.modelWinProbability)));
-    if (missingProbabilities.length) failures.push("DAILY_3 caption omitted supplied model win probabilities");
     const oddsSnapshots = snapshots.filter((snapshot) => snapshot.sportsbookOdds !== null && snapshot.sportsbookOdds !== undefined);
     const missingOdds = oddsSnapshots.filter((snapshot) => !normalized.caption.includes(snapshot.sportsbookOdds > 0 ? `+${snapshot.sportsbookOdds}` : String(snapshot.sportsbookOdds)));
     if (missingOdds.length) failures.push("DAILY_3 caption omitted supplied frozen odds");
     const lineBreaks = (normalized.caption.match(/\n/g) || []).length;
-    if (snapshots.length >= 3 && lineBreaks < 8) failures.push("DAILY_3 caption lacked separate visual blocks");
+    if (snapshots.length >= 3 && lineBreaks < 6) failures.push("DAILY_3 caption lacked compact pick-list structure");
     if (!normalized.caption.trim().endsWith(DEFAULT_DISCLAIMER)) failures.push("DAILY_3 caption must end with responsible gambling disclaimer");
+    if (normalized.caption.length > 600) failures.push("DAILY_3 caption was too long");
+    if (/model win probability|fair price|playable through|confidence|score|tier/i.test(normalized.caption)) failures.push("DAILY_3 caption included internal metrics");
+    if (disclaimerCount(normalized.caption) !== 1) failures.push("DAILY_3 caption must include exactly one disclaimer");
+    const captionTags = normalizeHashtags(normalized.caption.match(/#[A-Za-z0-9_]+/g) || []);
+    if (captionTags.length < 5 || captionTags.length > 8) failures.push("DAILY_3 caption must include 5-8 hashtags");
+    if (!captionTags.includes("#SameGameHeat")) failures.push("DAILY_3 caption omitted #SameGameHeat");
     const missingShortTeams = snapshots
       .map((snapshot) => cleanString(snapshot.selectedTeam))
       .filter((team) => team && !normalized.shortCaption.toLowerCase().includes(team.toLowerCase()));
     if (missingShortTeams.length) failures.push("DAILY_3 short caption omitted supplied teams");
     const missingShortOdds = oddsSnapshots.filter((snapshot) => !normalized.shortCaption.includes(snapshot.sportsbookOdds > 0 ? `+${snapshot.sportsbookOdds}` : String(snapshot.sportsbookOdds)));
     if (missingShortOdds.length) failures.push("DAILY_3 short caption omitted supplied frozen odds");
-    const missingShortProbabilities = probabilitySnapshots.filter((snapshot) => !normalized.shortCaption.includes(formatModelWinProbability(snapshot.modelWinProbability)));
-    if (missingShortProbabilities.length) failures.push("DAILY_3 short caption omitted supplied model win probabilities");
     if (!normalized.shortCaption.includes(DEFAULT_DISCLAIMER)) failures.push("DAILY_3 short caption omitted responsible gambling disclaimer");
+    if (normalized.shortCaption.length > 220) failures.push("DAILY_3 short caption was too long");
+    if (/model win probability|fair price|playable through|confidence|score|tier/i.test(normalized.shortCaption)) failures.push("DAILY_3 short caption included internal metrics");
+    if ((normalized.reelHook.match(/[.!?]/g) || []).length > 1 || normalized.reelHook.split(/\s+/).length > 12) failures.push("DAILY_3 reel hook was too long");
     if (normalized.storyText.length > 280) failures.push("DAILY_3 story text was too long");
   }
   if (!normalized.disclaimer.includes("21+")) failures.push("Responsible gambling disclaimer missing");
@@ -2238,9 +2245,9 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
     const prompt = {
       task: "Generate Same Game Heat social copy from only the structured frozen pick snapshots.",
       brandVoice: [
-        "Confident, data-driven, sports-media oriented, conversational, credible, sharp, concise, transparent.",
-        "Write like an analytical sports account presenting its model card, not a sportsbook ad or tout page.",
-        "Every pick should earn its place with at least one supplied model-supported reason when available."
+        "Short, natural, human, confident, conversational, sports-page style, and easy to read on Instagram.",
+        "Write like a real sports bettor/page operator sharing a simple card, not a report, sportsbook ad, or tout page.",
+        "Avoid robotic analysis, heavy metrics, hype, gimmicks, and long explanations."
       ],
       rules: [
         "Do not guarantee outcomes.",
@@ -2248,22 +2255,23 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
         "Use only supplied snapshot values; do not infer injuries, weather, bullpen status, lineups, records, streaks, standings, or advanced metrics unless explicitly present.",
         "Do not use prohibited phrases.",
         `Avoid generic brand filler: ${BRAND_STYLE_EXCLUSIONS.join(", ")}.`,
-        "Describe modelWinProbability as model win probability, never certainty or true chance.",
-        "Use frozen sportsbookOdds, fairOdds, playableThrough, reasons, and riskFlags where useful without overloading the caption.",
-        "If isBackfill is true, identify that selection as best available or lower-confidence rather than equal strength.",
-        "Keep hashtags useful, usually 3-6 tags.",
-        "Use emoji sparingly.",
+        "For DAILY_3, generate only one short natural sentence. The app will deterministically add the frozen teams, odds, hashtags, and disclaimer.",
+        "Do not repeat the team/odds list.",
+        "Do not include hashtags.",
+        "Do not include the disclaimer.",
+        "Do not mention model win probability, fair price, playable-through, score, tiers, risk flags, or internal diagnostics in the public caption sentence.",
+        "Use emoji sparingly and do not add extra emoji to the sentence.",
         "Keep language clear for an average bettor.",
         `Use disclaimer: ${DEFAULT_DISCLAIMER}`
       ],
       formatGuidance: {
-        DAILY_3: `Start with "🔥 SAME GAME HEAT — DAILY 3" or close SGH-branded wording. Use actual line breaks and separate visual blocks: 1️⃣ team ML odds, Model win probability, natural reason sentence, SGH fair price/playable-through when supplied. End the caption visibly with ${DEFAULT_DISCLAIMER}`,
-        BEST_BET: "Use clear line breaks: branded headline, pick line, model win probability, SGH fair price, playable through, WHY SGH LIKES IT bullets, RISK TO WATCH bullets, disclaimer.",
-        PICK_BREAKDOWN: "Use clear line breaks: branded headline, matchup, PICK, MODEL, WHY IT RATES WELL, PRICE CHECK, RISK TO WATCH, disclaimer.",
-        shortCaption: `For DAILY_3 include teams, odds, model probabilities, and ${DEFAULT_DISCLAIMER}. Keep it compact.`,
-        reelHook: "Create curiosity around model analysis. Avoid generic hooks like Curious about, Looking for picks, winning picks, winners, locks, or hype phrases.",
-        reelScript: "20-30 seconds: hook, pick 1 with supplied reason, pick 2 with supplied reason, pick 3 with supplied reason, short uncertainty/price note, responsible-gambling close.",
-        storyText: "Very concise: pick names, odds, model probabilities, disclaimer. No long reason paragraphs."
+        DAILY_3: "Return a field named daily3Sentence with ONE conversational sentence, about 15-20 words max. Example: These are the three sides I like most on today’s board.",
+        BEST_BET: "Keep it short: headline, pick line, one natural sentence, hashtags, disclaimer.",
+        PICK_BREAKDOWN: "Keep it concise: pick, odds, 1-2 short explanation sentences, hashtags, disclaimer.",
+        shortCaption: "Compact only. No model probabilities, fair price, playable-through, score, or tier.",
+        reelHook: "One short sentence only. Example: Three MLB sides I like today.",
+        reelScript: "Short and natural. Avoid long analytical scripts.",
+        storyText: "Very concise: pick names and odds only. No long reason paragraphs."
       },
       contentType,
       snapshots
@@ -2285,7 +2293,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
           temperature: 0.45,
           response_format: { type: "json_object" },
           messages: [
-            { role: "system", content: "You write for Same Game Heat, a credible MLB model-analysis brand. Return one strict JSON object only. Required keys: headline, subheadline, caption, shortCaption, reelHook, reelScript, storyText, reasoningSummary, hashtags, disclaimer, warnings. hashtags MUST be a JSON array of strings. warnings MUST be a JSON array of strings. All other listed fields MUST be JSON strings. Use actual supplied teams, markets, frozen odds, model win probabilities, reasons, price thresholds, and risk flags. Avoid generic marketing copy, hype, guarantees, tout language, and invented analysis." },
+            { role: "system", content: "You write short, natural Same Game Heat Instagram copy. Return one strict JSON object only. Required keys: headline, subheadline, caption, shortCaption, reelHook, reelScript, storyText, reasoningSummary, daily3Sentence, hashtags, disclaimer, warnings. For DAILY_3, daily3Sentence is the only AI language the app may use in the final public caption. It must be one conversational sentence, max 20 words, with no teams, odds, hashtags, disclaimer, model metrics, fair price, playable-through, scores, tiers, guarantees, locks, or invented analysis. hashtags MUST be a JSON array of strings. warnings MUST be a JSON array of strings. All other listed fields MUST be JSON strings." },
             { role: "user", content: JSON.stringify(prompt) }
           ]
         })
