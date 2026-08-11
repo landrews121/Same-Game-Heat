@@ -1062,6 +1062,22 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
     }
   }
 
+  function attachPublicationStage(error, stage, diagnostics = {}) {
+    if (!error.stage) error.stage = stage;
+    error.diagnostics = {
+      ...(error.diagnostics || {}),
+      ...diagnostics
+    };
+    return error;
+  }
+
+  function publicationStep(stage, message, diagnostics = {}) {
+    const error = validationError(message);
+    error.stage = stage;
+    error.diagnostics = diagnostics;
+    return error;
+  }
+
   async function readLocalSnapshots() {
     return (await readJsonArray(snapshotFile)).map(verifySnapshotIntegrity);
   }
@@ -1258,7 +1274,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
       .filter((graphic) => !query.slateDate || graphic.slateDate === query.slateDate);
     const byId = new Map();
     rows.forEach((graphic) => {
-      if (!byId.has(graphic.id)) byId.set(graphic.id, graphic);
+      preferNewestById(byId, graphic);
     });
     return Array.from(byId.values()).sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
   }
@@ -1389,7 +1405,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
       .filter((publication) => query.includeArchived || publication.status !== "archived");
     const byId = new Map();
     rows.forEach((publication) => {
-      if (!byId.has(publication.id)) byId.set(publication.id, publication);
+      preferNewestById(byId, publication);
     });
     return Array.from(byId.values()).sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
   }
@@ -1557,37 +1573,85 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
     return snapshots;
   }
 
-  async function preparePublicationAsset(graphicId) {
+  async function preparePublicationAsset(graphicId, options = {}) {
+    const expectedContentId = cleanString(options.contentId || "");
+    const diagnostics = {
+      requestedGraphicId: graphicId || "",
+      requestedContentId: expectedContentId || "",
+      dryRun: Boolean(instagram.dryRun),
+      dryRunUploadEnabled: Boolean(uploadDryRunAssets)
+    };
     const graphics = await getGraphics({});
     const graphic = graphics.find((item) => item.id === graphicId);
-    if (!graphic) throw validationError("Graphic not found");
+    if (!graphic) throw publicationStep("graphic_lookup", "Approved graphic is not selected or no longer exists.", diagnostics);
+    diagnostics.graphicId = graphic.id;
+    diagnostics.graphicStatus = graphic.status || "";
+    diagnostics.graphicContentId = graphic.socialContentId || "";
+    if (expectedContentId && graphic.socialContentId !== expectedContentId) {
+      throw publicationStep("validation", "Selected graphic does not belong to the selected content item.", diagnostics);
+    }
     const contents = await getContent({});
     const content = contents.find((item) => item.id === graphic.socialContentId);
-    await assertPublishable(content, graphic);
+    diagnostics.contentId = content?.id || "";
+    diagnostics.contentStatus = content?.status || "";
+    if (!content) throw publicationStep("content_lookup", "Content for the selected graphic was not found.", diagnostics);
+    try {
+      await assertPublishable(content, graphic);
+    } catch (error) {
+      throw attachPublicationStage(error, "approval_check", diagnostics);
+    }
     const duplicate = (await getPublications({ socialGraphicId: graphic.id })).find((item) => ["published", "verified"].includes(item.status) && item.accountId === (env.INSTAGRAM_USER_ID || env.INSTAGRAM_ACCOUNT_ID || ""));
-    if (duplicate) throw validationError("This approved graphic already has a published Instagram receipt.");
-    const svg = await fs.readFile(graphic.assetPath, "utf8");
+    if (duplicate) throw publicationStep("validation", "This approved graphic already has a published Instagram receipt.", { ...diagnostics, duplicatePublicationId: duplicate.id });
+    let svg = "";
+    try {
+      svg = await fs.readFile(graphic.assetPath, "utf8");
+    } catch (error) {
+      throw attachPublicationStage(error, "rasterize", { ...diagnostics, message: "Graphic SVG asset could not be read." });
+    }
     const baseDate = (content.slateDate || "undated").split("-");
     const objectPrefix = `social/${baseDate[0] || "0000"}/${baseDate[1] || "00"}/${baseDate[2] || "00"}/${content.contentType}/${graphic.id}`;
     const localOutput = path.join(publicationAssetsDir, `${graphic.id}_${graphic.renderVersionNumber || 1}.png`);
-    const asset = await rasterizeApprovedSvg({ svg, format: graphic.format, outputPath: localOutput });
+    let asset;
+    try {
+      asset = await rasterizeApprovedSvg({ svg, format: graphic.format, outputPath: localOutput });
+    } catch (error) {
+      throw attachPublicationStage(error, "rasterize", diagnostics);
+    }
     let assetUrl = "";
     let assetUploaded = false;
     let assetPublicUrlValidated = false;
     if (instagram.dryRun && !uploadDryRunAssets) {
       assetUrl = `https://dry-run.same-game-heat.local/${objectPrefix}/dry-run${asset.extension}`;
     } else {
-      assetUrl = await uploadPublicationAsset({
-        objectPath: `${objectPrefix}/${graphic.renderVersion || "v1"}${asset.extension}`,
-        bytes: asset.bytes,
-        contentType: asset.mimeType
-      });
+      const objectPath = `${objectPrefix}/${graphic.renderVersion || "v1"}${asset.extension}`;
+      try {
+        assetUrl = await uploadPublicationAsset({
+          objectPath,
+          bytes: asset.bytes,
+          contentType: asset.mimeType
+        });
+      } catch (error) {
+        throw attachPublicationStage(error, "storage_upload", { ...diagnostics, bucket: publicationBucket, objectPath });
+      }
       assetUploaded = true;
-      await verifyAssetAccessible(assetUrl);
+      try {
+        await verifyAssetAccessible(assetUrl);
+      } catch (error) {
+        throw attachPublicationStage(error, "public_url_validation", { ...diagnostics, bucket: publicationBucket, assetUploaded });
+      }
       assetPublicUrlValidated = true;
     }
-    await verifyAssetHash(localOutput, asset.assetHash);
-    const account = await instagram.validateConnection();
+    try {
+      await verifyAssetHash(localOutput, asset.assetHash);
+    } catch (error) {
+      throw attachPublicationStage(error, "receipt_create", diagnostics);
+    }
+    let account;
+    try {
+      account = await instagram.validateConnection();
+    } catch (error) {
+      throw attachPublicationStage(error, "validation", diagnostics);
+    }
     const publication = createPublicationRecord({
       content,
       graphic,
@@ -1599,7 +1663,11 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
       assetUploaded,
       assetPublicUrlValidated
     });
-    return savePublication(publication);
+    try {
+      return await savePublication(publication);
+    } catch (error) {
+      throw attachPublicationStage(error, "receipt_create", diagnostics);
+    }
   }
 
   async function publishPublication(publicationId) {
@@ -2304,10 +2372,20 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
         return true;
       }
       try {
-        const publication = await preparePublicationAsset(graphicPrepareMatch[1]);
-        sendJson(res, 200, { publication });
+        const payload = JSON.parse((await readRequestBody(req)) || "{}");
+        const publication = await preparePublicationAsset(graphicPrepareMatch[1], {
+          contentId: cleanString(payload.contentId || payload.content_id || ""),
+          graphicId: cleanString(payload.graphicId || payload.graphic_id || "")
+        });
+        sendJson(res, 200, { ok: true, stage: "receipt_create", publication });
       } catch (error) {
-        sendJson(res, error.statusCode || 400, { error: safeErrorMessage(error) });
+        sendJson(res, error.statusCode || 400, {
+          ok: false,
+          stage: error.stage || "validation",
+          error: safeErrorMessage(error),
+          message: safeErrorMessage(error),
+          diagnostics: error.diagnostics || {}
+        });
       }
       return true;
     }

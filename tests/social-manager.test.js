@@ -1023,6 +1023,11 @@ test("frontend dry-run publication action is explicit", async () => {
   assert.match(source, /Run Dry-Run Publication Test/);
   assert.match(source, /Dry-run publication receipt prepared/);
   assert.match(source, /DRY-RUN RECEIPT/);
+  assert.match(source, /Approved content is not selected/);
+  assert.match(source, /Approved graphic is not selected/);
+  assert.match(source, /contentId: selectedContent\.id/);
+  assert.match(source, /els\.publicationStatus/);
+  assert.match(source, /finally\s*{/);
 });
 
 test("frontend testing reset clears local workspace and avoids refresh rehydration", async () => {

@@ -348,9 +348,11 @@ test("dry-run can prepare a real public Supabase asset without publishing", asyn
       }
     });
     const cookie = await login(manager);
-    const { graphic } = await approvedContentAndGraphic(manager, cookie);
-    const prepared = await route(manager, { method: "POST", path: `/api/social/graphics/${graphic.id}/prepare-publication`, headers: { cookie }, body: {} });
+    const { content, graphic } = await approvedContentAndGraphic(manager, cookie);
+    const prepared = await route(manager, { method: "POST", path: `/api/social/graphics/${graphic.id}/prepare-publication`, headers: { cookie }, body: { contentId: content.id, graphicId: graphic.id } });
     assert.equal(prepared.status, 200);
+    assert.equal(prepared.json.ok, true);
+    assert.equal(prepared.json.stage, "receipt_create");
     assert.equal(prepared.json.publication.status, "prepared");
     assert.equal(prepared.json.publication.assetUploaded, true);
     assert.equal(prepared.json.publication.simulatedProvider, true);
@@ -443,8 +445,15 @@ test("dry-run upload failure prevents receipt and never calls Meta", async () =>
     const { graphic } = await approvedContentAndGraphic(manager, cookie);
     const prepared = await route(manager, { method: "POST", path: `/api/social/graphics/${graphic.id}/prepare-publication`, headers: { cookie }, body: {} });
     assert.equal(prepared.status, 400);
+    assert.equal(prepared.json.ok, false);
+    assert.equal(prepared.json.stage, "storage_upload");
     assert.match(prepared.json.error, /Dry-run asset upload failed\. No Instagram publication attempted/);
+    assert.match(prepared.json.message, /Dry-run asset upload failed\. No Instagram publication attempted/);
     assert.doesNotMatch(prepared.json.error, /service-role|ig-secret-token/);
+    assert.equal(prepared.json.diagnostics.graphicId, graphic.id);
+    assert.equal(prepared.json.diagnostics.graphicStatus, "approved");
+    assert.equal(prepared.json.diagnostics.dryRun, true);
+    assert.equal(prepared.json.diagnostics.dryRunUploadEnabled, true);
     const publications = await route(manager, { method: "GET", path: "/api/social/publications", headers: { cookie } });
     assert.equal(publications.json.publications.length, 0);
     assert.equal(calls.some((call) => call.href.includes("graph.facebook.com")), false);
@@ -452,6 +461,37 @@ test("dry-run upload failure prevents receipt and never calls Meta", async () =>
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+test("prepare publication reports visible stage when selected content and graphic do not match", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-content-mismatch-"));
+  const manager = createSocialManager({
+    root,
+    env: {
+      SOCIAL_ADMIN_SECRET: "secret",
+      SOCIAL_PUBLISH_DRY_RUN: "true",
+      SOCIAL_DRY_RUN_UPLOAD_ASSET: "true",
+      INSTAGRAM_ACCESS_TOKEN: "token",
+      INSTAGRAM_USER_ID: "123",
+      SUPABASE_URL: "https://project.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "service-role"
+    }
+  });
+  const cookie = await login(manager);
+  const { graphic } = await approvedContentAndGraphic(manager, cookie);
+  const prepared = await route(manager, {
+    method: "POST",
+    path: `/api/social/graphics/${graphic.id}/prepare-publication`,
+    headers: { cookie },
+    body: { contentId: "content_wrong", graphicId: graphic.id }
+  });
+  assert.equal(prepared.status, 400);
+  assert.equal(prepared.json.ok, false);
+  assert.equal(prepared.json.stage, "validation");
+  assert.match(prepared.json.error, /Selected graphic does not belong to the selected content item/);
+  assert.equal(prepared.json.diagnostics.requestedContentId, "content_wrong");
+  assert.equal(prepared.json.diagnostics.graphicId, graphic.id);
+  assert.equal(prepared.json.diagnostics.graphicStatus, "approved");
 });
 
 test("prepared dry-run publication never reports published", async () => {

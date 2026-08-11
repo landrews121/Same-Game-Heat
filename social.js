@@ -43,6 +43,7 @@ const els = {
   runInstagramDiagnostics: document.querySelector("#runInstagramDiagnostics"),
   instagramDiagnosticsStatus: document.querySelector("#instagramDiagnosticsStatus"),
   instagramDiagnostics: document.querySelector("#instagramDiagnostics"),
+  publicationStatus: document.querySelector("#publicationStatus"),
   publicationList: document.querySelector("#publicationList")
 };
 
@@ -71,7 +72,10 @@ async function api(path, options = {}) {
     ...options
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || `${response.status} ${response.statusText}`);
+  if (!response.ok) {
+    const stage = payload.stage ? `${payload.stage}: ` : "";
+    throw new Error(`${stage}${payload.error || payload.message || `${response.status} ${response.statusText}`}`);
+  }
   return payload;
 }
 
@@ -170,6 +174,12 @@ function graphicLabel(format) {
 function publicationDisplayStatus(publication) {
   if (publication?.dryRun && publication.status === "prepared") return "dry_run_prepared";
   return publication?.status || "";
+}
+
+function selectedGraphicById(graphicId) {
+  if (!state.selectedContent?.id || !graphicId) return null;
+  const graphics = state.graphicsByContent.get(state.selectedContent.id) || [];
+  return graphics.find((graphic) => graphic.id === graphicId) || null;
 }
 
 function renderBoard() {
@@ -616,17 +626,61 @@ async function handleGraphicAction(action, graphicId) {
   renderContentDetail(state.selectedContent);
 }
 
-async function preparePublication(graphicId) {
+async function preparePublication(graphicId, button = null) {
   const dryRun = Boolean(state.instagramStatus?.dryRun);
+  const selectedContent = state.selectedContent;
+  const selectedGraphic = selectedGraphicById(graphicId);
+  if (!selectedContent) {
+    showStatus("Approved content is not selected.", els.publicationStatus);
+    return;
+  }
+  if (!graphicId || !selectedGraphic) {
+    showStatus("Approved graphic is not selected.", els.publicationStatus);
+    return;
+  }
+  if (selectedContent.status !== "approved") {
+    showStatus(`Content is ${selectedContent.status || "not approved"}. Approve the Daily 3 content first.`, els.publicationStatus);
+    return;
+  }
+  if (selectedGraphic.status !== "approved") {
+    showStatus(`Graphic is ${selectedGraphic.status || "not approved"}. Approve the Feed Graphic first.`, els.publicationStatus);
+    return;
+  }
+  if (dryRun && !(state.instagramStatus?.connected && state.instagramStatus?.dryRun)) {
+    showStatus("Dry-run publishing is not connected.", els.publicationStatus);
+    return;
+  }
+
+  const previousText = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = dryRun ? "Running..." : "Preparing...";
+  }
   showStatus(dryRun ? "Running dry-run publication test..." : "Preparing approved graphic for Instagram...");
-  const payload = await api(`/api/social/graphics/${encodeURIComponent(graphicId)}/prepare-publication`, {
-    method: "POST",
-    body: "{}"
-  });
-  showStatus(payload.publication.dryRun
-    ? `Dry-run publication receipt prepared: ${payload.publication.status}`
-    : `Publication asset ready: ${payload.publication.status}`);
-  await refreshPublishing();
+  showStatus("", els.publicationStatus);
+  try {
+    const payload = await api(`/api/social/graphics/${encodeURIComponent(graphicId)}/prepare-publication`, {
+      method: "POST",
+      body: JSON.stringify({ contentId: selectedContent.id, graphicId })
+    });
+    showStatus(payload.publication.dryRun
+      ? `Dry-run publication receipt prepared: ${payload.publication.status}`
+      : `Publication asset ready: ${payload.publication.status}`);
+    showStatus(payload.publication.dryRun
+      ? `Dry-run receipt created. Asset uploaded ${payload.publication.assetUploaded ? "YES" : "NO"}. Meta publish BLOCKED.`
+      : "Publication asset ready.",
+      els.publicationStatus);
+    await refreshPublishing();
+  } catch (error) {
+    const message = error.message || "Publication preparation failed.";
+    showStatus(message);
+    showStatus(message, els.publicationStatus);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = previousText;
+    }
+  }
 }
 
 async function handlePublicationAction(action, publicationId) {
@@ -720,7 +774,11 @@ els.contentDetail.addEventListener("click", (event) => {
   }
   const prepareButton = event.target.closest("[data-prepare-publication]");
   if (prepareButton) {
-    preparePublication(prepareButton.dataset.preparePublication).catch((error) => showStatus(error.message));
+    preparePublication(prepareButton.dataset.preparePublication, prepareButton).catch((error) => {
+      const message = error.message || "Publication preparation failed.";
+      showStatus(message);
+      showStatus(message, els.publicationStatus);
+    });
     return;
   }
   const button = event.target.closest("[data-action]");
