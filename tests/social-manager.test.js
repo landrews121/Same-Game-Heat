@@ -1093,7 +1093,7 @@ test("frontend dry-run publication action is explicit", async () => {
 
 test("social studio cache version is bumped for Social Studio UI updates", async () => {
   const html = await fs.readFile(path.join(__dirname, "../social.html"), "utf8");
-  assert.match(html, /social\.js\?v=social-studio-v19/);
+  assert.match(html, /social\.js\?v=social-studio-v20/);
   assert.match(html, /livePublishConfirmPanel/);
   assert.match(html, /livePublishUnderstand/);
 });
@@ -1169,6 +1169,83 @@ test("all Social Studio POST mutation routes require auth", async () => {
     const response = await route(manager, { method: "POST", path: pathName, body });
     assert.equal(response.status, 401, pathName);
   }
+});
+
+test("Social Studio login normalizes environment whitespace, creates a protected session, and never returns the secret", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-social-login-session-"));
+  const manager = createSocialManager({
+    root,
+    env: { SOCIAL_ADMIN_SECRET: " secret\n", NODE_ENV: "production" }
+  });
+
+  const beforeLogin = await route(manager);
+  assert.equal(beforeLogin.status, 200);
+  assert.deepEqual(beforeLogin.json, { configured: true, authorized: false });
+
+  const authenticated = await route(manager, {
+    method: "POST",
+    path: "/api/social/login",
+    body: { secret: "secret" }
+  });
+  assert.equal(authenticated.status, 200);
+  assert.deepEqual(authenticated.json, { authorized: true });
+  assert.match(authenticated.headers["Set-Cookie"], /^sgh_social_admin=/);
+  assert.match(authenticated.headers["Set-Cookie"], /HttpOnly/);
+  assert.match(authenticated.headers["Set-Cookie"], /SameSite=Lax/);
+  assert.match(authenticated.headers["Set-Cookie"], /Secure/);
+  assert.doesNotMatch(JSON.stringify(authenticated), /secret/);
+
+  const afterLogin = await route(manager, {
+    headers: { cookie: authenticated.headers["Set-Cookie"] }
+  });
+  assert.deepEqual(afterLogin.json, { configured: true, authorized: true });
+});
+
+test("Social Studio login rejects wrong or malformed credentials without creating a session", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-social-login-reject-"));
+  const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret" } });
+
+  const wrong = await route(manager, {
+    method: "POST",
+    path: "/api/social/login",
+    body: { secret: "wrong" }
+  });
+  assert.equal(wrong.status, 401);
+  assert.equal(wrong.json.error, "Invalid Social Studio secret.");
+  assert.equal(wrong.headers["Set-Cookie"], undefined);
+  assert.doesNotMatch(JSON.stringify(wrong), /secret(?!\.)/i);
+
+  const malformed = await route(manager, {
+    method: "POST",
+    path: "/api/social/login",
+    body: "{"
+  });
+  assert.equal(malformed.status, 400);
+  assert.equal(malformed.json.error, "Invalid Social Studio login request.");
+  assert.equal(malformed.headers["Set-Cookie"], undefined);
+});
+
+test("Social Studio login fails safely when the server secret is missing", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-social-login-unconfigured-"));
+  const manager = createSocialManager({ root, env: {} });
+  const response = await route(manager, {
+    method: "POST",
+    path: "/api/social/login",
+    body: { secret: "anything" }
+  });
+  assert.equal(response.status, 503);
+  assert.equal(response.json.error, "SOCIAL_ADMIN_SECRET is not configured on the server.");
+  assert.equal(response.headers["Set-Cookie"], undefined);
+});
+
+test("Social Studio browser login posts the secret key and verifies its new session before unlocking", async () => {
+  const client = await fs.readFile(path.join(__dirname, "..", "social.js"), "utf8");
+  const page = await fs.readFile(path.join(__dirname, "..", "social.html"), "utf8");
+  assert.match(client, /api\("\/api\/social\/login"/);
+  assert.match(client, /JSON\.stringify\(\{ secret: els\.socialSecret\.value\.trim\(\) \}\)/);
+  assert.match(client, /const session = await api\("\/api\/social\/session"\)/);
+  assert.match(client, /if \(!session\.authorized\) throw new Error\("Unable to create Social Studio session\."\)/);
+  assert.match(page, /social\.js\?v=social-studio-v20/);
 });
 
 test("production cookie includes Secure", async () => {

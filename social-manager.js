@@ -1070,7 +1070,9 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
   const supabaseUrl = env.SUPABASE_URL || "";
   const supabaseKey = env.SUPABASE_SERVICE_ROLE_KEY || "";
   const instagram = createInstagramPublisher({ env, fetchImpl });
-  const adminSecret = env.SOCIAL_ADMIN_SECRET || "";
+  // Environment editors can preserve an accidental trailing newline or space.
+  // Normalize the configured value exactly as the submitted login value is normalized.
+  const adminSecret = cleanString(env.SOCIAL_ADMIN_SECRET);
   const openAiKey = env.OPENAI_API_KEY || "";
   const aiModel = env.SOCIAL_AI_MODEL || "gpt-4o-mini";
   const aiTimeoutMs = parseSocialAiTimeoutMs(env.SOCIAL_AI_TIMEOUT_MS);
@@ -2199,6 +2201,15 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
     return `${timestamp}.${crypto.createHmac("sha256", adminSecret).update(String(timestamp)).digest("hex")}`;
   }
 
+  function matchesAdminSecret(candidate) {
+    if (!adminSecret) return false;
+    // Compare fixed-length digests so malformed or differently sized input cannot
+    // reach timingSafeEqual with an invalid buffer length.
+    const submittedDigest = crypto.createHash("sha256").update(cleanString(candidate)).digest();
+    const configuredDigest = crypto.createHash("sha256").update(adminSecret).digest();
+    return crypto.timingSafeEqual(submittedDigest, configuredDigest);
+  }
+
   function parseCookies(header = "") {
     return String(header).split(";").reduce((acc, chunk) => {
       const index = chunk.indexOf("=");
@@ -2389,8 +2400,14 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
         sendJson(res, 503, { error: "SOCIAL_ADMIN_SECRET is not configured on the server." });
         return true;
       }
-      const payload = JSON.parse((await readRequestBody(req)) || "{}");
-      if (cleanString(payload.secret) !== adminSecret) {
+      let payload;
+      try {
+        payload = JSON.parse((await readRequestBody(req)) || "{}");
+      } catch {
+        sendJson(res, 400, { error: "Invalid Social Studio login request." });
+        return true;
+      }
+      if (!matchesAdminSecret(payload?.secret)) {
         sendJson(res, 401, { error: "Invalid Social Studio secret." });
         return true;
       }

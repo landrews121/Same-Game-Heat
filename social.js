@@ -930,11 +930,15 @@ els.loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   showStatus("", els.loginStatus);
   try {
-    await api("/api/social/login", {
+    const login = await api("/api/social/login", {
       method: "POST",
-      body: JSON.stringify({ secret: els.socialSecret.value })
+      body: JSON.stringify({ secret: els.socialSecret.value.trim() })
     });
+    if (!login.authorized) throw new Error("Unable to create Social Studio session.");
+    const session = await api("/api/social/session");
+    if (!session.authorized) throw new Error("Unable to create Social Studio session.");
     state.authorized = true;
+    els.socialSecret.value = "";
     els.loginPanel.classList.add("hidden");
     els.socialApp.classList.remove("hidden");
     loadCurrentBoard();
