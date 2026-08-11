@@ -5,6 +5,7 @@ const {
   GRAPHIC_TEMPLATE_VERSION,
   GRAPHIC_RENDER_VERSION,
   GRAPHIC_FORMATS,
+  normalizeGraphicFormat,
   renderSocialGraphic
 } = require("./social-graphics");
 const {
@@ -915,7 +916,7 @@ function isActiveSocialContent(content) {
 
 function createSocialGraphicRecord({ content, snapshots, format, rendered, status = "rendered", now = new Date().toISOString(), renderVersionNumber = 1, assetPath = "", assetUrl = "", fileSize = 0, generationError = null }) {
   const safeStatus = SOCIAL_GRAPHIC_STATUSES.has(status) ? status : "failed";
-  const normalizedFormat = GRAPHIC_FORMATS[format] ? format : "feed";
+  const normalizedFormat = normalizeGraphicFormat(format);
   const dimensions = GRAPHIC_FORMATS[normalizedFormat];
   const snapshotHashes = rendered?.snapshotHashes?.length ? rendered.snapshotHashes : snapshots.map((snapshot) => snapshot.snapshotHash).filter(Boolean);
   const snapshotIds = rendered?.snapshotIds?.length ? rendered.snapshotIds : snapshots.map((snapshot) => snapshot.id).filter(Boolean);
@@ -2115,6 +2116,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
   }
 
   async function renderGraphicForContent(content, { format = "feed", sourceGraphic = null } = {}) {
+    const normalizedFormat = normalizeGraphicFormat(format);
     const allSnapshots = await getSnapshots({});
     const snapshots = (content.pickSnapshotIds || [])
       .map((id) => allSnapshots.find((snapshot) => snapshot.id === id))
@@ -2127,7 +2129,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
       const failed = createSocialGraphicRecord({
         content,
         snapshots,
-        format,
+        format: normalizedFormat,
         rendered: null,
         status: "failed",
         renderVersionNumber: (sourceGraphic?.renderVersionNumber || 0) + 1,
@@ -2138,12 +2140,12 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
     }
     let rendered;
     try {
-      rendered = renderSocialGraphic({ content, snapshots, format });
+      rendered = renderSocialGraphic({ content, snapshots, format: normalizedFormat });
     } catch (error) {
       const failed = createSocialGraphicRecord({
         content,
         snapshots,
-        format,
+        format: normalizedFormat,
         rendered: null,
         status: "failed",
         renderVersionNumber: (sourceGraphic?.renderVersionNumber || 0) + 1,
@@ -2713,13 +2715,20 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
         return true;
       }
       const payload = JSON.parse((await readRequestBody(req)) || "{}");
+      let normalizedFormat;
+      try {
+        normalizedFormat = normalizeGraphicFormat(payload.format || "feed");
+      } catch (error) {
+        sendJson(res, error.statusCode || 400, { error: error.message });
+        return true;
+      }
       const rows = await getContent({});
       const content = rows.find((item) => item.id === contentGraphicMatch[1]);
       if (!content) {
         sendJson(res, 404, { error: "Content not found" });
         return true;
       }
-      const graphic = await renderGraphicForContent(content, { format: payload.format || "feed" });
+      const graphic = await renderGraphicForContent(content, { format: normalizedFormat });
       sendJson(res, graphic.status === "failed" ? 400 : 200, {
         graphic,
         ...(graphic.status === "failed" ? { error: graphic.generationError || "Graphic generation failed" } : {})

@@ -14,7 +14,8 @@ const state = {
   instagramDiagnostics: null,
   publications: [],
   pendingLivePublish: null,
-  livePublishInFlight: false
+  livePublishInFlight: false,
+  graphicGenerationInFlight: new Set()
 };
 
 const els = {
@@ -178,8 +179,9 @@ function formatPercent(value) {
 }
 
 function graphicLabel(format) {
-  if (format === "story") return "Story";
-  if (format === "square") return "Square";
+  const normalizedFormat = String(format || "feed").toLowerCase();
+  if (normalizedFormat === "story") return "Story";
+  if (normalizedFormat === "square") return "Square";
   return "Feed";
 }
 
@@ -720,17 +722,41 @@ async function handleContentAction(action) {
   renderContentDetail(state.selectedContent);
 }
 
-async function generateGraphic(format) {
+async function generateGraphic(format, button = null) {
+  const normalizedFormat = String(format || "feed").toLowerCase();
   const content = state.selectedContent;
-  if (!content) return;
-  showStatus(`Generating ${graphicLabel(format)} graphic...`);
-  const payload = await api(`/api/social/content/${encodeURIComponent(content.id)}/graphics`, {
-    method: "POST",
-    body: JSON.stringify({ format })
-  });
-  await loadGraphicsForContent(content.id);
-  showStatus(payload.graphic?.status === "failed" ? payload.graphic.generationError : "");
-  renderContentDetail(content);
+  if (!content) {
+    showStatus("Select a content item before generating a graphic.");
+    return;
+  }
+  const inFlightKey = `${content.id}:${normalizedFormat}`;
+  if (state.graphicGenerationInFlight.has(inFlightKey)) return;
+  state.graphicGenerationInFlight.add(inFlightKey);
+  const originalText = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = `Generating ${graphicLabel(normalizedFormat)}...`;
+  }
+  showStatus(`Generating ${graphicLabel(normalizedFormat)} graphic...`);
+  try {
+    const payload = await api(`/api/social/content/${encodeURIComponent(content.id)}/graphics`, {
+      method: "POST",
+      body: JSON.stringify({ format: normalizedFormat })
+    });
+    await loadGraphicsForContent(content.id);
+    const latestContent = state.content.find((item) => item.id === content.id) || content;
+    state.selectedContent = latestContent;
+    showStatus(payload.graphic?.status === "failed" ? payload.graphic.generationError || payload.error || "Graphic generation failed." : `${graphicLabel(normalizedFormat)} graphic generated.`);
+    renderContentDetail(latestContent);
+  } catch (error) {
+    showStatus(error.message || `${graphicLabel(normalizedFormat)} graphic generation failed.`);
+  } finally {
+    state.graphicGenerationInFlight.delete(inFlightKey);
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
 }
 
 async function handleGraphicAction(action, graphicId) {
@@ -905,7 +931,7 @@ els.contentQueue.addEventListener("click", (event) => {
 els.contentDetail.addEventListener("click", (event) => {
   const graphicGenerateButton = event.target.closest("[data-generate-graphic]");
   if (graphicGenerateButton) {
-    generateGraphic(graphicGenerateButton.dataset.generateGraphic).catch((error) => showStatus(error.message));
+    generateGraphic(graphicGenerateButton.dataset.generateGraphic, graphicGenerateButton).catch((error) => showStatus(error.message));
     return;
   }
   const graphicActionButton = event.target.closest("[data-graphic-action]");

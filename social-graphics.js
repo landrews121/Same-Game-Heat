@@ -24,6 +24,17 @@ const PROHIBITED_PHRASES = [
   "NO RISK"
 ];
 
+function normalizeGraphicFormat(format = "feed") {
+  const rawFormat = clean(format || "feed", "feed");
+  const normalizedFormat = rawFormat.toLowerCase();
+  if (!GRAPHIC_FORMATS[normalizedFormat]) {
+    const error = new Error(`Unsupported graphic format: ${rawFormat || "unknown"}`);
+    error.statusCode = 400;
+    throw error;
+  }
+  return normalizedFormat;
+}
+
 function canonicalize(value) {
   if (Array.isArray(value)) return value.map(canonicalize);
   if (value && typeof value === "object") {
@@ -386,8 +397,65 @@ function renderDaily3Feed({ content, snapshots, width, height }) {
   ].join("");
 }
 
+function renderDaily3StoryCard(snapshot, index, y) {
+  const x = 82;
+  const width = 916;
+  const height = 254;
+  const teamName = clean(snapshot.selectedTeam, "Team TBD");
+  const abbreviation = teamAbbreviation(teamName);
+  const reason = daily3Reason(snapshot);
+  const teamFont = teamName.length > 25 ? 44 : teamName.length > 18 ? 50 : 60;
+  const teamLines = wrapText(teamName, teamName.length > 25 ? 22 : 20, 2);
+  return [
+    `<g class="daily3-story-pick-card" data-rank="${index + 1}">`,
+    `<title>${escapeXml(`${index + 1}. ${teamName} ${formatOdds(snapshot.sportsbookOdds)}`)}</title>`,
+    `<desc>${escapeXml(`${teamName} moneyline ${formatOdds(snapshot.sportsbookOdds)}. ${reason}`)}</desc>`,
+    `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="32" fill="#ffffff" stroke="#dbe6f5" stroke-width="3"/>`,
+    `<path d="M${x} ${y + 30} Q${x} ${y} ${x + 30} ${y} H${x + 126} L${x + 68} ${y + height} H${x + 30} Q${x} ${y + height} ${x} ${y + height - 30} Z" fill="#0b4c9c"/>`,
+    `<circle cx="${x + 4}" cy="${y + 82}" r="47" fill="#061733" stroke="#ffffff" stroke-width="5"/>`,
+    `<text x="${x + 4}" y="${y + 99}" text-anchor="middle" font-size="54" font-weight="900" fill="#ffffff">${index + 1}</text>`,
+    `<circle cx="${x + 164}" cy="${y + 128}" r="74" fill="#07162f" stroke="#d6dde8" stroke-width="6"/>`,
+    `<circle cx="${x + 164}" cy="${y + 128}" r="63" fill="#0b2e63" stroke="#6fa4d8" stroke-width="4"/>`,
+    `<text x="${x + 164}" y="${y + 150}" text-anchor="middle" font-size="${abbreviation.length > 3 ? 45 : 58}" font-weight="900" fill="#ffffff">${escapeXml(abbreviation)}</text>`,
+    teamLines.map((line, lineIndex) => `<text x="${x + 282}" y="${y + 84 + lineIndex * 58}" font-size="${teamFont}" font-weight="900" fill="#071943">${escapeXml(line)}</text>`).join(""),
+    `<text x="${x + 284}" y="${y + 178}" font-size="32" font-weight="900" fill="#b10f24" letter-spacing="2">MONEYLINE</text>`,
+    `<text x="${x + width - 42}" y="${y + 94}" text-anchor="end" font-size="74" font-weight="900" font-style="italic" fill="#071943">${escapeXml(formatOdds(snapshot.sportsbookOdds))}</text>`,
+    `<line x1="${x + 612}" y1="${y + 148}" x2="${x + 612}" y2="${y + 216}" stroke="#c9ced8" stroke-width="3"/>`,
+    reasonIcon(reasonIconType(reason), x + 638, y + 154),
+    textLines(reason, x + 706, y + 176, 25, { maxChars: 20, maxLines: 2, weight: 900, fill: "#071943", lineHeight: 31 }),
+    `</g>`
+  ].join("");
+}
+
+function renderDaily3Story({ content, snapshots, width, height }) {
+  const picks = snapshots.slice(0, 3);
+  const slateDate = content.slateDate || picks[0]?.slateDate;
+  return [
+    `<rect x="0" y="0" width="${width}" height="${height}" fill="url(#stadiumBg)"/>`,
+    `<path d="M0 660 C230 570 420 610 660 520 C850 450 982 342 1080 232 V${height} H0 Z" fill="url(#fieldDirt)" opacity="0.95"/>`,
+    `<path d="M742 -60 L1080 -60 V600 C945 522 846 438 726 352 Z" fill="url(#redHeat)" opacity="0.95"/>`,
+    `<path d="M718 0 L646 536" stroke="#ffffff" stroke-width="5" opacity="0.78"/>`,
+    `<path d="M0 0 H${width} V${height} H0 Z" fill="url(#daily3Light)"/>`,
+    `<rect x="0" y="0" width="${width}" height="${height}" fill="url(#daily3Grain)" opacity="0.76"/>`,
+    `<text x="82" y="122" font-size="48" font-weight="900" letter-spacing="12" fill="#ffffff">SAME GAME HEAT</text>`,
+    `<text x="72" y="308" font-size="160" font-weight="900" letter-spacing="2" fill="url(#distress)" stroke="#ffffff" stroke-width="2">DAILY 3</text>`,
+    `<path d="M72 366 H170 M204 366 H246 M280 366 H322 M356 366 H454" stroke="#c90924" stroke-width="8"/>`,
+    `<path d="M82 404 H438 L410 484 H52 Z" fill="#c90924"/>`,
+    `<text x="128" y="458" font-size="48" font-weight="900" letter-spacing="4" fill="#ffffff">${escapeXml(shortDate(slateDate))}</text>`,
+    renderDaily3BrandMark(width),
+    picks.map((snapshot, index) => renderDaily3StoryCard(snapshot, index, 590 + index * 306)).join(""),
+    `<text x="${width / 2}" y="${height - 200}" text-anchor="middle" font-size="42" font-weight="900" fill="#ffffff">@sg_heater</text>`,
+    `<path d="M0 ${height - 132} C210 ${height - 92} 410 ${height - 138} 600 ${height - 104} C810 ${height - 70} 960 ${height - 100} ${width} ${height - 76} V${height} H0 Z" fill="#061733" opacity="0.96"/>`,
+    `<path d="M820 ${height - 98} C910 ${height - 140} 1004 ${height - 158} 1080 ${height - 178} V${height} H760 Z" fill="#c90924" opacity="0.86"/>`,
+    `<text x="92" y="${height - 54}" font-size="30" font-weight="900" fill="#ffffff">${escapeXml(RESPONSIBLE_FOOTER)}</text>`,
+    `<line x1="440" y1="${height - 90}" x2="440" y2="${height - 34}" stroke="#c90924" stroke-width="4"/>`,
+    `<text x="502" y="${height - 54}" font-size="30" font-weight="900" fill="#ffffff">Research, not a guarantee.</text>`
+  ].join("");
+}
+
 function renderDaily3({ content, snapshots, width, height, format }) {
   if (format === "feed") return renderDaily3Feed({ content, snapshots, width, height });
+  if (format === "story") return renderDaily3Story({ content, snapshots, width, height });
   return renderClassicDaily3({ content, snapshots, width, height, format });
 }
 
@@ -489,7 +557,7 @@ function renderDailyResults({ content, width, height }) {
 }
 
 function renderSocialGraphic({ content, snapshots, format = "feed" }) {
-  const normalizedFormat = GRAPHIC_FORMATS[format] ? format : "feed";
+  const normalizedFormat = normalizeGraphicFormat(format);
   const dimensions = GRAPHIC_FORMATS[normalizedFormat];
   const safeContent = content || {};
   const safeSnapshots = Array.isArray(snapshots) ? snapshots.filter(Boolean) : [];
@@ -571,6 +639,7 @@ module.exports = {
   GRAPHIC_RENDER_VERSION,
   GRAPHIC_FORMATS,
   RESPONSIBLE_FOOTER,
+  normalizeGraphicFormat,
   renderSocialGraphic,
   prohibitedHits,
   canonicalStringify,
