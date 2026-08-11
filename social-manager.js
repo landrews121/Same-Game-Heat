@@ -48,6 +48,7 @@ const SOCIAL_STATUSES = new Set([
   "failed",
   "archived"
 ]);
+const ACTIVE_SOCIAL_CONTENT_STATUSES = new Set(["draft", "ready_for_review", "approved", "scheduled", "published"]);
 const SOCIAL_GRAPHIC_STATUSES = new Set(["rendered", "approved", "failed", "archived"]);
 const PROHIBITED_PHRASES = [
   "GUARANTEED",
@@ -855,6 +856,10 @@ function archiveSocialContent(content, now = new Date().toISOString()) {
   return { ...content, status: "archived", archivedAt: now, updatedAt: now };
 }
 
+function isActiveSocialContent(content) {
+  return ACTIVE_SOCIAL_CONTENT_STATUSES.has(cleanString(content?.status));
+}
+
 function createSocialGraphicRecord({ content, snapshots, format, rendered, status = "rendered", now = new Date().toISOString(), renderVersionNumber = 1, assetPath = "", assetUrl = "", fileSize = 0, generationError = null }) {
   const safeStatus = SOCIAL_GRAPHIC_STATUSES.has(status) ? status : "failed";
   const normalizedFormat = GRAPHIC_FORMATS[format] ? format : "feed";
@@ -1013,6 +1018,20 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
   const aiTimeoutMs = parseSocialAiTimeoutMs(env.SOCIAL_AI_TIMEOUT_MS);
   const secureCookie = env.NODE_ENV === "production" || env.SOCIAL_COOKIE_SECURE === "true";
 
+  function redactConfiguredSecrets(value) {
+    let text = cleanString(value);
+    [
+      supabaseKey,
+      env.INSTAGRAM_ACCESS_TOKEN,
+      env.META_ACCESS_TOKEN,
+      env.OPENAI_API_KEY,
+      adminSecret
+    ].filter(Boolean).forEach((secret) => {
+      text = text.split(secret).join("[redacted]");
+    });
+    return text.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, "Bearer [redacted]");
+  }
+
   function sendJson(res, status, payload, headers = {}) {
     res.writeHead(status, {
       "Content-Type": "application/json; charset=utf-8",
@@ -1033,6 +1052,14 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
 
   async function writeJsonArray(file, rows) {
     await fs.writeFile(file, JSON.stringify(rows, null, 2));
+  }
+
+  function preferNewestById(map, record) {
+    if (!record?.id) return;
+    const existing = map.get(record.id);
+    if (!existing || String(record.updatedAt || record.createdAt || "") >= String(existing.updatedAt || existing.createdAt || "")) {
+      map.set(record.id, record);
+    }
   }
 
   async function readLocalSnapshots() {
@@ -1168,7 +1195,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
       .filter((content) => !query.status || query.status === "all" || content.status === query.status);
     const byId = new Map();
     rows.forEach((content) => {
-      if (!byId.has(content.id)) byId.set(content.id, content);
+      preferNewestById(byId, content);
     });
     return Array.from(byId.values()).sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
   }
@@ -1500,7 +1527,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
     });
     if (!response.ok && response.status !== 409) {
       const text = await response.text();
-      throw new Error(`Supabase Storage ${response.status}: ${text.slice(0, 160)}`);
+      throw new Error(`Dry-run asset upload failed. No Instagram publication attempted. Supabase Storage ${response.status}: ${redactConfiguredSecrets(text).slice(0, 160)}`);
     }
     return `${supabaseUrl}/storage/v1/object/public/${encodeURIComponent(publicationBucket)}/${objectPath.split("/").map(encodeURIComponent).join("/")}`;
   }
@@ -1508,7 +1535,9 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
   async function verifyAssetAccessible(assetUrl) {
     rejectLocalAssetUrl(assetUrl);
     const response = await fetch(assetUrl, { method: "HEAD" });
-    if (!response.ok) throw new Error(`Publication asset is not reachable: ${response.status}`);
+    if (response.ok) return true;
+    const getResponse = await fetch(assetUrl, { method: "GET", headers: { Range: "bytes=0-31" } });
+    if (!getResponse.ok) throw new Error(`Publication asset is not reachable: ${response.status}`);
     return true;
   }
 
@@ -1544,6 +1573,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
     const asset = await rasterizeApprovedSvg({ svg, format: graphic.format, outputPath: localOutput });
     let assetUrl = "";
     let assetUploaded = false;
+    let assetPublicUrlValidated = false;
     if (instagram.dryRun && !uploadDryRunAssets) {
       assetUrl = `https://dry-run.same-game-heat.local/${objectPrefix}/dry-run${asset.extension}`;
     } else {
@@ -1554,6 +1584,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
       });
       assetUploaded = true;
       await verifyAssetAccessible(assetUrl);
+      assetPublicUrlValidated = true;
     }
     await verifyAssetHash(localOutput, asset.assetHash);
     const account = await instagram.validateConnection();
@@ -1565,7 +1596,8 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
       apiVersion: instagram.apiVersion,
       status: instagram.dryRun ? "prepared" : "asset_ready",
       dryRun: instagram.dryRun,
-      assetUploaded
+      assetUploaded,
+      assetPublicUrlValidated
     });
     return savePublication(publication);
   }
@@ -2329,7 +2361,7 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
       const contentType = normalizeContentType(payload.contentType || "DAILY_3");
       const snapshots = await snapshotsFromRequest(payload);
       const existingDaily = contentType === "DAILY_3"
-        ? (await getContent({ slateDate: snapshots[0]?.slateDate })).find((item) => item.contentType === "DAILY_3" && item.status !== "archived")
+        ? (await getContent({ slateDate: snapshots[0]?.slateDate })).find((item) => item.contentType === "DAILY_3" && isActiveSocialContent(item))
         : null;
       if (existingDaily && !payload.allowDuplicate) {
         sendJson(res, 409, { error: "A Daily 3 social draft already exists for this slate. Archive it or regenerate it.", content: existingDaily });

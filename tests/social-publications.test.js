@@ -8,6 +8,7 @@ const {
   readPngDimensions,
   verifyAssetHash,
   rejectLocalAssetUrl,
+  sha256,
   createPublicationRecord,
   verifyPublicationIntegrity
 } = require("../social-publications");
@@ -320,13 +321,15 @@ test("dry-run prepare creates prepared publication and does not publish", async 
 test("dry-run can prepare a real public Supabase asset without publishing", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-dry-upload-"));
   const calls = [];
+  const uploadedBodies = [];
   const originalFetch = global.fetch;
   global.fetch = async (url, options = {}) => {
     calls.push({ href: String(url), method: options.method || "GET" });
     if (options.method === "POST" && String(url).includes("/storage/v1/object/")) {
+      uploadedBodies.push(options.body);
       return { ok: true, status: 200, text: async () => "", json: async () => ({}) };
     }
-    if (options.method === "HEAD") return { ok: true, status: 200, json: async () => ({}) };
+    if (options.method === "HEAD") return { ok: true, status: 200, headers: { get: () => "image/png" }, json: async () => ({}) };
     throw new Error("Meta should not be called during dry-run upload preparation");
   };
   try {
@@ -338,6 +341,7 @@ test("dry-run can prepare a real public Supabase asset without publishing", asyn
         SOCIAL_DRY_RUN_UPLOAD_ASSET: "true",
         INSTAGRAM_ACCESS_TOKEN: "token",
         INSTAGRAM_USER_ID: "123",
+        INSTAGRAM_EXPECTED_USERNAME: "sg_heater",
         SUPABASE_URL: "https://project.supabase.co",
         SUPABASE_SERVICE_ROLE_KEY: "service-role",
         SOCIAL_MEDIA_ASSETS_BUCKET: "social-media-assets"
@@ -350,10 +354,101 @@ test("dry-run can prepare a real public Supabase asset without publishing", asyn
     assert.equal(prepared.json.publication.status, "prepared");
     assert.equal(prepared.json.publication.assetUploaded, true);
     assert.equal(prepared.json.publication.simulatedProvider, true);
+    assert.equal(prepared.json.publication.accountUsername, "sg_heater");
+    assert.equal(prepared.json.publication.metadata.assetPublicUrlValidated, true);
+    assert.equal(prepared.json.publication.metadata.metaPublishBlocked, true);
+    assert.equal(prepared.json.publication.metadata.livePostCreated, false);
     assert.match(prepared.json.publication.assetUrl, /^https:\/\/project\.supabase\.co\/storage\/v1\/object\/public\/social-media-assets\//);
     assert.equal(prepared.json.publication.platformMediaId, "");
+    assert.equal(prepared.json.publication.permalink, "");
+    assert.equal(prepared.json.publication.assetUrl.includes("service-role"), false);
+    assert.equal(JSON.stringify(prepared.json.publication).includes("service-role"), false);
+    assert.equal(JSON.stringify(prepared.json.publication).includes("token"), false);
+    assert.equal(prepared.json.publication.assetHash, sha256(uploadedBodies[0]));
     assert.ok(calls.some((call) => call.method === "POST" && call.href.includes("/storage/v1/object/")));
     assert.ok(calls.some((call) => call.method === "HEAD"));
+    assert.equal(calls.some((call) => call.href.includes("/media_publish")), false);
+    assert.equal(calls.some((call) => call.href.includes("graph.facebook.com")), false);
+    const retried = await route(manager, { method: "POST", path: `/api/social/graphics/${graphic.id}/prepare-publication`, headers: { cookie }, body: {} });
+    assert.equal(retried.status, 200);
+    assert.equal(retried.json.publication.id, prepared.json.publication.id);
+    assert.equal(retried.json.publication.assetUrl, prepared.json.publication.assetUrl);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("dry-run public asset validation falls back to small GET when HEAD is blocked", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-dry-upload-get-"));
+  const calls = [];
+  const originalFetch = global.fetch;
+  global.fetch = async (url, options = {}) => {
+    calls.push({ href: String(url), method: options.method || "GET", range: options.headers?.Range || "" });
+    if (options.method === "POST" && String(url).includes("/storage/v1/object/")) {
+      return { ok: true, status: 200, text: async () => "", json: async () => ({}) };
+    }
+    if (options.method === "HEAD") return { ok: false, status: 405, json: async () => ({}) };
+    if (options.method === "GET") return { ok: true, status: 206, json: async () => ({}) };
+    throw new Error("Unexpected request");
+  };
+  try {
+    const manager = createSocialManager({
+      root,
+      env: {
+        SOCIAL_ADMIN_SECRET: "secret",
+        SOCIAL_PUBLISH_DRY_RUN: "true",
+        SOCIAL_DRY_RUN_UPLOAD_ASSET: "true",
+        INSTAGRAM_ACCESS_TOKEN: "token",
+        INSTAGRAM_USER_ID: "123",
+        SUPABASE_URL: "https://project.supabase.co",
+        SUPABASE_SERVICE_ROLE_KEY: "service-role"
+      }
+    });
+    const cookie = await login(manager);
+    const { graphic } = await approvedContentAndGraphic(manager, cookie);
+    const prepared = await route(manager, { method: "POST", path: `/api/social/graphics/${graphic.id}/prepare-publication`, headers: { cookie }, body: {} });
+    assert.equal(prepared.status, 200);
+    assert.equal(prepared.json.publication.assetUploaded, true);
+    assert.ok(calls.some((call) => call.method === "GET" && call.range === "bytes=0-31"));
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("dry-run upload failure prevents receipt and never calls Meta", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-dry-upload-fail-"));
+  const calls = [];
+  const originalFetch = global.fetch;
+  global.fetch = async (url, options = {}) => {
+    calls.push({ href: String(url), method: options.method || "GET" });
+    if (options.method === "POST" && String(url).includes("/storage/v1/object/")) {
+      return { ok: false, status: 403, text: async () => "service-role token denied", json: async () => ({}) };
+    }
+    throw new Error("No request should happen after failed upload");
+  };
+  try {
+    const manager = createSocialManager({
+      root,
+      env: {
+        SOCIAL_ADMIN_SECRET: "secret",
+        SOCIAL_PUBLISH_DRY_RUN: "true",
+        SOCIAL_DRY_RUN_UPLOAD_ASSET: "true",
+        INSTAGRAM_ACCESS_TOKEN: "ig-secret-token",
+        INSTAGRAM_USER_ID: "123",
+        SUPABASE_URL: "https://project.supabase.co",
+        SUPABASE_SERVICE_ROLE_KEY: "service-role"
+      }
+    });
+    const cookie = await login(manager);
+    const { graphic } = await approvedContentAndGraphic(manager, cookie);
+    const prepared = await route(manager, { method: "POST", path: `/api/social/graphics/${graphic.id}/prepare-publication`, headers: { cookie }, body: {} });
+    assert.equal(prepared.status, 400);
+    assert.match(prepared.json.error, /Dry-run asset upload failed\. No Instagram publication attempted/);
+    assert.doesNotMatch(prepared.json.error, /service-role|ig-secret-token/);
+    const publications = await route(manager, { method: "GET", path: "/api/social/publications", headers: { cookie } });
+    assert.equal(publications.json.publications.length, 0);
+    assert.equal(calls.some((call) => call.href.includes("graph.facebook.com")), false);
+    assert.equal(calls.some((call) => call.href.includes("/media_publish")), false);
   } finally {
     global.fetch = originalFetch;
   }

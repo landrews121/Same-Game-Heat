@@ -179,6 +179,7 @@ function createPublicationRecord({
   status = "asset_ready",
   dryRun = false,
   assetUploaded = false,
+  assetPublicUrlValidated = false,
   now = new Date().toISOString()
 }) {
   if (!PUBLICATION_STATUSES.has(status)) throw new Error("Unsupported publication status");
@@ -224,6 +225,9 @@ function createPublicationRecord({
       assetWidth: asset.width,
       assetHeight: asset.height,
       dryRunUploadEnabled: Boolean(dryRun && assetUploaded),
+      assetPublicUrlValidated: Boolean(assetPublicUrlValidated),
+      metaPublishBlocked: Boolean(dryRun),
+      livePostCreated: false,
       safetyGate: dryRun ? "SOCIAL_PUBLISH_DRY_RUN" : ""
     }
   };

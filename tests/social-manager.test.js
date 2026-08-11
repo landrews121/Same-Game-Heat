@@ -445,6 +445,85 @@ test("Daily 3 route prevents duplicate active content for the same slate", async
   assert.equal(secondRes.capture.status, 409);
 });
 
+test("Daily 3 route allows a new draft after the previous one is archived", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-social-archived-daily3-"));
+  const manager = createSocialManager({ root, env: { SOCIAL_ADMIN_SECRET: "secret" } });
+  const cookie = await login(manager);
+  const body = {
+    contentType: "DAILY_3",
+    board: {
+      slateDate: "2026-07-27",
+      sport: "baseball_mlb",
+      officialPicks: [samplePick()]
+    }
+  };
+  const first = await route(manager, { method: "POST", path: "/api/social/generate", headers: { cookie }, body });
+  assert.equal(first.status, 200);
+  const archived = await route(manager, {
+    method: "POST",
+    path: `/api/social/content/${first.json.content.id}/archive`,
+    headers: { cookie },
+    body: {}
+  });
+  assert.equal(archived.status, 200);
+  assert.equal(archived.json.content.status, "archived");
+
+  const second = await route(manager, { method: "POST", path: "/api/social/generate", headers: { cookie }, body });
+  assert.equal(second.status, 200);
+  assert.equal(second.json.content.contentType, "DAILY_3");
+  assert.notEqual(second.json.content.id, first.json.content.id);
+  assert.notEqual(second.json.content.status, "archived");
+});
+
+test("newer archived local Daily 3 beats stale active remote duplicate", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-social-stale-remote-daily3-"));
+  const snapshot = createSocialPickSnapshot(samplePick(), { createdAt: "2026-07-27T12:00:00Z" });
+  const activeRemote = createSocialContentRecord({
+    contentType: "DAILY_3",
+    snapshots: [snapshot],
+    generated: {},
+    now: "2026-07-27T12:01:00Z"
+  });
+  const archivedLocal = archiveSocialContent(activeRemote, "2026-07-27T12:02:00Z");
+  await fs.writeFile(path.join(root, ".social-content.json"), JSON.stringify([archivedLocal], null, 2));
+  const manager = createSocialManager({
+    root,
+    env: { SOCIAL_ADMIN_SECRET: "secret" },
+    supabaseEnabled: () => true,
+    supabaseRequest: async (pathName, options = {}) => {
+      if (!options.method && String(pathName).startsWith("social_content?")) {
+        return [{
+          id: activeRemote.id,
+          content_type: activeRemote.contentType,
+          slate_date: activeRemote.slateDate,
+          status: activeRemote.status,
+          payload: activeRemote,
+          created_at: activeRemote.createdAt,
+          updated_at: activeRemote.updatedAt
+        }];
+      }
+      return [];
+    }
+  });
+  const cookie = await login(manager);
+  const response = await route(manager, {
+    method: "POST",
+    path: "/api/social/generate",
+    headers: { cookie },
+    body: {
+      contentType: "DAILY_3",
+      board: {
+        slateDate: "2026-07-27",
+        sport: "baseball_mlb",
+        officialPicks: [samplePick()]
+      }
+    }
+  });
+  assert.equal(response.status, 200);
+  assert.notEqual(response.json.content.id, activeRemote.id);
+  assert.notEqual(response.json.content.status, "archived");
+});
+
 test("successful OpenAI social response preserves provider and configured model", async () => {
   let capturedBody = null;
   await withMockedSocialAi({
@@ -936,6 +1015,7 @@ test("frontend social generation clears loading status in finally", async () => 
   assert.match(source, /async function generateContent/);
   assert.match(source, /finally\s*{/);
   assert.match(source, /showStatus\(finalStatus\)/);
+  assert.match(source, /draft created/);
 });
 
 test("frontend dry-run publication action is explicit", async () => {

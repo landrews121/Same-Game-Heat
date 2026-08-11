@@ -167,6 +167,11 @@ function graphicLabel(format) {
   return "Feed";
 }
 
+function publicationDisplayStatus(publication) {
+  if (publication?.dryRun && publication.status === "prepared") return "dry_run_prepared";
+  return publication?.status || "";
+}
+
 function renderBoard() {
   const picks = state.board?.officialPicks || [];
   els.createDaily3.disabled = !picks.length;
@@ -248,14 +253,18 @@ function renderPublishing() {
         <div>
           <strong>${escapeHtml(publication.contentType)} · ${escapeHtml(publication.publicationType)}</strong>
           <div class="studio-meta">
-            <span class="studio-pill">${escapeHtml(publication.status)}</span>
+            <span class="studio-pill">${escapeHtml(publicationDisplayStatus(publication))}</span>
             <span class="studio-pill">${escapeHtml(publication.slateDate)}</span>
             <span class="studio-pill">${escapeHtml(publication.provider)}</span>
             ${publication.dryRun ? `<span class="studio-pill">DRY-RUN RECEIPT</span>` : ""}
             <span class="studio-pill">Asset uploaded ${publication.assetUploaded ? "YES" : "NO"}</span>
+            ${publication.metadata?.assetPublicUrlValidated ? `<span class="studio-pill">Public URL validated</span>` : ""}
+            ${publication.dryRun ? `<span class="studio-pill">Meta publish BLOCKED</span><span class="studio-pill">Live post NO</span>` : ""}
           </div>
           <p>${escapeHtml(publication.caption || "")}</p>
           ${publication.accountUsername ? `<p>Account: @${escapeHtml(publication.accountUsername)}</p>` : ""}
+          ${publication.assetUrl ? `<p>Asset URL: ${escapeHtml(publication.assetUrl)}</p>` : ""}
+          ${publication.permalink ? `<p>Permalink: ${escapeHtml(publication.permalink)}</p>` : publication.dryRun ? "<p>Permalink: none</p>" : ""}
           <code>${escapeHtml(publication.assetHash || "")}</code>
         </div>
         <div class="graphic-actions">
@@ -555,7 +564,7 @@ async function generateContent(contentType, pickIndex = 0) {
       })
     });
     state.selectedContent = payload.content;
-    finalStatus = payload.content?.metadata?.warnings?.[0] || "";
+    finalStatus = payload.content?.metadata?.warnings?.[0] || `New ${contentType.replaceAll("_", " ")} draft created.`;
     await refreshQueue();
     renderContentDetail(state.selectedContent);
   } catch (error) {
