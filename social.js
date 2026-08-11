@@ -303,6 +303,7 @@ function renderPublishing() {
             <span class="studio-pill">${escapeHtml(publication.provider)}</span>
             ${isDryRunReceipt ? `<span class="studio-pill">DRY-RUN RECEIPT</span>` : ""}
             <span class="studio-pill">Asset uploaded ${publication.assetUploaded ? "YES" : "NO"}</span>
+            ${publication.metadata?.assetReused ? `<span class="studio-pill">Existing asset reused</span>` : ""}
             ${publication.metadata?.assetPublicUrlValidated ? `<span class="studio-pill">Public URL validated</span>` : ""}
             ${isDryRunReceipt ? `<span class="studio-pill">Meta publish BLOCKED</span><span class="studio-pill">Live post NO</span>` : ""}
           </div>

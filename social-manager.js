@@ -1529,9 +1529,47 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
     return hashedPublication;
   }
 
-  async function uploadPublicationAsset({ objectPath, bytes, contentType }) {
+  function storagePublicAssetUrl(objectPath) {
+    return `${supabaseUrl}/storage/v1/object/public/${encodeURIComponent(publicationBucket)}/${objectPath.split("/").map(encodeURIComponent).join("/")}`;
+  }
+
+  function isDuplicateStorageResponse(response, text = "") {
+    return response.status === 409 || /KeyAlreadyExists|Duplicate|already exists/i.test(text);
+  }
+
+  async function readPublicAssetBytes(assetUrl) {
+    rejectLocalAssetUrl(assetUrl);
+    const response = await fetch(assetUrl, { method: "GET" });
+    if (!response.ok) {
+      throw publicationStep("storage_existing_asset_read", `Existing storage object could not be read: HTTP ${response.status}`);
+    }
+    const contentType = response.headers?.get?.("content-type") || response.headers?.get?.("Content-Type") || "";
+    if (contentType && !/^image\//i.test(contentType)) {
+      throw publicationStep("storage_existing_asset_read", "Existing storage object is not an image.");
+    }
+    try {
+      return Buffer.from(await response.arrayBuffer());
+    } catch (error) {
+      throw attachPublicationStage(error, "storage_existing_asset_read");
+    }
+  }
+
+  async function verifyExistingStorageAsset({ assetUrl, expectedHash }) {
+    const existingBytes = await readPublicAssetBytes(assetUrl);
+    const existingHash = crypto.createHash("sha256").update(existingBytes).digest("hex");
+    if (existingHash !== expectedHash) {
+      throw publicationStep("storage_collision", "Existing storage object does not match the approved asset.", {
+        expectedAssetHash: expectedHash,
+        existingAssetHash: existingHash
+      });
+    }
+    return existingHash;
+  }
+
+  async function uploadPublicationAsset({ objectPath, bytes, contentType, expectedHash }) {
     if (!supabaseUrl || !supabaseKey) throw new Error("Supabase Storage is not configured.");
     const uploadUrl = `${supabaseUrl}/storage/v1/object/${encodeURIComponent(publicationBucket)}/${objectPath.split("/").map(encodeURIComponent).join("/")}`;
+    const assetUrl = storagePublicAssetUrl(objectPath);
     const response = await fetch(uploadUrl, {
       method: "POST",
       headers: {
@@ -1542,11 +1580,25 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
       },
       body: bytes
     });
-    if (!response.ok && response.status !== 409) {
+    if (!response.ok) {
       const text = await response.text();
+      if (isDuplicateStorageResponse(response, text)) {
+        await verifyExistingStorageAsset({ assetUrl, expectedHash });
+        return {
+          assetUrl,
+          assetUploaded: true,
+          assetReused: true,
+          assetAlreadyExisted: true
+        };
+      }
       throw new Error(`Dry-run asset upload failed. No Instagram publication attempted. Supabase Storage ${response.status}: ${redactConfiguredSecrets(text).slice(0, 160)}`);
     }
-    return `${supabaseUrl}/storage/v1/object/public/${encodeURIComponent(publicationBucket)}/${objectPath.split("/").map(encodeURIComponent).join("/")}`;
+    return {
+      assetUrl,
+      assetUploaded: true,
+      assetReused: false,
+      assetAlreadyExisted: false
+    };
   }
 
   async function verifyAssetAccessible(assetUrl) {
@@ -1626,21 +1678,27 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
     }
     let assetUrl = "";
     let assetUploaded = false;
+    let assetReused = false;
+    let assetAlreadyExisted = false;
     let assetPublicUrlValidated = false;
     if (instagram.dryRun && !uploadDryRunAssets) {
       assetUrl = `https://dry-run.same-game-heat.local/${objectPrefix}/dry-run${asset.extension}`;
     } else {
       const objectPath = `${objectPrefix}/${graphic.renderVersion || "v1"}${asset.extension}`;
       try {
-        assetUrl = await uploadPublicationAsset({
+        const uploadResult = await uploadPublicationAsset({
           objectPath,
           bytes: asset.bytes,
-          contentType: asset.mimeType
+          contentType: asset.mimeType,
+          expectedHash: asset.assetHash
         });
+        assetUrl = uploadResult.assetUrl;
+        assetUploaded = Boolean(uploadResult.assetUploaded);
+        assetReused = Boolean(uploadResult.assetReused);
+        assetAlreadyExisted = Boolean(uploadResult.assetAlreadyExisted);
       } catch (error) {
         throw attachPublicationStage(error, "storage_upload", { ...diagnostics, bucket: publicationBucket, objectPath });
       }
-      assetUploaded = true;
       try {
         await verifyAssetAccessible(assetUrl);
       } catch (error) {
@@ -1668,7 +1726,9 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
       status: instagram.dryRun ? "prepared" : "asset_ready",
       dryRun: instagram.dryRun,
       assetUploaded,
-      assetPublicUrlValidated
+      assetPublicUrlValidated,
+      assetReused,
+      assetAlreadyExisted
     });
     try {
       return await savePublication(publication);

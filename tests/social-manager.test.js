@@ -1024,6 +1024,7 @@ test("frontend dry-run publication action is explicit", async () => {
   assert.match(source, /Dry-run publication receipt prepared/);
   assert.match(source, /DRY-RUN RECEIPT/);
   assert.match(source, /Dry Run Only/);
+  assert.match(source, /Existing asset reused/);
   assert.match(source, /function isDryRunPublication/);
   assert.match(source, /publication\?\.dryRun === true/);
   assert.match(source, /status === "dry_run_prepared"/);
@@ -1048,7 +1049,7 @@ test("frontend dry-run publication action is explicit", async () => {
 
 test("social studio cache version is bumped for live publish safety UI", async () => {
   const html = await fs.readFile(path.join(__dirname, "../social.html"), "utf8");
-  assert.match(html, /social\.js\?v=social-studio-v14/);
+  assert.match(html, /social\.js\?v=social-studio-v15/);
 });
 
 test("frontend testing reset clears local workspace and avoids refresh rehydration", async () => {

@@ -77,6 +77,11 @@ async function route(manager, { method = "GET", path = "/api/social/session", he
   };
 }
 
+function toArrayBuffer(bytes) {
+  const buffer = Buffer.from(bytes);
+  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+}
+
 async function login(manager) {
   const response = await route(manager, { method: "POST", path: "/api/social/login", body: { secret: "secret" } });
   assert.equal(response.status, 200);
@@ -361,12 +366,25 @@ test("dry-run can prepare a real public Supabase asset without publishing", asyn
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-dry-upload-"));
   const calls = [];
   const uploadedBodies = [];
+  let uploadAttempts = 0;
   const originalFetch = global.fetch;
   global.fetch = async (url, options = {}) => {
     calls.push({ href: String(url), method: options.method || "GET" });
     if (options.method === "POST" && String(url).includes("/storage/v1/object/")) {
+      uploadAttempts += 1;
+      if (uploadAttempts > 1) {
+        return {
+          ok: false,
+          status: 409,
+          text: async () => JSON.stringify({ statusCode: 409, error: "Duplicate", code: "KeyAlreadyExists" }),
+          json: async () => ({})
+        };
+      }
       uploadedBodies.push(options.body);
       return { ok: true, status: 200, text: async () => "", json: async () => ({}) };
+    }
+    if ((options.method || "GET") === "GET" && String(url).includes("/storage/v1/object/public/")) {
+      return { ok: true, status: 200, headers: { get: () => "image/png" }, arrayBuffer: async () => toArrayBuffer(uploadedBodies[0]), text: async () => "" };
     }
     if (options.method === "HEAD") return { ok: true, status: 200, headers: { get: () => "image/png" }, json: async () => ({}) };
     throw new Error("Meta should not be called during dry-run upload preparation");
@@ -397,6 +415,8 @@ test("dry-run can prepare a real public Supabase asset without publishing", asyn
     assert.equal(prepared.json.publication.simulatedProvider, true);
     assert.equal(prepared.json.publication.accountUsername, "sg_heater");
     assert.equal(prepared.json.publication.metadata.assetPublicUrlValidated, true);
+    assert.equal(prepared.json.publication.metadata.assetReused, false);
+    assert.equal(prepared.json.publication.metadata.assetAlreadyExisted, false);
     assert.equal(prepared.json.publication.metadata.metaPublishBlocked, true);
     assert.equal(prepared.json.publication.metadata.livePostCreated, false);
     assert.match(prepared.json.publication.assetUrl, /^https:\/\/project\.supabase\.co\/storage\/v1\/object\/public\/social-media-assets\//);
@@ -414,6 +434,16 @@ test("dry-run can prepare a real public Supabase asset without publishing", asyn
     assert.equal(retried.status, 200);
     assert.equal(retried.json.publication.id, prepared.json.publication.id);
     assert.equal(retried.json.publication.assetUrl, prepared.json.publication.assetUrl);
+    assert.equal(retried.json.publication.assetHash, prepared.json.publication.assetHash);
+    assert.equal(retried.json.publication.metadata.assetReused, true);
+    assert.equal(retried.json.publication.metadata.assetAlreadyExisted, true);
+    assert.equal(retried.json.publication.metadata.assetPublicUrlValidated, true);
+    assert.equal(retried.json.publication.metadata.metaPublishBlocked, true);
+    assert.equal(retried.json.publication.metadata.livePostCreated, false);
+    assert.equal(uploadAttempts, 2);
+    assert.equal(uploadedBodies.length, 1);
+    assert.ok(calls.some((call) => call.method === "GET" && call.href.includes("/storage/v1/object/public/")));
+    assert.equal(calls.some((call) => call.href.includes("/media_publish")), false);
   } finally {
     global.fetch = originalFetch;
   }
@@ -451,6 +481,56 @@ test("dry-run public asset validation falls back to small GET when HEAD is block
     assert.equal(prepared.status, 200);
     assert.equal(prepared.json.publication.assetUploaded, true);
     assert.ok(calls.some((call) => call.method === "GET" && call.range === "bytes=0-31"));
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("dry-run duplicate storage object with different hash fails safely", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-pub-dry-upload-collision-"));
+  const calls = [];
+  const originalFetch = global.fetch;
+  global.fetch = async (url, options = {}) => {
+    calls.push({ href: String(url), method: options.method || "GET" });
+    if (options.method === "POST" && String(url).includes("/storage/v1/object/")) {
+      return {
+        ok: false,
+        status: 409,
+        text: async () => JSON.stringify({ statusCode: 409, error: "Duplicate", message: "The resource already exists", code: "KeyAlreadyExists", secret: "service-role" }),
+        json: async () => ({})
+      };
+    }
+    if ((options.method || "GET") === "GET" && String(url).includes("/storage/v1/object/public/")) {
+      return { ok: true, status: 200, headers: { get: () => "image/png" }, arrayBuffer: async () => toArrayBuffer("different-approved-asset"), text: async () => "" };
+    }
+    throw new Error("No request should happen after storage collision");
+  };
+  try {
+    const manager = createSocialManager({
+      root,
+      env: {
+        SOCIAL_ADMIN_SECRET: "secret",
+        SOCIAL_PUBLISH_DRY_RUN: "true",
+        SOCIAL_DRY_RUN_UPLOAD_ASSET: "true",
+        INSTAGRAM_ACCESS_TOKEN: "token",
+        INSTAGRAM_USER_ID: "123",
+        SUPABASE_URL: "https://project.supabase.co",
+        SUPABASE_SERVICE_ROLE_KEY: "service-role",
+        SOCIAL_MEDIA_ASSETS_BUCKET: "social-media-assets"
+      }
+    });
+    const cookie = await login(manager);
+    const { graphic } = await approvedContentAndGraphic(manager, cookie);
+    const prepared = await route(manager, { method: "POST", path: `/api/social/graphics/${graphic.id}/prepare-publication`, headers: { cookie }, body: {} });
+    assert.equal(prepared.status, 400);
+    assert.equal(prepared.json.stage, "storage_collision");
+    assert.match(prepared.json.error, /does not match the approved asset/i);
+    assert.equal(JSON.stringify(prepared.json).includes("service-role"), false);
+    assert.equal(JSON.stringify(prepared.json).includes("token"), false);
+    assert.ok(calls.some((call) => call.method === "POST" && call.href.includes("/storage/v1/object/")));
+    assert.ok(calls.some((call) => call.method === "GET" && call.href.includes("/storage/v1/object/public/")));
+    assert.equal(calls.some((call) => call.href.includes("graph.facebook.com")), false);
+    assert.equal(calls.some((call) => call.href.includes("/media_publish")), false);
   } finally {
     global.fetch = originalFetch;
   }
