@@ -241,7 +241,8 @@ function createPublicationRecord({
       assetHash: asset.assetHash,
       metaPublishBlocked: Boolean(dryRun),
       livePostCreated: false,
-      safetyGate: dryRun ? "SOCIAL_PUBLISH_DRY_RUN" : ""
+      safetyGate: dryRun ? "SOCIAL_PUBLISH_DRY_RUN" : "",
+      storyMusic: graphic.format === "story" ? content.metadata?.storyMusic || null : null
     }
   };
   const publicationHash = computePublicationHash(core);

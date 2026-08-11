@@ -29,6 +29,7 @@ const {
 } = require("./social-publications");
 const { createInstagramPublisher, safeErrorMessage } = require("./instagram-publisher");
 const { runInstagramDiagnostics } = require("./instagram-diagnostics");
+const { getStoryMusicRecommendation } = require("./story-music");
 
 const SNAPSHOT_VERSION = "social-pick-v1";
 const GENERATION_VERSION = "social-content-v1";
@@ -891,7 +892,8 @@ function createSocialContentRecord({ contentType, snapshots, generated, status =
       presentationRepaired: normalized.presentationRepaired,
       repairReasons: normalized.repairReasons,
       previousContentId,
-      snapshotHashes: snapshots.map((snapshot) => snapshot.snapshotHash)
+      snapshotHashes: snapshots.map((snapshot) => snapshot.snapshotHash),
+      storyMusic: getStoryMusicRecommendation(type)
     }
   };
   return {

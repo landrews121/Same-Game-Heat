@@ -185,6 +185,17 @@ function graphicLabel(format) {
   return "Feed";
 }
 
+function storyMusicForContent(content) {
+  if (content?.contentType !== "DAILY_3") return null;
+  const stored = content.metadata?.storyMusic;
+  if (stored?.title && stored?.artist) return stored;
+  return window.SGHStoryMusic?.getStoryMusicRecommendation?.(content.contentType) || null;
+}
+
+function storyMusicText(music) {
+  return music ? `${music.title} — ${music.artist}` : "";
+}
+
 function publicationDisplayStatus(publication) {
   if (isDryRunPublication(publication) && publication?.status === "prepared") return "dry_run_prepared";
   return publication?.status || "";
@@ -580,6 +591,8 @@ function renderContentDetail(content) {
     state.snapshots.find((snapshot) => snapshot.id === id) || { id }
   );
   const graphics = state.graphicsByContent.get(content.id) || [];
+  const storyGraphic = graphics.find((graphic) => String(graphic.format || "").toLowerCase() === "story" && graphic.status !== "archived");
+  const storyMusic = storyMusicForContent(content);
   const warnings = Array.isArray(content.metadata?.warnings) ? content.metadata.warnings : [];
   const publishingStatus = state.instagramStatus || {};
   const dryRunPublicationMode = Boolean(publishingStatus.dryRun);
@@ -627,6 +640,17 @@ function renderContentDetail(content) {
         <button class="studio-button" type="button" data-generate-graphic="feed">Generate Feed Graphic</button>
         <button class="studio-button secondary" type="button" data-generate-graphic="story">Generate Story Graphic</button>
       </div>
+      ${storyMusic ? `
+        <div class="studio-field story-music-recommendation">
+          <label>Story Music</label>
+          <strong>${escapeHtml(storyMusicText(storyMusic))}</strong>
+          <p>Add this track manually in Instagram before posting.</p>
+          <div class="studio-row">
+            <button class="studio-button secondary" type="button" data-copy-story-music>Copy Music</button>
+            ${storyGraphic ? `<span class="studio-pill">Story checklist: ✓ Graphic ready</span><span class="studio-pill">○ Add music: ${escapeHtml(storyMusicText(storyMusic))}</span>` : ""}
+          </div>
+        </div>
+      ` : ""}
       <div class="graphic-list">
         ${graphics.length ? graphics.map((graphic) => `
           <article class="graphic-row">
@@ -756,6 +780,18 @@ async function generateGraphic(format, button = null) {
       button.disabled = false;
       button.textContent = originalText;
     }
+  }
+}
+
+async function copyStoryMusic() {
+  const music = storyMusicForContent(state.selectedContent);
+  const text = storyMusicText(music);
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    showStatus("Music copied.");
+  } catch {
+    showStatus(`Unable to copy music. Please copy it manually: ${text}`);
   }
 }
 
@@ -929,6 +965,11 @@ els.contentQueue.addEventListener("click", (event) => {
     .catch((error) => showStatus(error.message));
 });
 els.contentDetail.addEventListener("click", (event) => {
+  const copyMusicButton = event.target.closest("[data-copy-story-music]");
+  if (copyMusicButton) {
+    copyStoryMusic();
+    return;
+  }
   const graphicGenerateButton = event.target.closest("[data-generate-graphic]");
   if (graphicGenerateButton) {
     generateGraphic(graphicGenerateButton.dataset.generateGraphic, graphicGenerateButton).catch((error) => showStatus(error.message));

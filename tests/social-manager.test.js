@@ -13,6 +13,8 @@ const {
   validateNoProhibitedLanguage
 } = require("../social-manager");
 const { renderSocialGraphic, RESPONSIBLE_FOOTER, GRAPHIC_TEMPLATE_VERSION } = require("../social-graphics");
+const { STORY_MUSIC_RECOMMENDATIONS } = require("../story-music");
+const { createPublicationRecord } = require("../social-publications");
 
 function samplePick(overrides = {}) {
   return {
@@ -1089,9 +1091,9 @@ test("frontend dry-run publication action is explicit", async () => {
   assert.match(source, /finally\s*{/);
 });
 
-test("social studio cache version is bumped for live publish safety UI", async () => {
+test("social studio cache version is bumped for Social Studio UI updates", async () => {
   const html = await fs.readFile(path.join(__dirname, "../social.html"), "utf8");
-  assert.match(html, /social\.js\?v=social-studio-v18/);
+  assert.match(html, /social\.js\?v=social-studio-v19/);
   assert.match(html, /livePublishConfirmPanel/);
   assert.match(html, /livePublishUnderstand/);
 });
@@ -1105,6 +1107,16 @@ test("story graphic generation gives clear frontend feedback", async () => {
   assert.match(source, /button\.disabled = true/);
   assert.match(source, /button\.disabled = false/);
   assert.match(source, /button\.textContent = originalText/);
+});
+
+test("Daily 3 Story music recommendation is shown as a manual workflow step", async () => {
+  const source = await fs.readFile(path.join(__dirname, "../social.js"), "utf8");
+  assert.match(source, /storyMusicForContent/);
+  assert.match(source, /data-copy-story-music/);
+  assert.match(source, /Music copied\./);
+  assert.match(source, /Unable to copy music\. Please copy it manually:/);
+  assert.match(source, /Add this track manually in Instagram before posting\./);
+  assert.match(source, /Story checklist: ✓ Graphic ready/);
 });
 
 test("frontend testing reset clears local workspace and avoids refresh rehydration", async () => {
@@ -1422,6 +1434,63 @@ test("Daily 3 story graphic renders clean 1080x1920 public pick cards", () => {
   assert.ok(graphic.svg.includes(RESPONSIBLE_FOOTER));
   assert.doesNotMatch(graphic.svg, /\d+(?:\.\d)?%\s*WIN/i);
   assert.doesNotMatch(graphic.svg, /Fair|Playable|Confidence|Model/i);
+});
+
+test("Daily 3 Story music is reusable metadata and never part of the SVG", () => {
+  const snapshot = createSocialPickSnapshot(samplePick());
+  const content = sampleContent("DAILY_3", [snapshot]);
+  const music = STORY_MUSIC_RECOMMENDATIONS.DAILY_3;
+  assert.equal(music.title, "Let’s Go");
+  assert.equal(music.artist, "Key Glock");
+  assert.equal(music.manualAddRequired, true);
+  assert.deepEqual(content.metadata.storyMusic, music);
+  const graphic = renderSocialGraphic({ content, snapshots: [snapshot], format: "story" });
+  assert.doesNotMatch(graphic.svg, /Let’s Go|Key Glock/);
+});
+
+test("Story publication receipt retains music guidance without sending media fields", () => {
+  const snapshot = createSocialPickSnapshot(samplePick());
+  const content = sampleContent("DAILY_3", [snapshot]);
+  const publication = createPublicationRecord({
+    content,
+    graphic: {
+      id: "graphic_story_1",
+      format: "story",
+      snapshotIds: [snapshot.id],
+      snapshotHashes: [snapshot.snapshotHash],
+      renderVersion: "social-graphics-renderer-v1.1"
+    },
+    asset: {
+      assetUrl: "https://cdn.example.com/daily-3-story.png",
+      assetHash: "asset_hash",
+      mimeType: "image/png",
+      width: 1080,
+      height: 1920
+    },
+    dryRun: true
+  });
+  assert.deepEqual(publication.metadata.storyMusic, STORY_MUSIC_RECOMMENDATIONS.DAILY_3);
+  assert.equal(publication.metadata.storyMusic.audioUrl, undefined);
+  assert.equal(publication.metadata.storyMusic.attachment, undefined);
+  const feedPublication = createPublicationRecord({
+    content,
+    graphic: {
+      id: "graphic_feed_1",
+      format: "feed",
+      snapshotIds: [snapshot.id],
+      snapshotHashes: [snapshot.snapshotHash],
+      renderVersion: "social-graphics-renderer-v1.1"
+    },
+    asset: {
+      assetUrl: "https://cdn.example.com/daily-3-feed.png",
+      assetHash: "feed_hash",
+      mimeType: "image/png",
+      width: 1080,
+      height: 1350
+    },
+    dryRun: true
+  });
+  assert.equal(feedPublication.metadata.storyMusic, null);
 });
 
 test("unsupported graphic formats do not silently fall back to feed", () => {
