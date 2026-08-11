@@ -41,13 +41,13 @@ function sanitizeMetaError(payload, response, secrets = []) {
   };
 }
 
-function classifyCandidate({ profile, instagramProfile, media }) {
-  if (instagramProfile?.ok && instagramProfile.data?.username) return "instagram_graph_user";
-  const errors = [profile?.error, instagramProfile?.error, media?.error]
+function classifyCandidate({ identity, media }) {
+  if (identity?.ok && identity.data?.username) return "instagram_graph_user";
+  const errors = [identity?.error, media?.error]
     .map((error) => clean(error?.message).toLowerCase())
     .join(" ");
   if (/page|pages_read|pages_show|facebook page/.test(errors)) return "facebook_page_id";
-  if (/business|asset/.test(errors) && !instagramProfile?.data?.username) return "business_asset_id";
+  if (/business|asset/.test(errors)) return "business_asset_id";
   if (/system user/.test(errors)) return "system_user_id";
   return "unknown";
 }
@@ -98,19 +98,27 @@ function parseDiagnosticIds({ explicitIds = [], env = process.env } = {}) {
 
 async function diagnoseCandidate({ id, baseUrl, accessToken, fetchImpl, timeoutMs }) {
   const encodedId = encodeURIComponent(id);
-  const profile = await metaGet({
+  const identity = await metaGet({
     baseUrl,
     accessToken,
     path: `/${encodedId}`,
-    params: { fields: "id,name" },
+    params: { fields: "id,username" },
     fetchImpl,
     timeoutMs
   });
-  const instagramProfile = await metaGet({
+  const accountTypeProbe = await metaGet({
     baseUrl,
     accessToken,
     path: `/${encodedId}`,
-    params: { fields: "id,username,name,account_type,media_count" },
+    params: { fields: "id,account_type" },
+    fetchImpl,
+    timeoutMs
+  });
+  const mediaCountProbe = await metaGet({
+    baseUrl,
+    accessToken,
+    path: `/${encodedId}`,
+    params: { fields: "id,media_count" },
     fetchImpl,
     timeoutMs
   });
@@ -122,17 +130,24 @@ async function diagnoseCandidate({ id, baseUrl, accessToken, fetchImpl, timeoutM
     fetchImpl,
     timeoutMs
   });
-  const classification = classifyCandidate({ profile, instagramProfile, media });
-  const username = instagramProfile.ok ? clean(instagramProfile.data?.username) : "";
+  const optionalProbeErrors = [
+    accountTypeProbe.ok ? null : { probe: "account_type", error: accountTypeProbe.error },
+    mediaCountProbe.ok ? null : { probe: "media_count", error: mediaCountProbe.error }
+  ].filter(Boolean);
+  const classification = classifyCandidate({ identity, media });
+  const username = identity.ok ? clean(identity.data?.username) : "";
   return {
     id,
-    profile,
-    instagramProfile,
+    identity,
+    accountTypeProbe,
+    mediaCountProbe,
     media,
+    optionalProbeErrors,
     classification,
     username,
+    accountType: accountTypeProbe.ok ? clean(accountTypeProbe.data?.account_type) : "",
     mediaEdgeReadable: Boolean(media.ok),
-    mediaCount: instagramProfile.ok && instagramProfile.data?.media_count !== undefined ? instagramProfile.data.media_count : null
+    mediaCount: mediaCountProbe.ok && mediaCountProbe.data?.media_count !== undefined ? mediaCountProbe.data.media_count : null
   };
 }
 
@@ -216,14 +231,18 @@ function formatInstagramDiagnostics(results) {
 
   for (const candidate of results.candidates) {
     lines.push(`Candidate: ${candidate.id}`);
-    lines.push(`Profile GET: ${summarizeRequest(candidate.profile)}`);
-    lines.push(`Instagram fields GET: ${summarizeRequest(candidate.instagramProfile)}`);
+    lines.push(`Identity GET: ${summarizeRequest(candidate.identity)}`);
+    lines.push(`Account type probe: ${summarizeRequest(candidate.accountTypeProbe)}`);
+    lines.push(`Media count probe: ${summarizeRequest(candidate.mediaCountProbe)}`);
     lines.push(`Username: ${candidate.username || "null"}`);
     lines.push(`Object classification: ${candidate.classification}`);
     lines.push(`Media edge: ${candidate.mediaEdgeReadable ? "accessible" : "not accessible"}`);
+    if (candidate.accountType) lines.push(`Account type: ${candidate.accountType}`);
     if (candidate.mediaCount !== null) lines.push(`Media count: ${candidate.mediaCount}`);
-    if (candidate.profile?.error) lines.push(`Profile error: ${formatMetaError(candidate.profile.error)}`);
-    if (candidate.instagramProfile?.error) lines.push(`Instagram fields error: ${formatMetaError(candidate.instagramProfile.error)}`);
+    if (candidate.identity?.error) lines.push(`Identity error: ${formatMetaError(candidate.identity.error)}`);
+    for (const optional of candidate.optionalProbeErrors || []) {
+      lines.push(`Optional ${optional.probe} error: ${formatMetaError(optional.error)}`);
+    }
     if (candidate.media?.error) lines.push(`Media edge error: ${formatMetaError(candidate.media.error)}`);
     lines.push(`Matches @${results.expectedUsername}: ${candidate.matchesExpectedInstagramAccount ? "YES" : "NO"}`);
     lines.push(`Recommended: ${candidate.recommended ? "YES" : "NO"}`);

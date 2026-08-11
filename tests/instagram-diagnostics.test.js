@@ -20,8 +20,16 @@ function mockResponse(status, body) {
   };
 }
 
-function diagnosticFetch({ token = "secret-token", mediaOkFor = "17841404477734906", unsupportedId = "1235870939610391" } = {}) {
+function diagnosticFetch({
+  token = "secret-token",
+  mediaOkFor = "17841404477734906",
+  unsupportedId = "1235870939610391",
+  accountTypeFailsFor = [],
+  mediaCountFailsFor = []
+} = {}) {
   const calls = [];
+  const accountTypeFailures = new Set(Array.isArray(accountTypeFailsFor) ? accountTypeFailsFor : [accountTypeFailsFor]);
+  const mediaCountFailures = new Set(Array.isArray(mediaCountFailsFor) ? mediaCountFailsFor : [mediaCountFailsFor]);
   const fetchImpl = async (url, options = {}) => {
     calls.push({ url: String(url), method: options.method || "GET" });
     assert.equal(options.method, "GET");
@@ -45,7 +53,6 @@ function diagnosticFetch({ token = "secret-token", mediaOkFor = "178414044777349
     }
     const fields = parsed.searchParams.get("fields") || "";
     if (id === unsupportedId) {
-      if (fields === "id,name") return mockResponse(200, { id, name: "sg_heater asset" });
       return mockResponse(400, {
         error: {
           type: "OAuthException",
@@ -54,6 +61,35 @@ function diagnosticFetch({ token = "secret-token", mediaOkFor = "178414044777349
           fbtrace_id: "trace-profile"
         }
       });
+    }
+    if (fields === "id,username") {
+      return mockResponse(200, { id, username: "sg_heater" });
+    }
+    if (fields === "id,account_type") {
+      if (accountTypeFailures.has(id)) {
+        return mockResponse(400, {
+          error: {
+            type: "OAuthException",
+            code: 100,
+            message: "Tried accessing nonexisting field (account_type)",
+            fbtrace_id: "trace-account-type"
+          }
+        });
+      }
+      return mockResponse(200, { id, account_type: "BUSINESS" });
+    }
+    if (fields === "id,media_count") {
+      if (mediaCountFailures.has(id)) {
+        return mockResponse(400, {
+          error: {
+            type: "OAuthException",
+            code: 100,
+            message: "Tried accessing nonexisting field (media_count)",
+            fbtrace_id: "trace-media-count"
+          }
+        });
+      }
+      return mockResponse(200, { id, media_count: 42 });
     }
     return mockResponse(200, {
       id,
@@ -133,6 +169,87 @@ test("candidate resolving to sg_heater is recommended and unsupported candidate 
   assert.equal(result.candidates[1].mediaCount, 42);
 });
 
+test("id username identity succeeds while account_type fails and still classifies Instagram user", async () => {
+  const { fetchImpl } = diagnosticFetch({ accountTypeFailsFor: "17841404477734906" });
+  const result = await runInstagramDiagnostics({
+    ids: "17841404477734906",
+    env: {
+      INSTAGRAM_ACCESS_TOKEN: "secret-token",
+      SOCIAL_PUBLISH_DRY_RUN: "true"
+    },
+    fetchImpl
+  });
+  const candidate = result.candidates[0];
+  assert.equal(candidate.identity.ok, true);
+  assert.equal(candidate.username, "sg_heater");
+  assert.equal(candidate.classification, "instagram_graph_user");
+  assert.equal(candidate.matchesExpectedInstagramAccount, true);
+  assert.equal(candidate.recommended, true);
+  assert.equal(result.recommendedInstagramUserId, "17841404477734906");
+  assert.equal(candidate.optionalProbeErrors.length, 1);
+  assert.equal(candidate.optionalProbeErrors[0].probe, "account_type");
+  assert.match(candidate.optionalProbeErrors[0].error.message, /account_type/);
+});
+
+test("id username identity succeeds while media_count fails and still classifies Instagram user", async () => {
+  const { fetchImpl } = diagnosticFetch({ mediaCountFailsFor: "17841404477734906" });
+  const result = await runInstagramDiagnostics({
+    ids: "17841404477734906",
+    env: {
+      INSTAGRAM_ACCESS_TOKEN: "secret-token",
+      SOCIAL_PUBLISH_DRY_RUN: "true"
+    },
+    fetchImpl
+  });
+  const candidate = result.candidates[0];
+  assert.equal(candidate.identity.ok, true);
+  assert.equal(candidate.username, "sg_heater");
+  assert.equal(candidate.mediaCount, null);
+  assert.equal(candidate.classification, "instagram_graph_user");
+  assert.equal(candidate.matchesExpectedInstagramAccount, true);
+  assert.equal(candidate.recommended, true);
+  assert.equal(candidate.optionalProbeErrors.length, 1);
+  assert.equal(candidate.optionalProbeErrors[0].probe, "media_count");
+});
+
+test("unsupported optional fields do not clear username or downgrade classification", async () => {
+  const { fetchImpl } = diagnosticFetch({
+    accountTypeFailsFor: "17841404477734906",
+    mediaCountFailsFor: "17841404477734906"
+  });
+  const result = await runInstagramDiagnostics({
+    ids: "17841404477734906",
+    env: {
+      INSTAGRAM_ACCESS_TOKEN: "secret-token",
+      SOCIAL_PUBLISH_DRY_RUN: "true"
+    },
+    fetchImpl
+  });
+  const candidate = result.candidates[0];
+  assert.equal(candidate.username, "sg_heater");
+  assert.equal(candidate.classification, "instagram_graph_user");
+  assert.equal(candidate.recommended, true);
+  assert.deepEqual(candidate.optionalProbeErrors.map((item) => item.probe), ["account_type", "media_count"]);
+});
+
+test("candidate with no username is not recommended", async () => {
+  const { fetchImpl } = diagnosticFetch({ unsupportedId: "1235870939610391" });
+  const result = await runInstagramDiagnostics({
+    ids: "1235870939610391",
+    env: {
+      INSTAGRAM_ACCESS_TOKEN: "secret-token",
+      SOCIAL_PUBLISH_DRY_RUN: "true"
+    },
+    fetchImpl
+  });
+  const candidate = result.candidates[0];
+  assert.equal(candidate.identity.ok, false);
+  assert.equal(candidate.username, "");
+  assert.notEqual(candidate.classification, "instagram_graph_user");
+  assert.equal(candidate.recommended, false);
+  assert.equal(result.recommendedInstagramUserId, "");
+});
+
 test("diagnostic output never includes the token and sanitizes Meta errors", async () => {
   const { fetchImpl } = diagnosticFetch({ token: "secret-token" });
   const result = await runInstagramDiagnostics({
@@ -179,6 +296,7 @@ test("diagnostic never calls POST or media_publish", async () => {
   });
   assert.ok(calls.length >= 6);
   assert.ok(calls.every((call) => call.method === "GET"));
+  assert.ok(calls.every((call) => !(new URL(call.url).pathname.endsWith("/media") && call.method === "POST")));
   assert.ok(calls.every((call) => !call.url.includes("/media_publish")));
 });
 
@@ -233,7 +351,7 @@ test("protected Social Studio diagnostics route requires auth", async () => {
 
 test("protected Social Studio diagnostics route returns safe GET-only account summary", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-instagram-route-"));
-  const { fetchImpl, calls } = diagnosticFetch();
+  const { fetchImpl, calls } = diagnosticFetch({ accountTypeFailsFor: "17841404477734906" });
   const manager = createSocialManager({
     root,
     env: {
@@ -261,12 +379,16 @@ test("protected Social Studio diagnostics route returns safe GET-only account su
   assert.equal(response.json.readyForDryRunPublishing, true);
   assert.equal(response.json.candidates.length, 2);
   assert.equal(response.json.candidates[1].recommended, true);
+  assert.equal(response.json.candidates[1].username, "sg_heater");
+  assert.equal(response.json.candidates[1].classification, "instagram_graph_user");
+  assert.equal(response.json.candidates[1].optionalProbeErrors[0].probe, "account_type");
   assert.ok(calls.length >= 6);
   assert.ok(calls.every((call) => call.method === "GET"));
   assert.ok(calls.every((call) => !call.url.includes("/media_publish")));
   assert.doesNotMatch(body, /secret-token/);
   assert.doesNotMatch(body, /access_token=/);
   assert.equal(Object.hasOwn(response.json.candidates[0], "profile"), false);
+  assert.equal(Object.hasOwn(response.json.candidates[0], "identity"), false);
   assert.equal(Object.hasOwn(response.json.candidates[0], "instagramProfile"), false);
   assert.equal(Object.hasOwn(response.json.candidates[0], "media"), false);
 });

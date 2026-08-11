@@ -934,7 +934,7 @@ function socialResultsFromRows(rows = []) {
 }
 
 function safeDiagnosticError(candidate) {
-  const error = candidate.instagramProfile?.error || candidate.media?.error || candidate.profile?.error || null;
+  const error = candidate.identity?.error || candidate.media?.error || null;
   if (!error) return null;
   return {
     httpStatus: error.httpStatus || 0,
@@ -973,11 +973,23 @@ function buildSafeInstagramDiagnosticsPayload(diagnostics, env = process.env) {
       id: cleanString(candidate.id),
       classification: cleanString(candidate.classification || "unknown"),
       username: cleanString(candidate.username),
+      accountType: cleanString(candidate.accountType),
       mediaEdgeReadable: Boolean(candidate.mediaEdgeReadable),
       mediaCount: candidate.mediaCount ?? null,
       matchesExpectedInstagramAccount: Boolean(candidate.matchesExpectedInstagramAccount),
       recommended: Boolean(candidate.recommended),
-      error: safeDiagnosticError(candidate)
+      error: safeDiagnosticError(candidate),
+      optionalProbeErrors: (candidate.optionalProbeErrors || []).map((optional) => ({
+        probe: cleanString(optional.probe),
+        error: optional.error ? {
+          httpStatus: optional.error.httpStatus || 0,
+          type: cleanString(optional.error.type),
+          code: optional.error.code ?? null,
+          subcode: optional.error.error_subcode ?? null,
+          message: cleanString(optional.error.message),
+          traceId: cleanString(optional.error.fbtrace_id)
+        } : null
+      }))
     }))
   };
 }

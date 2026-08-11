@@ -253,11 +253,13 @@ function renderInstagramDiagnostics() {
           <div class="studio-meta">
             <span class="studio-pill">${escapeHtml(candidate.classification || "unknown")}</span>
             <span class="studio-pill">${candidate.username ? `@${escapeHtml(candidate.username)}` : "Username not resolved"}</span>
+            ${candidate.accountType ? `<span class="studio-pill">${escapeHtml(candidate.accountType)}</span>` : ""}
             <span class="studio-pill">Media edge ${candidate.mediaEdgeReadable ? "readable" : "blocked"}</span>
             <span class="studio-pill">Matches expected ${candidate.matchesExpectedInstagramAccount ? "YES" : "NO"}</span>
           </div>
           ${candidate.mediaCount !== null && candidate.mediaCount !== undefined ? `<p>Media count: ${escapeHtml(candidate.mediaCount)}</p>` : ""}
           ${candidate.error ? `<div class="studio-warning">${escapeHtml(candidate.error.message || "Meta request failed")}</div>` : ""}
+          ${(candidate.optionalProbeErrors || []).length ? `<p>Optional probe warning: ${escapeHtml(candidate.optionalProbeErrors.map((item) => `${item.probe}: ${item.error?.message || "failed"}`).join(" · "))}</p>` : ""}
         </div>
       </article>
     `).join("") : "<p>No candidates were checked.</p>"}
