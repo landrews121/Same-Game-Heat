@@ -2113,11 +2113,13 @@ test("Daily 3 Stats Board renders as a separate deterministic template without r
   assert.notEqual(graphic.renderedInputHash, regular.renderedInputHash);
   assert.ok(graphic.statsHash);
   assert.match(graphic.svg, /DAILY 3/);
-  assert.match(graphic.svg, /BY THE NUMBERS/);
+  assert.match(graphic.svg, /STATS BOARD/);
+  assert.match(graphic.svg, /Verified MLB stats for today's Daily 3 picks/);
   assert.match(graphic.svg, /Chicago White Sox/);
   assert.match(graphic.svg, /-166/);
   assert.match(graphic.svg, /LAST 10/);
   assert.match(graphic.svg, /WATCH:/);
+  assert.match(graphic.svg, /@sg_heater/);
   assert.match(graphic.svg, /Stats: MLB Stats API/);
   assert.doesNotMatch(graphic.svg, /58\.2%/);
   assert.doesNotMatch(graphic.svg, /FAIR/i);
