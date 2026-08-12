@@ -30,6 +30,7 @@ const {
 const { createInstagramPublisher, safeErrorMessage } = require("./instagram-publisher");
 const { runInstagramDiagnostics } = require("./instagram-diagnostics");
 const { getStoryMusicRecommendation } = require("./story-music");
+const { buildDailyPickStats } = require("./social-pick-stats");
 
 const SNAPSHOT_VERSION = "social-pick-v1";
 const GENERATION_VERSION = "social-content-v1";
@@ -1055,7 +1056,7 @@ function buildSafeInstagramDiagnosticsPayload(diagnostics, env = process.env) {
   };
 }
 
-function createSocialManager({ root, env = process.env, supabaseEnabled = () => false, supabaseRequest = async () => null, fetchGameResult = fetchFinalGameFromMlbStats, fetchImpl = fetch } = {}) {
+function createSocialManager({ root, env = process.env, supabaseEnabled = () => false, supabaseRequest = async () => null, fetchGameResult = fetchFinalGameFromMlbStats, fetchDailyPickStats = buildDailyPickStats, fetchImpl = fetch } = {}) {
   const snapshotFile = env.SOCIAL_PICK_SNAPSHOTS_FILE || path.join(root, ".social-pick-snapshots.json");
   const contentFile = env.SOCIAL_CONTENT_FILE || path.join(root, ".social-content.json");
   const graphicsFile = env.SOCIAL_GRAPHICS_FILE || path.join(root, ".social-graphics.json");
@@ -2462,6 +2463,36 @@ function createSocialManager({ root, env = process.env, supabaseEnabled = () => 
           status: url.searchParams.get("status") || "all"
         })
       });
+      return true;
+    }
+
+    const pickStatsMatch = url.pathname.match(/^\/api\/social\/content\/([^/]+)\/pick-stats$/);
+    if (pickStatsMatch) {
+      if (req.method !== "GET") {
+        sendJson(res, 405, { error: "Method not allowed" });
+        return true;
+      }
+      const content = (await getContent({})).find((item) => item.id === pickStatsMatch[1]);
+      if (!content) {
+        sendJson(res, 404, { error: "Content not found" });
+        return true;
+      }
+      if (content.contentType !== "DAILY_3") {
+        sendJson(res, 400, { error: "Daily Pick Stats are available for DAILY_3 content only." });
+        return true;
+      }
+      const snapshots = (await getSnapshots({ slateDate: content.slateDate, sport: "baseball_mlb" }))
+        .filter((snapshot) => (content.pickSnapshotIds || []).includes(snapshot.id));
+      if (!snapshots.length) {
+        sendJson(res, 404, { error: "Frozen Daily 3 pick snapshots were not found." });
+        return true;
+      }
+      try {
+        const stats = await fetchDailyPickStats({ contentId: content.id, snapshots, fetchImpl });
+        sendJson(res, 200, { stats });
+      } catch (error) {
+        sendJson(res, 502, { error: "Verified MLB statistics are unavailable right now." });
+      }
       return true;
     }
 

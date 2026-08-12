@@ -348,6 +348,71 @@
     .result-badge.loss { background: #c83243; }
     .result-badge.manual_review { background: #9a6400; }
     .result-badge.pending { background: #6f7b91; }
+    .pick-stats-panel {
+      margin: 14px 0;
+      padding: 14px;
+      border: 1px solid var(--studio-border);
+      border-radius: 8px;
+      background: #f7fbff;
+    }
+    .pick-stats-panel h3,
+    .pick-stats-panel p {
+      margin: 0 0 8px;
+    }
+    .pick-stats-list {
+      display: grid;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .pick-stats-card {
+      padding: 14px;
+      border: 1px solid var(--studio-border);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .pick-stats-heading {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+    }
+    .pick-stats-matchup,
+    .pick-stats-note,
+    .pick-stats-watch {
+      color: #5c6b83;
+    }
+    .pick-stats-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin: 10px 0;
+    }
+    .pick-stats-grid div {
+      padding: 10px;
+      border-radius: 7px;
+      background: var(--studio-soft);
+    }
+    .pick-stats-grid span,
+    .pick-stats-grid small {
+      display: block;
+      color: #5c6b83;
+      font-weight: 700;
+    }
+    .pick-stats-grid strong {
+      display: block;
+      margin-top: 4px;
+    }
+    .pick-stat-list {
+      margin: 8px 0 0 18px;
+      padding: 0;
+    }
+    .pick-stats-watch {
+      margin-top: 10px;
+      padding: 10px;
+      border-left: 4px solid var(--studio-red);
+      background: #fff5f6;
+      border-radius: 6px;
+    }
     @media (max-width: 820px) {
       .social-shell {
         padding: 14px;
@@ -368,7 +433,8 @@
         grid-template-columns: 1fr;
       }
       .results-grid,
-      .result-row {
+      .result-row,
+      .pick-stats-grid {
         grid-template-columns: 1fr;
       }
     }
@@ -500,6 +566,6 @@
     </section>
   </main>
   <script src="/story-music.js?v=story-music-v3"></script>
-  <script src="/social.js?v=social-studio-v24"></script>
+  <script src="/social.js?v=social-studio-v25"></script>
 </body>
 </html>

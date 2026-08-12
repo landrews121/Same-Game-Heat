@@ -1094,7 +1094,7 @@ test("frontend dry-run publication action is explicit", async () => {
 
 test("social studio cache version is bumped for Social Studio UI updates", async () => {
   const html = await fs.readFile(path.join(__dirname, "../social.html"), "utf8");
-  assert.match(html, /social\.js\?v=social-studio-v24/);
+  assert.match(html, /social\.js\?v=social-studio-v25/);
   assert.match(html, /livePublishConfirmPanel/);
   assert.match(html, /livePublishUnderstand/);
 });
@@ -1247,7 +1247,7 @@ test("Social Studio browser login posts the secret key and verifies its new sess
   assert.match(client, /const session = await api\("\/api\/social\/session"\)/);
   assert.match(client, /if \(!session\.authorized\) \{/);
   assert.match(client, /error\.code = "missing_session_cookie"/);
-  assert.match(page, /social\.js\?v=social-studio-v24/);
+  assert.match(page, /social\.js\?v=social-studio-v25/);
   assert.match(page, /story-music\.js\?v=story-music-v3/);
 });
 
@@ -1311,6 +1311,77 @@ test("Social Studio page loads each frontend script once without a shared api de
   assert.match(storyMusic, /^\(\(\) => \{/);
   assert.match(storyMusic, /window\.SGHStoryMusic = storyMusicApi/);
   assert.doesNotThrow(() => new vm.Script(`${storyMusic}\n${social}`));
+});
+
+test("Daily Pick Stats endpoint is authenticated and delegates frozen Daily 3 snapshots", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-daily-pick-stats-"));
+  const calls = [];
+  const manager = createSocialManager({
+    root,
+    env: { SOCIAL_ADMIN_SECRET: "secret" },
+    fetchDailyPickStats: async (input) => {
+      calls.push(input);
+      return {
+        contentId: input.contentId,
+        source: "MLB Stats API",
+        picks: input.snapshots.map((snapshot) => ({ snapshotId: snapshot.id }))
+      };
+    }
+  });
+  const cookie = await login(manager);
+  const generated = await route(manager, {
+    method: "POST",
+    path: "/api/social/generate",
+    headers: { cookie },
+    body: {
+      contentType: "DAILY_3",
+      board: {
+        slateDate: "2026-07-27",
+        sport: "baseball_mlb",
+        officialPicks: [
+          samplePickForTeam("Los Angeles Angels", "Houston Astros", 1),
+          samplePickForTeam("New York Mets", "Atlanta Braves", 2),
+          samplePickForTeam("Detroit Tigers", "Baltimore Orioles", 3)
+        ]
+      }
+    }
+  });
+
+  const unauthorized = await route(manager, {
+    path: `/api/social/content/${generated.json.content.id}/pick-stats`
+  });
+  assert.equal(unauthorized.status, 401);
+
+  const post = await route(manager, {
+    method: "POST",
+    path: `/api/social/content/${generated.json.content.id}/pick-stats`,
+    headers: { cookie },
+    body: {}
+  });
+  assert.equal(post.status, 405);
+
+  const response = await route(manager, {
+    path: `/api/social/content/${generated.json.content.id}/pick-stats`,
+    headers: { cookie }
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.json.stats.contentId, generated.json.content.id);
+  assert.equal(response.json.stats.picks.length, 3);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].contentId, generated.json.content.id);
+  assert.equal(calls[0].snapshots.length, 3);
+  assert.ok(calls[0].fetchImpl);
+});
+
+test("Daily Pick Stats UI is load-on-demand and research-only", async () => {
+  const client = await fs.readFile(path.join(__dirname, "..", "social.js"), "utf8");
+  const page = await fs.readFile(path.join(__dirname, "..", "social.html"), "utf8");
+  assert.match(client, /Daily Pick Stats/);
+  assert.match(client, /data-load-pick-stats/);
+  assert.match(client, /api\(`\/api\/social\/content\/\$\{encodeURIComponent\(content\.id\)\}\/pick-stats`\)/);
+  assert.match(client, /Research only; this does not change approved picks\./);
+  assert.match(client, /Verified Daily Pick Stats loaded from MLB Stats API\./);
+  assert.match(page, /\.pick-stats-panel/);
 });
 
 test("production cookie includes Secure", async () => {

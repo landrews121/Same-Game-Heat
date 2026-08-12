@@ -15,7 +15,8 @@ const state = {
   publications: [],
   pendingLivePublish: null,
   livePublishInFlight: false,
-  graphicGenerationInFlight: new Set()
+  graphicGenerationInFlight: new Set(),
+  pickStatsByContent: new Map()
 };
 
 const els = {
@@ -244,6 +245,83 @@ function storyMusicForContent(content) {
 
 function storyMusicText(music) {
   return music ? `${music.title} — ${music.artist}` : "";
+}
+
+function recordLabel(record) {
+  if (!record || !Number.isFinite(Number(record.wins)) || !Number.isFinite(Number(record.losses))) return "Unavailable";
+  return `${record.wins}-${record.losses}`;
+}
+
+function statValue(value, fallback = "Unavailable") {
+  return value === null || value === undefined || value === "" ? fallback : String(value);
+}
+
+function pitcherSummary(pitcher) {
+  if (!pitcher || pitcher.status === "tbd") return "Starter TBD";
+  const pieces = [pitcher.name || "Starter TBD"];
+  if (pitcher.handedness) pieces.push(`${pitcher.handedness}HP`);
+  if (pitcher.season?.era) pieces.push(`${pitcher.season.era} ERA`);
+  if (pitcher.season?.whip) pieces.push(`${pitcher.season.whip} WHIP`);
+  return pieces.join(" · ");
+}
+
+function renderDailyPickStatsBlock(content) {
+  if (content?.contentType !== "DAILY_3") return "";
+  const stats = state.pickStatsByContent.get(content.id);
+  const generatedAt = stats?.generatedAt ? new Date(stats.generatedAt).toLocaleString() : "";
+  return `
+    <div class="pick-stats-panel">
+      <div class="studio-row" style="justify-content:space-between;align-items:flex-start">
+        <div>
+          <h3>Daily Pick Stats</h3>
+          <p>Verified MLB Stats API context for the frozen Daily 3 picks. Research only; this does not change approved picks.</p>
+        </div>
+        <button class="studio-button secondary" type="button" data-load-pick-stats>${stats ? "Refresh Stats" : "Load Stats"}</button>
+      </div>
+      ${stats ? `
+        <div class="studio-meta">
+          <span class="studio-pill">${escapeHtml(stats.source || "MLB Stats API")}</span>
+          <span class="studio-pill">${escapeHtml(stats.slateDate || content.slateDate || "")}</span>
+          ${generatedAt ? `<span class="studio-pill">Loaded ${escapeHtml(generatedAt)}</span>` : ""}
+        </div>
+        <div class="pick-stats-list">
+          ${(stats.picks || []).map((pick, index) => `
+            <article class="pick-stats-card">
+              <div class="pick-stats-heading">
+                <strong>${index + 1}. ${escapeHtml(pick.selectedTeam?.name || "Frozen pick")}</strong>
+                <span class="studio-pill">${escapeHtml(pick.selectedTeam?.homeAway || "")}</span>
+              </div>
+              <p class="pick-stats-matchup">${escapeHtml(pick.opponentTeam?.name ? `vs ${pick.opponentTeam.name}` : "Opponent context unavailable")}</p>
+              <div class="pick-stats-grid">
+                <div>
+                  <span>Recent form</span>
+                  <strong>Last 5: ${escapeHtml(recordLabel(pick.selectedTeam?.recentForm?.last5))}</strong>
+                  <small>${escapeHtml(statValue(pick.selectedTeam?.recentForm?.last5?.averageRunsScored, "N/A"))} runs/game</small>
+                  <strong>Last 10: ${escapeHtml(recordLabel(pick.selectedTeam?.recentForm?.last10))}</strong>
+                </div>
+                <div>
+                  <span>Season offense</span>
+                  <strong>OPS ${escapeHtml(statValue(pick.selectedTeam?.offense?.ops, "N/A"))}</strong>
+                  <small>${escapeHtml(statValue(pick.selectedTeam?.offense?.runsPerGame, "N/A"))} runs/game · ${escapeHtml(statValue(pick.selectedTeam?.offense?.homeRuns, "N/A"))} HR</small>
+                  <strong>${escapeHtml(pick.selectedTeam?.homeAway || "Venue")}: ${escapeHtml(recordLabel(pick.selectedTeam?.relevantRecord))}</strong>
+                </div>
+                <div>
+                  <span>Starter</span>
+                  <strong>${escapeHtml(pitcherSummary(pick.selectedPitcher))}</strong>
+                  <small>${pick.selectedPitcher?.last3Starts ? escapeHtml(`Last 3 starts: ${pick.selectedPitcher.last3Starts.era?.toFixed ? pick.selectedPitcher.last3Starts.era.toFixed(2) : pick.selectedPitcher.last3Starts.era} ERA, ${pick.selectedPitcher.last3Starts.inningsPitched} IP`) : "Last 3 starts unavailable"}</small>
+                  <strong>Opp: ${escapeHtml(pitcherSummary(pick.opponentPitcher))}</strong>
+                </div>
+              </div>
+              ${pick.selectedTeam?.headToHead?.games ? `<p class="pick-stats-note">Season series: ${escapeHtml(pick.selectedTeam.name)} ${escapeHtml(recordLabel(pick.selectedTeam.headToHead))} vs ${escapeHtml(pick.opponentTeam?.name || "opponent")}.</p>` : ""}
+              ${pick.supportingStats?.length ? `<ul class="pick-stat-list">${pick.supportingStats.map((fact) => `<li>${escapeHtml(fact)}</li>`).join("")}</ul>` : ""}
+              ${pick.riskStat ? `<p class="pick-stats-watch"><strong>Watch item:</strong> ${escapeHtml(pick.riskStat)}</p>` : ""}
+              ${(pick.unavailable || []).length ? `<p class="pick-stats-note">${pick.unavailable.map((item) => escapeHtml(item)).join(" · ")}</p>` : ""}
+            </article>
+          `).join("")}
+        </div>
+      ` : `<p class="pick-stats-note">Load this after freezing Daily 3 content to pull structured team, starter, recent-form, and venue context.</p>`}
+    </div>
+  `;
 }
 
 function publicationDisplayStatus(publication) {
@@ -615,6 +693,36 @@ async function loadGraphicsForContent(contentId) {
   return graphics;
 }
 
+async function loadDailyPickStats(button) {
+  const content = state.selectedContent;
+  if (!content?.id) {
+    showStatus("Select a Daily 3 content item before loading pick stats.");
+    return;
+  }
+  if (content.contentType !== "DAILY_3") {
+    showStatus("Daily Pick Stats are available for DAILY_3 content only.");
+    return;
+  }
+  const originalText = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Loading stats...";
+  }
+  try {
+    const payload = await api(`/api/social/content/${encodeURIComponent(content.id)}/pick-stats`);
+    state.pickStatsByContent.set(content.id, payload.stats);
+    renderContentDetail(content);
+    showStatus("Verified Daily Pick Stats loaded from MLB Stats API.");
+  } catch (error) {
+    showStatus(error.message || "Unable to load Daily Pick Stats.");
+  } finally {
+    if (button?.isConnected) {
+      button.disabled = false;
+      button.textContent = originalText || "Load Stats";
+    }
+  }
+}
+
 function renderQueue() {
   els.contentQueue.innerHTML = state.content.length
     ? state.content.map((content) => `
@@ -665,6 +773,7 @@ function renderContentDetail(content) {
         </div>
       `).join("")}
     </div>
+    ${renderDailyPickStatsBlock(content)}
     <div class="studio-field">
       <label>Caption</label>
       <textarea readonly id="detailCaption">${escapeHtml(content.caption || "")}</textarea>
@@ -1062,6 +1171,11 @@ function initializeSocialStudio() {
         .catch((error) => showStatus(error.message));
     });
     bindIfPresent(els.contentDetail, "click", (event) => {
+      const pickStatsButton = event.target.closest("[data-load-pick-stats]");
+      if (pickStatsButton) {
+        loadDailyPickStats(pickStatsButton).catch((error) => showStatus(error.message));
+        return;
+      }
       const copyMusicButton = event.target.closest("[data-copy-story-music]");
       if (copyMusicButton) {
         copyStoryMusic();
