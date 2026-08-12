@@ -4153,6 +4153,7 @@ function cacheCurrentSocialMlbBoard(moneylineBoard) {
         slateDate,
         sport: elements.sportKey?.value || "baseball_mlb",
         gameId: pick.game?.id || "",
+        mlbGamePk: pick.game?.mlbContext?.gamePk || pick.game?.gamePk || "",
         gameStartTime: pick.game?.commenceTime || "",
         gameLabel: pick.gameLabel || formatDateTime(pick.game?.commenceTime),
         gameNumber: index + 1,

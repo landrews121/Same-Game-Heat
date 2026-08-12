@@ -4,6 +4,50 @@ function clean(value, fallback = "") {
   return String(value ?? fallback).trim();
 }
 
+function normalizeMlbTeamName(value) {
+  return clean(value)
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/\bst[.]?\b/g, "saint")
+    .replace(/\bathletics\b/g, "athletics")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function legacyMlbGamePk(value) {
+  const text = clean(value);
+  if (/^\d{6,}$/.test(text)) return text;
+  const prefixed = text.match(/^mlb-(\d{6,})$/i);
+  return prefixed ? prefixed[1] : "";
+}
+
+function gamePkFromSnapshot(snapshot = {}) {
+  const explicit = legacyMlbGamePk(snapshot.mlbGamePk);
+  if (explicit) return { gamePk: explicit, method: "explicit_mlb_game_pk" };
+  const legacy = legacyMlbGamePk(snapshot.gameId);
+  if (legacy) return { gamePk: legacy, method: "legacy_game_id" };
+  return { gamePk: "", method: "" };
+}
+
+function opponentFromGameLabel(snapshot = {}) {
+  const selected = clean(snapshot.selectedTeam);
+  const label = clean(snapshot.gameLabel);
+  if (!selected || !label) return "";
+  const parts = label.split(/\s+(?:@|vs\.?|at)\s+/i).map((part) => clean(part)).filter(Boolean);
+  if (parts.length !== 2) return "";
+  const selectedKey = normalizeMlbTeamName(selected);
+  const firstKey = normalizeMlbTeamName(parts[0]);
+  const secondKey = normalizeMlbTeamName(parts[1]);
+  if (selectedKey === firstKey) return parts[1];
+  if (selectedKey === secondKey) return parts[0];
+  return "";
+}
+
+function snapshotOpponent(snapshot = {}) {
+  return clean(snapshot.opponent) || opponentFromGameLabel(snapshot);
+}
+
 function number(value, fallback = null) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -184,7 +228,7 @@ function buildSupportingStats({ selectedTeam, opponentTeam, selectedPitcher, opp
   if (supporting.length < 4 && selectedTeam.headToHead?.games) {
     supporting.push(`${selectedTeam.name} is ${selectedTeam.headToHead.wins}-${selectedTeam.headToHead.losses} against ${opponentTeam.name} this season.`);
   }
-  if (supporting.length < 4 && selectedPitcher?.last3Starts?.era !== null) {
+  if (supporting.length < 4 && selectedPitcher?.last3Starts?.era !== null && selectedPitcher?.last3Starts?.era !== undefined) {
     supporting.push(`${selectedPitcher.name} has a ${selectedPitcher.last3Starts.era.toFixed(2)} ERA over ${selectedPitcher.last3Starts.starts} recent starts.`);
   }
   if (supporting.length < 4 && selectedPitcher?.season?.era) {
@@ -212,6 +256,20 @@ async function fetchJson(fetchImpl, url) {
   return response.json();
 }
 
+async function fetchJsonDiagnostic(fetchImpl, url, category, diagnostics = []) {
+  try {
+    const response = await fetchImpl(url, { headers: { Accept: "application/json" } });
+    if (!response.ok) {
+      diagnostics.push({ category, status: response.status, message: `MLB Stats API ${response.status}` });
+      return null;
+    }
+    return response.json();
+  } catch (error) {
+    diagnostics.push({ category, status: null, message: clean(error?.message || "MLB Stats API request failed") });
+    return null;
+  }
+}
+
 function makeUrl(path, params = {}) {
   const url = new URL(`${MLB_STATS_API}${path}`);
   Object.entries(params).forEach(([key, value]) => {
@@ -220,48 +278,146 @@ function makeUrl(path, params = {}) {
   return url.toString();
 }
 
-async function fetchGameForSnapshot(snapshot, fetchImpl) {
-  const gameId = clean(snapshot.gameId).replace(/^mlb-/, "");
-  const payload = await fetchJson(fetchImpl, makeUrl("/schedule", {
-    sportId: 1,
-    gamePk: gameId,
-    date: snapshot.slateDate,
-    hydrate: "team,probablePitcher"
-  }));
-  const games = (payload.dates || []).flatMap((day) => day.games || []);
-  return games.find((game) => String(game.gamePk) === gameId) || null;
+function teamMatchesGame(game, selectedTeam, opponentTeam) {
+  const home = game?.teams?.home?.team || {};
+  const away = game?.teams?.away?.team || {};
+  const selected = normalizeMlbTeamName(selectedTeam);
+  const opponent = normalizeMlbTeamName(opponentTeam);
+  const homeName = normalizeMlbTeamName(home.name);
+  const awayName = normalizeMlbTeamName(away.name);
+  const homeAbbrev = normalizeMlbTeamName(home.abbreviation);
+  const awayAbbrev = normalizeMlbTeamName(away.abbreviation);
+  const selectedIsHome = selected && (selected === homeName || selected === homeAbbrev);
+  const selectedIsAway = selected && (selected === awayName || selected === awayAbbrev);
+  const opponentIsHome = opponent && (opponent === homeName || opponent === homeAbbrev);
+  const opponentIsAway = opponent && (opponent === awayName || opponent === awayAbbrev);
+  return (selectedIsHome && opponentIsAway) || (selectedIsAway && opponentIsHome);
 }
 
-async function fetchTeamContext({ team, opponentTeamId, homeAway, gameSide, snapshot, fetchImpl, cache }) {
+function kickoffMatches(game, gameStartTime) {
+  const expected = Date.parse(clean(gameStartTime));
+  const actual = Date.parse(clean(game?.gameDate));
+  return Number.isFinite(expected) && Number.isFinite(actual) && Math.abs(expected - actual) <= 10 * 60 * 1000;
+}
+
+function chooseScheduleMatch(matches, snapshot) {
+  if (matches.length <= 1) return { game: matches[0] || null, method: "team_date_match", ambiguous: false };
+  const timeMatches = matches.filter((game) => kickoffMatches(game, snapshot.gameStartTime));
+  if (timeMatches.length === 1) return { game: timeMatches[0], method: "team_date_time_match", ambiguous: false };
+  const gameNumber = number(snapshot.gameNumber);
+  if (gameNumber !== null) {
+    const numberMatches = matches.filter((game) => number(game.gameNumber) === gameNumber || number(game.gamesInSeries) === gameNumber);
+    if (numberMatches.length === 1) return { game: numberMatches[0], method: "team_date_match", ambiguous: false };
+  }
+  return { game: null, method: "ambiguous", ambiguous: true };
+}
+
+async function resolveMlbGameForSnapshot(snapshot, fetchImpl, diagnostics = []) {
+  const selectedTeam = clean(snapshot.selectedTeam);
+  const opponent = snapshotOpponent(snapshot);
+  const direct = gamePkFromSnapshot(snapshot);
+  if (direct.gamePk) {
+    const payload = await fetchJsonDiagnostic(fetchImpl, makeUrl("/schedule", {
+      sportId: 1,
+      gamePk: direct.gamePk,
+      hydrate: "team,probablePitcher"
+    }), "schedule_lookup", diagnostics);
+    const games = (payload?.dates || []).flatMap((day) => day.games || []);
+    const game = games.find((item) => String(item.gamePk) === direct.gamePk) || null;
+    if (game) {
+      return {
+        game,
+        status: "resolved",
+        method: direct.method,
+        mlbGamePk: String(game.gamePk),
+        message: ""
+      };
+    }
+  }
+
+  if (!snapshot.slateDate || !selectedTeam || !opponent) {
+    return {
+      game: null,
+      status: "unresolved",
+      method: "unresolved",
+      mlbGamePk: direct.gamePk || "",
+      message: "Team/date game lookup needs slate date, selected team, and opponent."
+    };
+  }
+
+  const payload = await fetchJsonDiagnostic(fetchImpl, makeUrl("/schedule", {
+    sportId: 1,
+    date: snapshot.slateDate,
+    hydrate: "team,probablePitcher"
+  }), "schedule_lookup", diagnostics);
+  const games = (payload?.dates || []).flatMap((day) => day.games || []);
+  const matches = games.filter((game) => teamMatchesGame(game, selectedTeam, opponent));
+  const resolved = chooseScheduleMatch(matches, snapshot);
+  if (resolved.game) {
+    return {
+      game: resolved.game,
+      status: "resolved",
+      method: resolved.method,
+      mlbGamePk: String(resolved.game.gamePk),
+      message: ""
+    };
+  }
+  return {
+    game: null,
+    status: resolved.ambiguous ? "ambiguous" : "unresolved",
+    method: resolved.method,
+    mlbGamePk: direct.gamePk || "",
+    message: resolved.ambiguous
+      ? "Multiple MLB games matched this matchup; start time or MLB gamePk is required."
+      : "No MLB schedule game matched this frozen pick."
+  };
+}
+
+async function fetchTeamContext({ team, opponentTeamId, homeAway, gameSide, snapshot, fetchImpl, cache, diagnostics }) {
   const teamId = team?.id;
-  if (!teamId) throw new Error("MLB team identity unavailable");
+  if (!teamId) {
+    diagnostics.push({ category: "team_identity", status: null, message: "MLB team identity unavailable" });
+    return {
+      name: team?.name || "",
+      id: null,
+      homeAway,
+      seasonRecord: normalizeRecord(gameSide?.leagueRecord),
+      relevantRecord: normalizeRecord(gameSide?.leagueRecord),
+      headToHead: null,
+      recentForm: null,
+      offense: null,
+      bullpen: { status: "unavailable", message: "Bullpen data unavailable" }
+    };
+  }
   const cacheKey = `team:${teamId}:${snapshot.slateDate}`;
   if (!cache.has(cacheKey)) {
     cache.set(cacheKey, (async () => {
       const season = new Date(`${snapshot.slateDate}T12:00:00Z`).getUTCFullYear();
       const [seasonStats, recentSchedule, seasonSchedule] = await Promise.all([
-        fetchJson(fetchImpl, makeUrl(`/teams/${teamId}/stats`, { stats: "season", group: "hitting", season, gameType: "R" })),
-        fetchJson(fetchImpl, makeUrl("/schedule", {
+        fetchJsonDiagnostic(fetchImpl, makeUrl(`/teams/${teamId}/stats`, { stats: "season", group: "hitting", season, gameType: "R" }), "season_hitting", diagnostics),
+        fetchJsonDiagnostic(fetchImpl, makeUrl("/schedule", {
           sportId: 1,
           teamId,
           startDate: recentStartDate(snapshot.slateDate),
           endDate: previousDate(snapshot.slateDate),
           hydrate: "linescore,team",
           gameType: "R"
-        })),
-        fetchJson(fetchImpl, makeUrl("/schedule", {
+        }), "team_recent_schedule", diagnostics),
+        fetchJsonDiagnostic(fetchImpl, makeUrl("/schedule", {
           sportId: 1,
           teamId,
           startDate: seasonStartDate(snapshot.slateDate),
           endDate: previousDate(snapshot.slateDate),
           hydrate: "linescore,team",
           gameType: "R"
-        }))
+        }), "team_season_schedule", diagnostics)
       ]);
+      const recentGames = (recentSchedule?.dates || []).flatMap((day) => day.games || []);
+      const seasonGames = (seasonSchedule?.dates || []).flatMap((day) => day.games || []);
       return {
-        offense: normalizeOffense(seasonStat(seasonStats)),
-        recentForm: summarizeRecentGames((recentSchedule.dates || []).flatMap((day) => day.games || []), teamId),
-        seasonGames: (seasonSchedule.dates || []).flatMap((day) => day.games || [])
+        offense: seasonStats ? normalizeOffense(seasonStat(seasonStats)) : null,
+        recentForm: recentSchedule ? summarizeRecentGames(recentGames, teamId) : null,
+        seasonGames
       };
     })());
   }
@@ -272,14 +428,14 @@ async function fetchTeamContext({ team, opponentTeamId, homeAway, gameSide, snap
     homeAway,
     seasonRecord: normalizeRecord(gameSide?.leagueRecord),
     relevantRecord: summarizeVenueRecord(stats.seasonGames, teamId, homeAway.toLowerCase()) || normalizeRecord(gameSide?.leagueRecord),
-    headToHead: opponentTeamId ? summarizeHeadToHead(stats.seasonGames, teamId, opponentTeamId) : null,
+    headToHead: opponentTeamId && stats.seasonGames?.length ? summarizeHeadToHead(stats.seasonGames, teamId, opponentTeamId) : null,
     recentForm: stats.recentForm,
     offense: stats.offense,
     bullpen: { status: "unavailable", message: "Bullpen data unavailable" }
   };
 }
 
-async function fetchPitcherContext(probablePitcher, snapshot, fetchImpl, cache) {
+async function fetchPitcherContext(probablePitcher, snapshot, fetchImpl, cache, diagnostics, categoryPrefix = "pitcher") {
   if (!probablePitcher?.id) return { status: "tbd", name: "Starter TBD" };
   const pitcherId = probablePitcher.id;
   const cacheKey = `pitcher:${pitcherId}:${snapshot.slateDate}`;
@@ -287,9 +443,9 @@ async function fetchPitcherContext(probablePitcher, snapshot, fetchImpl, cache) 
     cache.set(cacheKey, (async () => {
       const season = new Date(`${snapshot.slateDate}T12:00:00Z`).getUTCFullYear();
       const [person, stats, gameLog] = await Promise.all([
-        fetchJson(fetchImpl, makeUrl(`/people/${pitcherId}`)),
-        fetchJson(fetchImpl, makeUrl(`/people/${pitcherId}/stats`, { stats: "season", group: "pitching", season, gameType: "R" })),
-        fetchJson(fetchImpl, makeUrl(`/people/${pitcherId}/stats`, { stats: "gameLog", group: "pitching", season, gameType: "R" }))
+        fetchJsonDiagnostic(fetchImpl, makeUrl(`/people/${pitcherId}`), `${categoryPrefix}_person`, diagnostics),
+        fetchJsonDiagnostic(fetchImpl, makeUrl(`/people/${pitcherId}/stats`, { stats: "season", group: "pitching", season, gameType: "R" }), `${categoryPrefix}_season`, diagnostics),
+        fetchJsonDiagnostic(fetchImpl, makeUrl(`/people/${pitcherId}/stats`, { stats: "gameLog", group: "pitching", season, gameType: "R" }), `${categoryPrefix}_gamelog`, diagnostics)
       ]);
       return normalizePitcher({ person, stats, gameLog, fallbackName: probablePitcher.fullName, slateDate: snapshot.slateDate });
     })());
@@ -300,43 +456,65 @@ async function fetchPitcherContext(probablePitcher, snapshot, fetchImpl, cache) 
 async function buildDailyPickStats({ contentId = "", snapshots = [], fetchImpl = fetch, now = new Date().toISOString() } = {}) {
   const cache = new Map();
   const picks = await Promise.all(snapshots.map(async (snapshot) => {
-    try {
-      const game = await fetchGameForSnapshot(snapshot, fetchImpl);
-      if (!game) throw new Error("MLB game was not found for this frozen snapshot");
-      const home = game.teams?.home || {};
-      const away = game.teams?.away || {};
-      const selectedName = clean(snapshot.selectedTeam).toLowerCase();
-      const selectedIsHome = selectedName === clean(home.team?.name).toLowerCase() ||
-        (selectedName !== clean(away.team?.name).toLowerCase() && clean(snapshot.homeOrAway).toLowerCase() === "home");
-      const selectedSide = selectedIsHome ? home : away;
-      const opponentSide = selectedIsHome ? away : home;
-      const [selectedTeam, opponentTeam, selectedPitcher, opponentPitcher] = await Promise.all([
-        fetchTeamContext({ team: selectedSide.team, opponentTeamId: opponentSide.team?.id, homeAway: selectedIsHome ? "HOME" : "AWAY", gameSide: selectedSide, snapshot, fetchImpl, cache }),
-        fetchTeamContext({ team: opponentSide.team, opponentTeamId: selectedSide.team?.id, homeAway: selectedIsHome ? "AWAY" : "HOME", gameSide: opponentSide, snapshot, fetchImpl, cache }),
-        fetchPitcherContext(selectedSide.probablePitcher, snapshot, fetchImpl, cache),
-        fetchPitcherContext(opponentSide.probablePitcher, snapshot, fetchImpl, cache)
-      ]);
-      const callouts = buildSupportingStats({ selectedTeam, opponentTeam, selectedPitcher, opponentPitcher });
+    const diagnostics = [];
+    const resolution = await resolveMlbGameForSnapshot(snapshot, fetchImpl, diagnostics);
+    const gameResolution = {
+      status: resolution.status,
+      method: resolution.method,
+      mlbGamePk: resolution.mlbGamePk,
+      message: resolution.message
+    };
+    if (!resolution.game) {
       return {
         snapshotId: snapshot.id,
         gameId: snapshot.gameId,
-        selectedTeam,
-        opponentTeam,
-        selectedPitcher,
-        opponentPitcher,
-        supportingStats: callouts.supporting,
-        riskStat: callouts.riskStat,
-        dataSources: ["MLB Stats API"],
-        unavailable: selectedTeam.bullpen.status === "unavailable" ? [selectedTeam.bullpen.message] : []
-      };
-    } catch (error) {
-      return {
-        snapshotId: snapshot.id,
-        gameId: snapshot.gameId,
-        selectedTeam: { name: snapshot.selectedTeam || "Frozen pick" },
-        unavailable: ["Verified MLB statistics are unavailable for this pick right now."]
+        mlbGamePk: resolution.mlbGamePk || "",
+        gameResolution,
+        diagnostics,
+        selectedTeam: { name: snapshot.selectedTeam || "Frozen pick", homeAway: clean(snapshot.homeOrAway).toUpperCase() || "" },
+        opponentTeam: { name: snapshotOpponent(snapshot) || "" },
+        unavailable: [resolution.message || "Game resolution unavailable for this pick right now."]
       };
     }
+    const game = resolution.game;
+    const home = game.teams?.home || {};
+    const away = game.teams?.away || {};
+    const selectedKey = normalizeMlbTeamName(snapshot.selectedTeam);
+    const homeKey = normalizeMlbTeamName(home.team?.name);
+    const awayKey = normalizeMlbTeamName(away.team?.name);
+    const selectedIsHome = selectedKey === homeKey ||
+      (selectedKey !== awayKey && clean(snapshot.homeOrAway).toLowerCase() === "home");
+    const selectedSide = selectedIsHome ? home : away;
+    const opponentSide = selectedIsHome ? away : home;
+    const [selectedTeam, opponentTeam, selectedPitcher, opponentPitcher] = await Promise.all([
+      fetchTeamContext({ team: selectedSide.team, opponentTeamId: opponentSide.team?.id, homeAway: selectedIsHome ? "HOME" : "AWAY", gameSide: selectedSide, snapshot, fetchImpl, cache, diagnostics }),
+      fetchTeamContext({ team: opponentSide.team, opponentTeamId: selectedSide.team?.id, homeAway: selectedIsHome ? "AWAY" : "HOME", gameSide: opponentSide, snapshot, fetchImpl, cache, diagnostics }),
+      fetchPitcherContext(selectedSide.probablePitcher, snapshot, fetchImpl, cache, diagnostics, "pitcher"),
+      fetchPitcherContext(opponentSide.probablePitcher, snapshot, fetchImpl, cache, diagnostics, "opponent_pitcher")
+    ]);
+    const callouts = buildSupportingStats({ selectedTeam, opponentTeam, selectedPitcher, opponentPitcher });
+    const unavailable = [];
+    if (!selectedTeam.recentForm) unavailable.push("Recent form unavailable.");
+    if (!selectedTeam.offense) unavailable.push("Season offense unavailable.");
+    if (!selectedTeam.relevantRecord) unavailable.push("Venue record unavailable.");
+    if (selectedPitcher.status === "tbd") unavailable.push("Starter stats unavailable.");
+    if (opponentPitcher.status === "tbd") unavailable.push("Opponent starter stats unavailable.");
+    if (selectedTeam.bullpen.status === "unavailable") unavailable.push(selectedTeam.bullpen.message);
+    return {
+      snapshotId: snapshot.id,
+      gameId: snapshot.gameId,
+      mlbGamePk: String(game.gamePk || ""),
+      gameResolution,
+      diagnostics,
+      selectedTeam,
+      opponentTeam,
+      selectedPitcher,
+      opponentPitcher,
+      supportingStats: callouts.supporting,
+      riskStat: callouts.riskStat,
+      dataSources: ["MLB Stats API"],
+      unavailable
+    };
   }));
   return {
     contentId,
@@ -354,5 +532,7 @@ module.exports = {
   normalizeOffense,
   normalizePitcher,
   buildSupportingStats,
+  normalizeMlbTeamName,
+  resolveMlbGameForSnapshot,
   buildDailyPickStats
 };

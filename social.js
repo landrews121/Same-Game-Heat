@@ -268,6 +268,23 @@ function pitcherSummary(pitcher) {
   return pieces.join(" · ");
 }
 
+function gameResolutionLabel(resolution) {
+  if (!resolution?.status) return "";
+  if (resolution.status === "resolved") {
+    if (resolution.method === "team_date_match") return "Game resolution: Team/date match";
+    if (resolution.method === "team_date_time_match") return "Game resolution: Team/date/time match";
+    return "Game resolution: Resolved";
+  }
+  if (resolution.status === "ambiguous") return "Game resolution: Ambiguous";
+  return "Game resolution: Unresolved";
+}
+
+function pickDiagnosticLabel(item) {
+  const category = item?.category ? String(item.category).replaceAll("_", " ") : "MLB data";
+  const status = item?.status ? ` (${item.status})` : "";
+  return `${category}${status}`;
+}
+
 function renderDailyPickStatsBlock(content) {
   if (content?.contentType !== "DAILY_3") return "";
   const stats = state.pickStatsByContent.get(content.id);
@@ -298,6 +315,7 @@ function renderDailyPickStatsBlock(content) {
                 <strong>${index + 1}. ${escapeHtml(pick.selectedTeam?.name || "Frozen pick")}</strong>
                 <span class="studio-pill">${escapeHtml(pick.selectedTeam?.homeAway || "")}</span>
               </div>
+              ${pick.gameResolution ? `<p class="pick-stats-note">${escapeHtml(gameResolutionLabel(pick.gameResolution))}</p>` : ""}
               <p class="pick-stats-matchup">${escapeHtml(pick.opponentTeam?.name ? `vs ${pick.opponentTeam.name}` : "Opponent context unavailable")}</p>
               <div class="pick-stats-grid">
                 <div>
@@ -323,6 +341,7 @@ function renderDailyPickStatsBlock(content) {
               ${pick.supportingStats?.length ? `<ul class="pick-stat-list">${pick.supportingStats.map((fact) => `<li>${escapeHtml(fact)}</li>`).join("")}</ul>` : ""}
               ${pick.riskStat ? `<p class="pick-stats-watch"><strong>Watch item:</strong> ${escapeHtml(pick.riskStat)}</p>` : ""}
               ${(pick.unavailable || []).length ? `<p class="pick-stats-note">${pick.unavailable.map((item) => escapeHtml(item)).join(" · ")}</p>` : ""}
+              ${(pick.diagnostics || []).length ? `<p class="pick-stats-note">Partial data notes: ${pick.diagnostics.slice(0, 3).map((item) => escapeHtml(pickDiagnosticLabel(item))).join(" · ")}</p>` : ""}
             </article>
           `).join("")}
         </div>

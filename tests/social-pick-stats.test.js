@@ -44,9 +44,9 @@ function fakeFetchFactory(calls = []) {
     const parsed = new URL(url);
     const path = parsed.pathname;
 
-    if (path.endsWith("/schedule") && parsed.searchParams.get("gamePk") === "1001") {
+    if (path.endsWith("/schedule") && parsed.searchParams.get("gamePk") === "777001") {
       return responseJson(scheduleResponse([{
-        gamePk: 1001,
+        gamePk: 777001,
         gameDate: "2026-07-27T23:10:00Z",
         status: { abstractGameState: "Preview", detailedState: "Scheduled" },
         teams: {
@@ -172,7 +172,7 @@ test("buildDailyPickStats builds deterministic Daily 3 MLB context from public S
     now: "2026-07-27T16:00:00Z",
     snapshots: [{
       id: "snapshot_1",
-      gameId: "mlb-1001",
+      gameId: "mlb-777001",
       slateDate: "2026-07-27",
       selectedTeam: "Los Angeles Angels",
       homeOrAway: "Home"

@@ -22,6 +22,10 @@ const {
 } = require("../social-graphics");
 const { STORY_MUSIC_RECOMMENDATIONS } = require("../story-music");
 const { createPublicationRecord } = require("../social-publications");
+const {
+  buildDailyPickStats,
+  resolveMlbGameForSnapshot
+} = require("../social-pick-stats");
 
 function samplePick(overrides = {}) {
   return {
@@ -1100,7 +1104,7 @@ test("frontend dry-run publication action is explicit", async () => {
 
 test("social studio cache version is bumped for Social Studio UI updates", async () => {
   const html = await fs.readFile(path.join(__dirname, "../social.html"), "utf8");
-  assert.match(html, /social\.js\?v=social-studio-v26/);
+  assert.match(html, /social\.js\?v=social-studio-v27/);
   assert.match(html, /livePublishConfirmPanel/);
   assert.match(html, /livePublishUnderstand/);
 });
@@ -1254,7 +1258,7 @@ test("Social Studio browser login posts the secret key and verifies its new sess
   assert.match(client, /const session = await api\("\/api\/social\/session"\)/);
   assert.match(client, /if \(!session\.authorized\) \{/);
   assert.match(client, /error\.code = "missing_session_cookie"/);
-  assert.match(page, /social\.js\?v=social-studio-v26/);
+  assert.match(page, /social\.js\?v=social-studio-v27/);
   assert.match(page, /story-music\.js\?v=story-music-v3/);
 });
 
@@ -1820,6 +1824,105 @@ function samplePickStatsPackage(snapshots, overrides = {}) {
   };
 }
 
+function mlbGameFixture(overrides = {}) {
+  const gamePk = overrides.gamePk || 777001;
+  return {
+    gamePk,
+    gameDate: overrides.gameDate || "2026-07-27T23:10:00Z",
+    gameNumber: overrides.gameNumber || 1,
+    status: { abstractGameState: "Preview", detailedState: "Scheduled" },
+    teams: {
+      away: {
+        team: { id: 117, name: "Houston Astros", abbreviation: "HOU" },
+        leagueRecord: { wins: 55, losses: 48 },
+        probablePitcher: overrides.awayPitcher === null ? null : { id: 54321, fullName: "Houston Starter" }
+      },
+      home: {
+        team: { id: 108, name: "Los Angeles Angels", abbreviation: "LAA" },
+        leagueRecord: { wins: 50, losses: 53 },
+        probablePitcher: overrides.homePitcher === null ? null : { id: 12345, fullName: "Angels Starter" }
+      }
+    },
+    ...overrides
+  };
+}
+
+function finalGameFixture({ gamePk, date, homeId = 108, awayId = 117, homeScore = 5, awayScore = 3 }) {
+  return {
+    gamePk,
+    gameDate: `${date}T23:10:00Z`,
+    status: { abstractGameState: "Final", detailedState: "Final" },
+    teams: {
+      away: { team: { id: awayId, name: "Houston Astros" }, score: awayScore },
+      home: { team: { id: homeId, name: "Los Angeles Angels" }, score: homeScore }
+    }
+  };
+}
+
+function fakeMlbStatsFetch({ games = [mlbGameFixture()], failCategories = new Set(), doubleheader = false } = {}) {
+  const scheduleGames = doubleheader
+    ? [mlbGameFixture({ gamePk: 777001, gameDate: "2026-07-27T17:10:00Z", gameNumber: 1 }), mlbGameFixture({ gamePk: 777002, gameDate: "2026-07-27T23:10:00Z", gameNumber: 2 })]
+    : games;
+  const recentGames = Array.from({ length: 10 }, (_, index) => finalGameFixture({
+    gamePk: 880000 + index,
+    date: `2026-07-${String(26 - index).padStart(2, "0")}`,
+    homeScore: index < 7 ? 5 : 2,
+    awayScore: index < 7 ? 3 : 4
+  }));
+  return async (url) => {
+    const parsed = new URL(String(url));
+    const pathName = parsed.pathname;
+    const fail = (category) => failCategories.has(category)
+      ? { ok: false, status: 503, json: async () => ({}) }
+      : null;
+
+    if (pathName.endsWith("/schedule") && parsed.searchParams.get("gamePk")) {
+      const gamePk = parsed.searchParams.get("gamePk");
+      return { ok: true, status: 200, json: async () => ({ dates: [{ games: scheduleGames.filter((game) => String(game.gamePk) === gamePk) }] }) };
+    }
+    if (pathName.endsWith("/schedule") && parsed.searchParams.get("teamId")) {
+      const isSeason = String(parsed.searchParams.get("startDate") || "").endsWith("-01-01");
+      const failed = fail(isSeason ? "team_season_schedule" : "team_recent_schedule");
+      if (failed) return failed;
+      return { ok: true, status: 200, json: async () => ({ dates: [{ games: recentGames }] }) };
+    }
+    if (pathName.endsWith("/schedule")) {
+      return { ok: true, status: 200, json: async () => ({ dates: [{ games: scheduleGames }] }) };
+    }
+    if (/\/teams\/\d+\/stats$/.test(pathName)) {
+      const failed = fail("season_hitting");
+      if (failed) return failed;
+      return { ok: true, status: 200, json: async () => ({ stats: [{ splits: [{ stat: { gamesPlayed: 103, runs: 494, homeRuns: 123, avg: ".252", obp: ".328", slg: ".414", ops: ".742" } }] }] }) };
+    }
+    if (/\/people\/\d+$/.test(pathName)) {
+      const failed = fail("pitcher_person");
+      if (failed) return failed;
+      return { ok: true, status: 200, json: async () => ({ people: [{ id: 12345, fullName: "Angels Starter", pitchHand: { code: "R" } }] }) };
+    }
+    if (/\/people\/\d+\/stats$/.test(pathName) && parsed.searchParams.get("stats") === "season") {
+      const failed = fail("pitcher_season");
+      if (failed) return failed;
+      return { ok: true, status: 200, json: async () => ({ stats: [{ splits: [{ stat: { era: "3.14", whip: "1.09", strikeOuts: 118, baseOnBalls: 31, inningsPitched: "112.0" } }] }] }) };
+    }
+    if (/\/people\/\d+\/stats$/.test(pathName) && parsed.searchParams.get("stats") === "gameLog") {
+      const failed = fail("pitcher_gamelog");
+      if (failed) return failed;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          stats: [{ splits: [
+            { date: "2026-07-20", isStarter: true, stat: { gamesStarted: 1, inningsPitched: "6.0", earnedRuns: 2, runs: 2, strikeOuts: 7, baseOnBalls: 1 } },
+            { date: "2026-07-14", isStarter: true, stat: { gamesStarted: 1, inningsPitched: "5.0", earnedRuns: 1, runs: 1, strikeOuts: 5, baseOnBalls: 2 } },
+            { date: "2026-07-08", isStarter: true, stat: { gamesStarted: 1, inningsPitched: "7.0", earnedRuns: 3, runs: 3, strikeOuts: 8, baseOnBalls: 1 } }
+          ] }]
+        })
+      };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+}
+
 test("Stats Board metrics prefer verified values and skip unavailable boxes", () => {
   const metrics = selectStatsBoardMetrics({
     selectedTeam: {
@@ -1839,6 +1942,156 @@ test("Stats Board metrics prefer verified values and skip unavailable boxes", ()
   });
   assert.deepEqual(metrics.map((metric) => metric.label), ["LAST 10", "LAST 5", "AWAY", "STARTER L3"]);
   assert.deepEqual(metrics.map((metric) => metric.value), ["6-4", "3-2", "20-14", "2.10 ERA"]);
+});
+
+test("Daily Pick Stats resolves direct MLB game IDs and preserves frozen pick values", async () => {
+  const snapshot = createSocialPickSnapshot(samplePick({
+    gameId: "odds-api-internal-game",
+    mlbGamePk: "777001",
+    sportsbookOdds: -105,
+    selectedTeam: "Los Angeles Angels",
+    opponent: "Houston Astros",
+    homeTeam: "Los Angeles Angels",
+    awayTeam: "Houston Astros",
+    homeOrAway: "Home"
+  }));
+  const stats = await buildDailyPickStats({ contentId: "content_1", snapshots: [snapshot], fetchImpl: fakeMlbStatsFetch() });
+  const pick = stats.picks[0];
+
+  assert.equal(pick.gameId, "odds-api-internal-game");
+  assert.equal(pick.mlbGamePk, "777001");
+  assert.equal(pick.gameResolution.status, "resolved");
+  assert.equal(pick.gameResolution.method, "explicit_mlb_game_pk");
+  assert.equal(pick.selectedTeam.id, 108);
+  assert.equal(pick.opponentTeam.id, 117);
+  assert.equal(pick.selectedTeam.recentForm.last5.games, 5);
+  assert.equal(pick.selectedTeam.recentForm.last10.games, 10);
+  assert.equal(pick.selectedTeam.offense.ops, ".742");
+  assert.equal(pick.selectedTeam.offense.runsPerGame, 4.8);
+  assert.deepEqual(pick.selectedTeam.relevantRecord, { wins: 7, losses: 3 });
+  assert.equal(pick.selectedPitcher.name, "Angels Starter");
+  assert.equal(snapshot.sportsbookOdds, -105);
+  assert.equal(snapshot.gameId, "odds-api-internal-game");
+});
+
+test("Daily Pick Stats resolves numeric and prefixed legacy game IDs", async () => {
+  const numeric = createSocialPickSnapshot(samplePick({ gameId: "777001" }));
+  const prefixed = createSocialPickSnapshot(samplePick({ gameId: "mlb-777001" }));
+  const fetchImpl = fakeMlbStatsFetch();
+
+  const numericResult = await buildDailyPickStats({ snapshots: [numeric], fetchImpl });
+  const prefixedResult = await buildDailyPickStats({ snapshots: [prefixed], fetchImpl });
+
+  assert.equal(numericResult.picks[0].gameResolution.method, "legacy_game_id");
+  assert.equal(prefixedResult.picks[0].gameResolution.method, "legacy_game_id");
+  assert.equal(numericResult.picks[0].mlbGamePk, "777001");
+  assert.equal(prefixedResult.picks[0].mlbGamePk, "777001");
+});
+
+test("arbitrary internal gameId is not used as MLB gamePk and team date fallback resolves reversed orientation", async () => {
+  const snapshot = createSocialPickSnapshot(samplePick({
+    gameId: "game-1",
+    gameLabel: "Los Angeles Angels @ Houston Astros",
+    homeTeam: "Houston Astros",
+    awayTeam: "Los Angeles Angels",
+    selectedTeam: "Los Angeles Angels",
+    opponent: "Houston Astros",
+    homeOrAway: "Away"
+  }));
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push(String(url));
+    return fakeMlbStatsFetch({ games: [mlbGameFixture()] })(url, options);
+  };
+  const stats = await buildDailyPickStats({ snapshots: [snapshot], fetchImpl });
+
+  assert.equal(calls.some((url) => url.includes("gamePk=game-1")), false);
+  assert.equal(stats.picks[0].gameResolution.method, "team_date_match");
+  assert.equal(stats.picks[0].mlbGamePk, "777001");
+  assert.equal(stats.picks[0].selectedTeam.id, 108);
+  assert.equal(stats.picks[0].opponentTeam.id, 117);
+});
+
+test("legacy gameLabel opponent fallback supports schedule resolution without opponent field", async () => {
+  const snapshot = {
+    ...createSocialPickSnapshot(samplePick({
+      gameId: "odds-internal",
+      gameLabel: "Houston Astros @ Los Angeles Angels",
+      selectedTeam: "Los Angeles Angels",
+      opponent: "Houston Astros",
+      homeTeam: "Los Angeles Angels",
+      awayTeam: "Houston Astros",
+      homeOrAway: "Home"
+    })),
+    opponent: ""
+  };
+  const stats = await buildDailyPickStats({ snapshots: [snapshot], fetchImpl: fakeMlbStatsFetch() });
+
+  assert.equal(stats.picks[0].gameResolution.status, "resolved");
+  assert.equal(stats.picks[0].opponentTeam.name, "Houston Astros");
+});
+
+test("doubleheader ambiguity is handled safely", async () => {
+  const snapshot = {
+    ...createSocialPickSnapshot(samplePick({
+      gameId: "odds-internal",
+      gameStartTime: "",
+      gameLabel: "Houston Astros @ Los Angeles Angels"
+    })),
+    gameNumber: null
+  };
+  const resolution = await resolveMlbGameForSnapshot(snapshot, fakeMlbStatsFetch({ doubleheader: true }), []);
+
+  assert.equal(resolution.status, "ambiguous");
+  assert.equal(resolution.method, "ambiguous");
+  assert.equal(resolution.game, null);
+});
+
+test("partial MLB endpoint failures do not erase available team stats", async () => {
+  const snapshot = createSocialPickSnapshot(samplePick({ mlbGamePk: "777001" }));
+  const stats = await buildDailyPickStats({
+    snapshots: [snapshot],
+    fetchImpl: fakeMlbStatsFetch({ failCategories: new Set(["pitcher_season", "pitcher_gamelog"]) })
+  });
+  const pick = stats.picks[0];
+
+  assert.equal(pick.gameResolution.status, "resolved");
+  assert.equal(pick.selectedTeam.recentForm.last5.games, 5);
+  assert.equal(pick.selectedTeam.recentForm.last10.games, 10);
+  assert.equal(pick.selectedTeam.offense.ops, ".742");
+  assert.equal(pick.selectedTeam.relevantRecord.wins, 7);
+  assert.equal(pick.selectedPitcher.name, "Angels Starter");
+  assert.equal(pick.selectedPitcher.season.era, null);
+  assert.equal(pick.selectedPitcher.last3Starts, null);
+  assert.ok(pick.diagnostics.some((item) => item.category === "pitcher_season"));
+  assert.ok(pick.diagnostics.some((item) => item.category === "pitcher_gamelog"));
+});
+
+test("offense endpoint failure does not erase recent form or venue record", async () => {
+  const snapshot = createSocialPickSnapshot(samplePick({ mlbGamePk: "777001" }));
+  const stats = await buildDailyPickStats({
+    snapshots: [snapshot],
+    fetchImpl: fakeMlbStatsFetch({ failCategories: new Set(["season_hitting"]) })
+  });
+  const pick = stats.picks[0];
+
+  assert.equal(pick.gameResolution.status, "resolved");
+  assert.equal(pick.selectedTeam.offense, null);
+  assert.equal(pick.selectedTeam.recentForm.last10.games, 10);
+  assert.equal(pick.selectedTeam.relevantRecord.losses, 3);
+  assert.ok(pick.unavailable.includes("Season offense unavailable."));
+});
+
+test("new frozen Social Studio snapshots preserve opponent and official MLB gamePk", () => {
+  const snapshot = createSocialPickSnapshot(samplePick({
+    gameId: "odds-api-game",
+    mlbGamePk: 777001,
+    opponent: "Houston Astros"
+  }));
+
+  assert.equal(snapshot.gameId, "odds-api-game");
+  assert.equal(snapshot.mlbGamePk, "777001");
+  assert.equal(snapshot.opponent, "Houston Astros");
 });
 
 test("Daily 3 Stats Board renders as a separate deterministic template without removed metrics", () => {
