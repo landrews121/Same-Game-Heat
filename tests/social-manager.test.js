@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
+const vm = require("node:vm");
 const {
   createSocialManager,
   createSocialPickSnapshot,
@@ -1093,7 +1094,7 @@ test("frontend dry-run publication action is explicit", async () => {
 
 test("social studio cache version is bumped for Social Studio UI updates", async () => {
   const html = await fs.readFile(path.join(__dirname, "../social.html"), "utf8");
-  assert.match(html, /social\.js\?v=social-studio-v23/);
+  assert.match(html, /social\.js\?v=social-studio-v24/);
   assert.match(html, /livePublishConfirmPanel/);
   assert.match(html, /livePublishUnderstand/);
 });
@@ -1246,8 +1247,8 @@ test("Social Studio browser login posts the secret key and verifies its new sess
   assert.match(client, /const session = await api\("\/api\/social\/session"\)/);
   assert.match(client, /if \(!session\.authorized\) \{/);
   assert.match(client, /error\.code = "missing_session_cookie"/);
-  assert.match(page, /social\.js\?v=social-studio-v23/);
-  assert.match(page, /story-music\.js\?v=story-music-v2/);
+  assert.match(page, /social\.js\?v=social-studio-v24/);
+  assert.match(page, /story-music\.js\?v=story-music-v3/);
 });
 
 test("Social Studio login startup keeps the required form independent from optional Story Music controls", async () => {
@@ -1297,6 +1298,19 @@ test("Social Studio login uses AJAX without resetting the form or navigating awa
   assert.ok(client.indexOf('els.socialSecret.value = "";') < client.indexOf("els.loginPanel.classList.add(\"hidden\")"));
   assert.doesNotMatch(client, /loginForm\.reset\(|els\.loginForm\.reset\(|\.requestSubmit\(|\.submit\(|location\.reload\(|window\.location/);
   assert.doesNotMatch(page, /<form id="loginForm"[^>]+\b(?:action|method)=/);
+});
+
+test("Social Studio page loads each frontend script once without a shared api declaration", async () => {
+  const page = await fs.readFile(path.join(__dirname, "..", "social.html"), "utf8");
+  const storyMusic = await fs.readFile(path.join(__dirname, "..", "story-music.js"), "utf8");
+  const social = await fs.readFile(path.join(__dirname, "..", "social.js"), "utf8");
+
+  assert.equal((page.match(/<script\s+src="\/social\.js\?v=[^"]+"><\/script>/g) || []).length, 1);
+  assert.equal((page.match(/<script\s+src="\/story-music\.js\?v=[^"]+"><\/script>/g) || []).length, 1);
+  assert.doesNotMatch(storyMusic, /\b(const|let|var|function)\s+api\b/);
+  assert.match(storyMusic, /^\(\(\) => \{/);
+  assert.match(storyMusic, /window\.SGHStoryMusic = storyMusicApi/);
+  assert.doesNotThrow(() => new vm.Script(`${storyMusic}\n${social}`));
 });
 
 test("production cookie includes Secure", async () => {
