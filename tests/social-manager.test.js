@@ -13,7 +13,13 @@ const {
   normalizeGeneratedContent,
   validateNoProhibitedLanguage
 } = require("../social-manager");
-const { renderSocialGraphic, RESPONSIBLE_FOOTER, GRAPHIC_TEMPLATE_VERSION } = require("../social-graphics");
+const {
+  renderSocialGraphic,
+  RESPONSIBLE_FOOTER,
+  GRAPHIC_TEMPLATE_VERSION,
+  STATS_GRAPHIC_TEMPLATE_VERSION,
+  selectStatsBoardMetrics
+} = require("../social-graphics");
 const { STORY_MUSIC_RECOMMENDATIONS } = require("../story-music");
 const { createPublicationRecord } = require("../social-publications");
 
@@ -1094,7 +1100,7 @@ test("frontend dry-run publication action is explicit", async () => {
 
 test("social studio cache version is bumped for Social Studio UI updates", async () => {
   const html = await fs.readFile(path.join(__dirname, "../social.html"), "utf8");
-  assert.match(html, /social\.js\?v=social-studio-v25/);
+  assert.match(html, /social\.js\?v=social-studio-v26/);
   assert.match(html, /livePublishConfirmPanel/);
   assert.match(html, /livePublishUnderstand/);
 });
@@ -1103,8 +1109,9 @@ test("story graphic generation gives clear frontend feedback", async () => {
   const source = await fs.readFile(path.join(__dirname, "../social.js"), "utf8");
   assert.match(source, /Select a content item before generating a graphic\./);
   assert.match(source, /graphicGenerationInFlight/);
-  assert.match(source, /Generating \$\{graphicLabel\(normalizedFormat\)\}\.\.\./);
-  assert.match(source, /JSON\.stringify\(\{ format: normalizedFormat \}\)/);
+  assert.match(source, /button\.textContent = `Generating \$\{label\}\.\.\.`/);
+  assert.match(source, /JSON\.stringify\(\{ format: normalizedFormat, graphicType: normalizedGraphicType \}\)/);
+  assert.match(source, /graphicLabel\(normalizedFormat, normalizedGraphicType\)/);
   assert.match(source, /button\.disabled = true/);
   assert.match(source, /button\.disabled = false/);
   assert.match(source, /button\.textContent = originalText/);
@@ -1247,7 +1254,7 @@ test("Social Studio browser login posts the secret key and verifies its new sess
   assert.match(client, /const session = await api\("\/api\/social\/session"\)/);
   assert.match(client, /if \(!session\.authorized\) \{/);
   assert.match(client, /error\.code = "missing_session_cookie"/);
-  assert.match(page, /social\.js\?v=social-studio-v25/);
+  assert.match(page, /social\.js\?v=social-studio-v26/);
   assert.match(page, /story-music\.js\?v=story-music-v3/);
 });
 
@@ -1378,10 +1385,13 @@ test("Daily Pick Stats UI is load-on-demand and research-only", async () => {
   const page = await fs.readFile(path.join(__dirname, "..", "social.html"), "utf8");
   assert.match(client, /Daily Pick Stats/);
   assert.match(client, /data-load-pick-stats/);
+  assert.match(client, /data-generate-stats-board/);
+  assert.match(client, /Load Daily Pick Stats before generating a Stats Board\./);
   assert.match(client, /api\(`\/api\/social\/content\/\$\{encodeURIComponent\(content\.id\)\}\/pick-stats`\)/);
   assert.match(client, /Research only; this does not change approved picks\./);
   assert.match(client, /Verified Daily Pick Stats loaded from MLB Stats API\./);
   assert.match(page, /\.pick-stats-panel/);
+  assert.match(page, /\.pick-stats-actions/);
 });
 
 test("production cookie includes Secure", async () => {
@@ -1771,6 +1781,195 @@ test("content graphic route normalizes Story and rejects unsupported formats vis
   });
   assert.equal(unsupportedResponse.status, 400);
   assert.equal(unsupportedResponse.json.error, "Unsupported graphic format: poster");
+});
+
+function samplePickStatsPackage(snapshots, overrides = {}) {
+  return {
+    contentId: "content_daily_3",
+    slateDate: "2026-07-27",
+    generatedAt: overrides.generatedAt || "2026-07-27T16:00:00Z",
+    source: "MLB Stats API",
+    picks: snapshots.map((snapshot, index) => ({
+      snapshotId: snapshot.id,
+      gameId: snapshot.gameId,
+      selectedTeam: {
+        name: snapshot.selectedTeam,
+        homeAway: "HOME",
+        recentForm: {
+          last5: { games: 5, wins: 4, losses: 1, averageRunsScored: 5.8 },
+          last10: { games: 10, wins: 7, losses: 3, averageRunsScored: 5.1 }
+        },
+        relevantRecord: { wins: 31 + index, losses: 18 },
+        headToHead: { wins: 4, losses: 2, games: 6 },
+        offense: { runsPerGame: 4.9 + index / 10, ops: `.75${index}` }
+      },
+      opponentTeam: {
+        name: snapshot.opponent,
+        recentForm: { last10: { games: 10, wins: 3, losses: 7 } }
+      },
+      selectedPitcher: {
+        name: `Starter ${index + 1}`,
+        season: { era: `3.${index}5` },
+        last3Starts: { starts: 3, era: 2.45 + index, inningsPitched: "18.0" }
+      },
+      supportingStats: [`${snapshot.selectedTeam} owns the cleaner recent form profile.`],
+      riskStat: `${snapshot.opponent} has been competitive lately.`,
+      dataSources: ["MLB Stats API"],
+      unavailable: []
+    }))
+  };
+}
+
+test("Stats Board metrics prefer verified values and skip unavailable boxes", () => {
+  const metrics = selectStatsBoardMetrics({
+    selectedTeam: {
+      homeAway: "AWAY",
+      recentForm: {
+        last10: { wins: 6, losses: 4 },
+        last5: { wins: 3, losses: 2 }
+      },
+      relevantRecord: { wins: 20, losses: 14 },
+      offense: { runsPerGame: null, ops: "Unavailable" },
+      headToHead: { wins: 2, losses: 1 }
+    },
+    selectedPitcher: {
+      season: { era: "3.82" },
+      last3Starts: { era: 2.1 }
+    }
+  });
+  assert.deepEqual(metrics.map((metric) => metric.label), ["LAST 10", "LAST 5", "AWAY", "STARTER L3"]);
+  assert.deepEqual(metrics.map((metric) => metric.value), ["6-4", "3-2", "20-14", "2.10 ERA"]);
+});
+
+test("Daily 3 Stats Board renders as a separate deterministic template without removed metrics", () => {
+  const snapshots = [
+    createSocialPickSnapshot(samplePickForTeam("Chicago White Sox", "Cleveland Guardians", 1, { sportsbookOdds: -166, modelWinProbability: 0.582 })),
+    createSocialPickSnapshot(samplePickForTeam("Toronto Blue Jays", "Washington Nationals", 2, { sportsbookOdds: -154, modelWinProbability: 0.577 })),
+    createSocialPickSnapshot(samplePickForTeam("Tampa Bay Rays", "Baltimore Orioles", 3, { sportsbookOdds: -162, modelWinProbability: 0.575 }))
+  ];
+  const content = sampleContent("DAILY_3", snapshots);
+  const pickStats = samplePickStatsPackage(snapshots);
+  const graphic = renderSocialGraphic({ content, snapshots, format: "feed", graphicType: "daily_3_stats", pickStats });
+  const regular = renderSocialGraphic({ content, snapshots, format: "feed" });
+
+  assert.equal(graphic.width, 1080);
+  assert.equal(graphic.height, 1350);
+  assert.equal(graphic.format, "feed");
+  assert.equal(graphic.graphicType, "daily_3_stats");
+  assert.equal(graphic.templateVersion, STATS_GRAPHIC_TEMPLATE_VERSION);
+  assert.notEqual(graphic.renderedInputHash, regular.renderedInputHash);
+  assert.ok(graphic.statsHash);
+  assert.match(graphic.svg, /DAILY 3/);
+  assert.match(graphic.svg, /BY THE NUMBERS/);
+  assert.match(graphic.svg, /Chicago White Sox/);
+  assert.match(graphic.svg, /-166/);
+  assert.match(graphic.svg, /LAST 10/);
+  assert.match(graphic.svg, /WATCH:/);
+  assert.match(graphic.svg, /Stats: MLB Stats API/);
+  assert.doesNotMatch(graphic.svg, /58\.2%/);
+  assert.doesNotMatch(graphic.svg, /FAIR/i);
+  assert.doesNotMatch(graphic.svg, /PLAYABLE/i);
+});
+
+test("Stats Board graphic route creates a distinct type and regeneration preserves it", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-social-stats-board-"));
+  const calls = [];
+  const manager = createSocialManager({
+    root,
+    env: { SOCIAL_ADMIN_SECRET: "secret" },
+    fetchDailyPickStats: async ({ contentId, snapshots }) => {
+      calls.push({ contentId, snapshots });
+      return samplePickStatsPackage(snapshots, { generatedAt: `2026-07-27T16:0${calls.length}:00Z` });
+    }
+  });
+  const cookie = await login(manager);
+  const generated = await route(manager, {
+    method: "POST",
+    path: "/api/social/generate",
+    headers: { cookie },
+    body: {
+      contentType: "DAILY_3",
+      board: {
+        slateDate: "2026-07-27",
+        sport: "baseball_mlb",
+        officialPicks: [
+          samplePickForTeam("Chicago White Sox", "Cleveland Guardians", 1),
+          samplePickForTeam("Toronto Blue Jays", "Washington Nationals", 2),
+          samplePickForTeam("Tampa Bay Rays", "Baltimore Orioles", 3)
+        ]
+      }
+    }
+  });
+
+  const feedResponse = await route(manager, {
+    method: "POST",
+    path: `/api/social/content/${generated.json.content.id}/graphics`,
+    headers: { cookie },
+    body: { format: "feed" }
+  });
+  const statsResponse = await route(manager, {
+    method: "POST",
+    path: `/api/social/content/${generated.json.content.id}/graphics`,
+    headers: { cookie },
+    body: { format: "feed", graphicType: "daily_3_stats" }
+  });
+  assert.equal(feedResponse.status, 200);
+  assert.equal(statsResponse.status, 200);
+  assert.notEqual(statsResponse.json.graphic.id, feedResponse.json.graphic.id);
+  assert.equal(statsResponse.json.graphic.graphicType, "daily_3_stats");
+  assert.equal(statsResponse.json.graphic.templateVersion, STATS_GRAPHIC_TEMPLATE_VERSION);
+  assert.equal(statsResponse.json.graphic.renderVersionNumber, 1);
+  assert.ok(statsResponse.json.graphic.metadata.statsHash);
+  assert.equal(statsResponse.json.graphic.metadata.statsSource, "MLB Stats API");
+  assert.equal(calls.length, 1);
+
+  const regenerated = await route(manager, {
+    method: "POST",
+    path: `/api/social/graphics/${statsResponse.json.graphic.id}/regenerate`,
+    headers: { cookie },
+    body: {}
+  });
+  assert.equal(regenerated.status, 200);
+  assert.equal(regenerated.json.graphic.graphicType, "daily_3_stats");
+  assert.equal(regenerated.json.graphic.renderVersionNumber, 2);
+  assert.notEqual(regenerated.json.graphic.id, statsResponse.json.graphic.id);
+  assert.notEqual(regenerated.json.graphic.metadata.statsHash, statsResponse.json.graphic.metadata.statsHash);
+  assert.equal(calls.length, 2);
+});
+
+test("Stats Board graphic type rejects non-feed formats", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sgh-social-stats-board-format-"));
+  const manager = createSocialManager({
+    root,
+    env: { SOCIAL_ADMIN_SECRET: "secret" },
+    fetchDailyPickStats: async ({ snapshots }) => samplePickStatsPackage(snapshots)
+  });
+  const cookie = await login(manager);
+  const generated = await route(manager, {
+    method: "POST",
+    path: "/api/social/generate",
+    headers: { cookie },
+    body: {
+      contentType: "DAILY_3",
+      board: {
+        slateDate: "2026-07-27",
+        sport: "baseball_mlb",
+        officialPicks: [
+          samplePickForTeam("Chicago White Sox", "Cleveland Guardians", 1),
+          samplePickForTeam("Toronto Blue Jays", "Washington Nationals", 2),
+          samplePickForTeam("Tampa Bay Rays", "Baltimore Orioles", 3)
+        ]
+      }
+    }
+  });
+  const response = await route(manager, {
+    method: "POST",
+    path: `/api/social/content/${generated.json.content.id}/graphics`,
+    headers: { cookie },
+    body: { format: "story", graphicType: "daily_3_stats" }
+  });
+  assert.equal(response.status, 400);
+  assert.match(response.json.error, /Stats Board supports feed format only/);
 });
 
 test("approved graphic is not overwritten on regeneration and new render version is created", async () => {

@@ -1,8 +1,13 @@
 const crypto = require("node:crypto");
 
 const GRAPHIC_TEMPLATE_VERSION = "social-graphics-template-v2";
+const STATS_GRAPHIC_TEMPLATE_VERSION = "social-stats-template-v1";
 const GRAPHIC_RENDER_VERSION = "social-graphics-renderer-v1";
 const RESPONSIBLE_FOOTER = "21+ | Bet responsibly.";
+const GRAPHIC_TYPES = {
+  standard: "standard",
+  daily_3_stats: "daily_3_stats"
+};
 const GRAPHIC_FORMATS = {
   feed: { width: 1080, height: 1350, label: "Feed Portrait" },
   story: { width: 1080, height: 1920, label: "Story / Reel Cover" },
@@ -33,6 +38,16 @@ function normalizeGraphicFormat(format = "feed") {
     throw error;
   }
   return normalizedFormat;
+}
+
+function normalizeGraphicType(graphicType = "standard") {
+  const normalizedType = clean(graphicType || "standard", "standard").toLowerCase();
+  if (!Object.values(GRAPHIC_TYPES).includes(normalizedType)) {
+    const error = new Error(`Unsupported graphic type: ${graphicType || "unknown"}`);
+    error.statusCode = 400;
+    throw error;
+  }
+  return normalizedType;
 }
 
 function canonicalize(value) {
@@ -388,6 +403,120 @@ function renderDaily3Footer(width, height) {
   ].join("");
 }
 
+function validMetricValue(value) {
+  const text = clean(value);
+  if (!text) return false;
+  return !/^(n\/a|na|tbd|unavailable|unknown|null|undefined)$/i.test(text);
+}
+
+function recordMetricValue(record) {
+  if (!record || !Number.isFinite(Number(record.wins)) || !Number.isFinite(Number(record.losses))) return "";
+  return `${record.wins}-${record.losses}`;
+}
+
+function addMetric(metrics, label, value) {
+  if (!validMetricValue(value) || metrics.some((metric) => metric.label === label)) return;
+  metrics.push({ label, value: clean(value) });
+}
+
+function selectStatsBoardMetrics(pick = {}) {
+  const selectedTeam = pick.selectedTeam || {};
+  const selectedPitcher = pick.selectedPitcher || {};
+  const metrics = [];
+  addMetric(metrics, "LAST 10", recordMetricValue(selectedTeam.recentForm?.last10));
+  addMetric(metrics, "LAST 5", recordMetricValue(selectedTeam.recentForm?.last5));
+  addMetric(metrics, selectedTeam.homeAway || "VENUE", recordMetricValue(selectedTeam.relevantRecord));
+  if (selectedPitcher.last3Starts?.era !== null && selectedPitcher.last3Starts?.era !== undefined) {
+    const era = Number(selectedPitcher.last3Starts.era);
+    addMetric(metrics, "STARTER L3", `${Number.isFinite(era) ? era.toFixed(2) : selectedPitcher.last3Starts.era} ERA`);
+  }
+  addMetric(metrics, "SP ERA", selectedPitcher.season?.era);
+  if (selectedTeam.offense?.runsPerGame !== null && selectedTeam.offense?.runsPerGame !== undefined) {
+    addMetric(metrics, "RUNS/G", selectedTeam.offense.runsPerGame);
+  }
+  addMetric(metrics, "OPS", selectedTeam.offense?.ops);
+  addMetric(metrics, "H2H", recordMetricValue(selectedTeam.headToHead));
+  return metrics.slice(0, 4);
+}
+
+function renderStatsBoardHeader({ width, slateDate }) {
+  return [
+    `<rect x="0" y="0" width="${width}" height="1350" fill="url(#stadiumBg)"/>`,
+    `<path d="M0 420 C240 320 500 365 720 290 C870 238 1002 166 1080 92 V1350 H0 Z" fill="url(#fieldDirt)" opacity="0.95"/>`,
+    `<path d="M755 -40 L1080 -40 V432 C946 377 845 328 746 277 Z" fill="url(#redHeat)" opacity="0.95"/>`,
+    `<path d="M716 0 L650 405" stroke="#ffffff" stroke-width="5" opacity="0.88"/>`,
+    `<path d="M0 0 H1080 V1350 H0 Z" fill="url(#daily3Light)"/>`,
+    `<rect x="0" y="0" width="${width}" height="1350" fill="url(#daily3Grain)" opacity="0.8"/>`,
+    `<text x="82" y="96" font-size="42" font-weight="900" letter-spacing="10" fill="#ffffff">SAME GAME HEAT</text>`,
+    `<text x="74" y="218" font-size="94" font-weight="900" letter-spacing="1" fill="url(#distress)" stroke="#ffffff" stroke-width="2">DAILY 3</text>`,
+    `<text x="80" y="292" font-size="48" font-weight="900" letter-spacing="4" fill="#ffffff">BY THE NUMBERS</text>`,
+    `<path d="M80 334 H420 L392 410 H52 Z" fill="#c90924"/>`,
+    `<text x="128" y="386" font-size="45" font-weight="900" letter-spacing="4" fill="#ffffff">${escapeXml(shortDate(slateDate))}</text>`,
+    renderDaily3BrandMark(width)
+  ].join("");
+}
+
+function renderStatsMetricBox(metric, x, y) {
+  return [
+    `<rect x="${x}" y="${y}" width="134" height="72" rx="14" fill="#eef5ff" stroke="#d9e6f7" stroke-width="2"/>`,
+    `<text x="${x + 67}" y="${y + 28}" text-anchor="middle" font-size="18" font-weight="900" fill="#5c6b83">${escapeXml(metric.label)}</text>`,
+    `<text x="${x + 67}" y="${y + 57}" text-anchor="middle" font-size="28" font-weight="900" fill="#071943">${escapeXml(metric.value)}</text>`
+  ].join("");
+}
+
+function renderStatsBoardCard({ snapshot, pick, index, y }) {
+  const x = 58;
+  const width = 970;
+  const height = 230;
+  const teamName = clean(snapshot?.selectedTeam || pick?.selectedTeam?.name, "Team TBD");
+  const abbreviation = teamAbbreviation(teamName);
+  const metrics = selectStatsBoardMetrics(pick);
+  const supporting = clean((pick?.supportingStats || []).find(validMetricValue), "Verified stats pending");
+  const watch = clean(pick?.riskStat || (pick?.unavailable || []).find(validMetricValue), "");
+  const teamFont = teamName.length > 24 ? 34 : teamName.length > 18 ? 38 : 47;
+  const teamLines = wrapText(teamName, teamName.length > 24 ? 23 : 20, 2);
+  return [
+    `<g class="daily3-stats-card" data-rank="${index + 1}">`,
+    `<title>${escapeXml(`${index + 1}. ${teamName} stats board ${formatOdds(snapshot?.sportsbookOdds)}`)}</title>`,
+    `<desc>${escapeXml(`${teamName} moneyline ${formatOdds(snapshot?.sportsbookOdds)}. ${supporting}`)}</desc>`,
+    `<path d="M${x + 12} ${y} H${x + width - 12} Q${x + width} ${y} ${x + width} ${y + 24} V${y + height - 24} Q${x + width} ${y + height} ${x + width - 24} ${y + height} H${x + 12} Q${x} ${y + height} ${x + 5} ${y + height - 24} L${x + 52} ${y + 26} Q${x + 58} ${y} ${x + 82} ${y} Z" fill="#fdfdfd" stroke="#ffffff" stroke-width="3"/>`,
+    `<path d="M${x + 54} ${y + 5} L${x + 2} ${y + height - 2} H${x + 48} L${x + 104} ${y + 5} Z" fill="#0b4c9c"/>`,
+    `<circle cx="${x + 30}" cy="${y + 66}" r="46" fill="#061733" stroke="#ffffff" stroke-width="5"/>`,
+    `<text x="${x + 30}" y="${y + 83}" text-anchor="middle" font-size="54" font-weight="900" fill="#ffffff">${index + 1}</text>`,
+    `<circle cx="${x + 164}" cy="${y + 116}" r="68" fill="#07162f" stroke="#d6dde8" stroke-width="6"/>`,
+    `<circle cx="${x + 164}" cy="${y + 116}" r="58" fill="#0b2e63" stroke="#6fa4d8" stroke-width="4"/>`,
+    `<text x="${x + 164}" y="${y + 136}" text-anchor="middle" font-size="${abbreviation.length > 3 ? 40 : 52}" font-weight="900" fill="#ffffff">${escapeXml(abbreviation)}</text>`,
+    teamLines.map((line, lineIndex) => `<text x="${x + 262}" y="${y + 58 + lineIndex * (teamFont * 1.07)}" font-size="${teamFont}" font-weight="900" fill="#071943">${escapeXml(line)}</text>`).join(""),
+    `<text x="${x + 264}" y="${y + 128}" font-size="25" font-weight="900" fill="#b10f24" letter-spacing="2">MONEYLINE</text>`,
+    `<text x="${x + width - 34}" y="${y + 78}" text-anchor="end" font-size="62" font-weight="900" font-style="italic" fill="#071943">${escapeXml(formatOdds(snapshot?.sportsbookOdds))}</text>`,
+    metrics.length
+      ? metrics.map((metric, metricIndex) => renderStatsMetricBox(metric, x + 264 + metricIndex * 146, y + 146)).join("")
+      : `<rect x="${x + 264}" y="${y + 146}" width="280" height="58" rx="14" fill="#eef5ff"/><text x="${x + 284}" y="${y + 184}" font-size="24" font-weight="900" fill="#5c6b83">Verified stats pending</text>`,
+    `<line x1="${x + 716}" y1="${y + 112}" x2="${x + 716}" y2="${y + 202}" stroke="#c9ced8" stroke-width="3"/>`,
+    reasonIcon(reasonIconType(supporting), x + 740, y + 122),
+    textLines(supporting, x + 804, y + 144, 22, { maxChars: 20, maxLines: watch ? 2 : 3, weight: 900, fill: "#071943", lineHeight: 28 }),
+    watch ? `<text x="${x + 804}" y="${y + 208}" font-size="18" font-weight="900" fill="#b10f24">WATCH: ${escapeXml(wrapText(watch, 26, 1)[0])}</text>` : "",
+    `</g>`
+  ].join("");
+}
+
+function renderDaily3StatsBoard({ content, snapshots, pickStats, width, height }) {
+  const picks = snapshots.slice(0, 3);
+  const statsPicks = Array.isArray(pickStats?.picks) ? pickStats.picks : [];
+  const bySnapshotId = new Map(statsPicks.map((pick) => [clean(pick.snapshotId), pick]));
+  return [
+    renderStatsBoardHeader({ width, slateDate: content.slateDate || picks[0]?.slateDate || pickStats?.slateDate }),
+    picks.map((snapshot, index) => renderStatsBoardCard({
+      snapshot,
+      pick: bySnapshotId.get(clean(snapshot.id)) || { selectedTeam: { name: snapshot.selectedTeam }, unavailable: ["Verified stats pending"] },
+      index,
+      y: 456 + index * 252
+    })).join(""),
+    `<text x="${width - 84}" y="${height - 154}" text-anchor="end" font-size="20" font-weight="900" fill="#d8e7ff">Stats: ${escapeXml(pickStats?.source || "MLB Stats API")}</text>`,
+    renderDaily3Footer(width, height)
+  ].join("");
+}
+
 function renderDaily3Feed({ content, snapshots, width, height }) {
   const picks = snapshots.slice(0, 3);
   return [
@@ -556,36 +685,60 @@ function renderDailyResults({ content, width, height }) {
   ].join("");
 }
 
-function renderSocialGraphic({ content, snapshots, format = "feed" }) {
+function renderSocialGraphic({ content, snapshots, format = "feed", graphicType = "standard", pickStats = null }) {
   const normalizedFormat = normalizeGraphicFormat(format);
+  const normalizedGraphicType = normalizeGraphicType(graphicType);
+  if (normalizedGraphicType === GRAPHIC_TYPES.daily_3_stats && normalizedFormat !== "feed") {
+    const error = new Error("Stats Board supports feed format only.");
+    error.statusCode = 400;
+    throw error;
+  }
   const dimensions = GRAPHIC_FORMATS[normalizedFormat];
   const safeContent = content || {};
   const safeSnapshots = Array.isArray(snapshots) ? snapshots.filter(Boolean) : [];
+  const templateVersion = normalizedGraphicType === GRAPHIC_TYPES.daily_3_stats
+    ? STATS_GRAPHIC_TEMPLATE_VERSION
+    : GRAPHIC_TEMPLATE_VERSION;
+  const statsHash = normalizedGraphicType === GRAPHIC_TYPES.daily_3_stats && pickStats
+    ? sha256(canonicalStringify(pickStats))
+    : "";
   const renderInput = {
     content: safeContent,
-    snapshots: safeSnapshots.map((snapshot) => ({
-      id: snapshot.id,
-      snapshotHash: snapshot.snapshotHash,
-      slateDate: snapshot.slateDate,
-      selectedTeam: snapshot.selectedTeam,
-      opponent: snapshot.opponent,
-      homeOrAway: snapshot.homeOrAway,
-      gameLabel: snapshot.gameLabel,
-      market: snapshot.market,
-      sportsbookOdds: snapshot.sportsbookOdds,
-      modelWinProbability: snapshot.modelWinProbability,
-      confidenceLabel: snapshot.confidenceLabel,
-      matchupEdge: snapshot.matchupEdge,
-      fairOdds: snapshot.fairOdds,
-      playableThrough: snapshot.playableThrough,
-      reasons: snapshot.reasons,
-      riskFlags: snapshot.riskFlags,
-      components: snapshot.components,
-      isBackfill: snapshot.isBackfill
-    })),
+    snapshots: safeSnapshots.map((snapshot) => normalizedGraphicType === GRAPHIC_TYPES.daily_3_stats
+      ? {
+          id: snapshot.id,
+          snapshotHash: snapshot.snapshotHash,
+          slateDate: snapshot.slateDate,
+          selectedTeam: snapshot.selectedTeam,
+          opponent: snapshot.opponent,
+          gameLabel: snapshot.gameLabel,
+          sportsbookOdds: snapshot.sportsbookOdds
+        }
+      : {
+          id: snapshot.id,
+          snapshotHash: snapshot.snapshotHash,
+          slateDate: snapshot.slateDate,
+          selectedTeam: snapshot.selectedTeam,
+          opponent: snapshot.opponent,
+          homeOrAway: snapshot.homeOrAway,
+          gameLabel: snapshot.gameLabel,
+          market: snapshot.market,
+          sportsbookOdds: snapshot.sportsbookOdds,
+          modelWinProbability: snapshot.modelWinProbability,
+          confidenceLabel: snapshot.confidenceLabel,
+          matchupEdge: snapshot.matchupEdge,
+          fairOdds: snapshot.fairOdds,
+          playableThrough: snapshot.playableThrough,
+          reasons: snapshot.reasons,
+          riskFlags: snapshot.riskFlags,
+          components: snapshot.components,
+          isBackfill: snapshot.isBackfill
+        }),
     format: normalizedFormat,
-    templateVersion: GRAPHIC_TEMPLATE_VERSION,
-    renderVersion: GRAPHIC_RENDER_VERSION
+    graphicType: normalizedGraphicType,
+    templateVersion,
+    renderVersion: GRAPHIC_RENDER_VERSION,
+    statsHash
   };
   const hits = prohibitedHits(renderInput);
   if (hits.length) {
@@ -610,7 +763,14 @@ function renderSocialGraphic({ content, snapshots, format = "feed" }) {
   const background = `<rect width="${width}" height="${height}" fill="#edf4ff"/><path d="M0 ${height * 0.68} L${width} ${height * 0.34} L${width} ${height} L0 ${height} Z" fill="#fff7f8" opacity="0.9"/>`;
   const contentType = safeContent.contentType || "DAILY_3";
   let body;
-  if (contentType === "BEST_BET") body = renderBestBet({ content: safeContent, snapshots: safeSnapshots, width, height, format: normalizedFormat });
+  if (normalizedGraphicType === GRAPHIC_TYPES.daily_3_stats) {
+    if (contentType !== "DAILY_3") {
+      const error = new Error("Stats Board is only available for Daily 3 content.");
+      error.statusCode = 400;
+      throw error;
+    }
+    body = renderDaily3StatsBoard({ content: safeContent, snapshots: safeSnapshots, pickStats, width, height });
+  } else if (contentType === "BEST_BET") body = renderBestBet({ content: safeContent, snapshots: safeSnapshots, width, height, format: normalizedFormat });
   else if (contentType === "PICK_BREAKDOWN") body = renderPickBreakdown({ content: safeContent, snapshots: safeSnapshots, width, height, format: normalizedFormat });
   else if (contentType === "DAILY_RESULTS") body = renderDailyResults({ content: safeContent, snapshots: safeSnapshots, width, height, format: normalizedFormat });
   else body = renderDaily3({ content: safeContent, snapshots: safeSnapshots, width, height, format: normalizedFormat });
@@ -625,10 +785,14 @@ function renderSocialGraphic({ content, snapshots, format = "feed" }) {
     width,
     height,
     format: normalizedFormat,
+    graphicType: normalizedGraphicType,
     mimeType: "image/svg+xml",
-    templateVersion: GRAPHIC_TEMPLATE_VERSION,
+    templateVersion,
     renderVersion: GRAPHIC_RENDER_VERSION,
     renderedInputHash: sha256(canonicalStringify(renderInput)),
+    statsHash,
+    statsGeneratedAt: pickStats?.generatedAt || "",
+    statsSource: pickStats?.source || "",
     snapshotHashes: safeSnapshots.map((snapshot) => snapshot.snapshotHash).filter(Boolean),
     snapshotIds: safeSnapshots.map((snapshot) => snapshot.id).filter(Boolean)
   };
@@ -636,11 +800,15 @@ function renderSocialGraphic({ content, snapshots, format = "feed" }) {
 
 module.exports = {
   GRAPHIC_TEMPLATE_VERSION,
+  STATS_GRAPHIC_TEMPLATE_VERSION,
   GRAPHIC_RENDER_VERSION,
+  GRAPHIC_TYPES,
   GRAPHIC_FORMATS,
   RESPONSIBLE_FOOTER,
   normalizeGraphicFormat,
+  normalizeGraphicType,
   renderSocialGraphic,
+  selectStatsBoardMetrics,
   prohibitedHits,
   canonicalStringify,
   sha256

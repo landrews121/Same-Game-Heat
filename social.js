@@ -229,8 +229,11 @@ function formatPercent(value) {
   return `${Math.round(number * 1000) / 10}%`;
 }
 
-function graphicLabel(format) {
-  const normalizedFormat = String(format || "feed").toLowerCase();
+function graphicLabel(formatOrGraphic, graphicType = "") {
+  const graphic = typeof formatOrGraphic === "object" && formatOrGraphic ? formatOrGraphic : null;
+  const normalizedType = String(graphic?.graphicType || graphic?.metadata?.graphicType || graphicType || "standard").toLowerCase();
+  if (normalizedType === "daily_3_stats") return "Stats Board";
+  const normalizedFormat = String(graphic?.format || formatOrGraphic || "feed").toLowerCase();
   if (normalizedFormat === "story") return "Story";
   if (normalizedFormat === "square") return "Square";
   return "Feed";
@@ -269,6 +272,7 @@ function renderDailyPickStatsBlock(content) {
   if (content?.contentType !== "DAILY_3") return "";
   const stats = state.pickStatsByContent.get(content.id);
   const generatedAt = stats?.generatedAt ? new Date(stats.generatedAt).toLocaleString() : "";
+  const statsReady = Boolean(stats?.picks?.length);
   return `
     <div class="pick-stats-panel">
       <div class="studio-row" style="justify-content:space-between;align-items:flex-start">
@@ -276,7 +280,10 @@ function renderDailyPickStatsBlock(content) {
           <h3>Daily Pick Stats</h3>
           <p>Verified MLB Stats API context for the frozen Daily 3 picks. Research only; this does not change approved picks.</p>
         </div>
-        <button class="studio-button secondary" type="button" data-load-pick-stats>${stats ? "Refresh Stats" : "Load Stats"}</button>
+        <div class="studio-row pick-stats-actions">
+          <button class="studio-button secondary" type="button" data-load-pick-stats>${stats ? "Refresh Stats" : "Load Stats"}</button>
+          <button class="studio-button" type="button" data-generate-stats-board ${statsReady ? "" : "disabled"}>Generate Stats Board</button>
+        </div>
       </div>
       ${stats ? `
         <div class="studio-meta">
@@ -815,11 +822,11 @@ function renderContentDetail(content) {
           <article class="graphic-row">
             <a href="${escapeHtml(graphic.assetUrl || "#")}" target="_blank" rel="noopener">
               ${graphic.assetUrl
-                ? `<img class="graphic-preview" alt="${escapeHtml(graphicLabel(graphic.format))} graphic preview" src="${escapeHtml(graphic.assetUrl)}?v=${escapeHtml(graphic.updatedAt || graphic.id)}">`
+                ? `<img class="graphic-preview" alt="${escapeHtml(graphicLabel(graphic))} graphic preview" src="${escapeHtml(graphic.assetUrl)}?v=${escapeHtml(graphic.updatedAt || graphic.id)}">`
                 : `<div class="studio-warning">${escapeHtml(graphic.generationError || "Graphic asset unavailable.")}</div>`}
             </a>
             <div class="graphic-meta">
-              <strong>${escapeHtml(graphicLabel(graphic.format))} Graphic</strong>
+              <strong>${escapeHtml(graphicLabel(graphic))} Graphic</strong>
               <div class="studio-meta">
                 <span class="studio-pill">${escapeHtml(graphic.status || graphic.assetStatus)}</span>
                 <span class="studio-pill">${escapeHtml(graphic.width)}x${escapeHtml(graphic.height)}</span>
@@ -833,7 +840,7 @@ function renderContentDetail(content) {
                 ${graphic.assetUrl ? `<a class="studio-button secondary" href="${escapeHtml(graphic.assetUrl)}" download>Download</a>` : ""}
                 <button class="studio-button secondary" type="button" data-graphic-action="regenerate" data-graphic-id="${escapeHtml(graphic.id)}">Regenerate</button>
                 <button class="studio-button" type="button" data-graphic-action="approve" data-graphic-id="${escapeHtml(graphic.id)}" ${graphic.status === "approved" ? "disabled" : ""}>Approve Graphic</button>
-                <button class="studio-button secondary" type="button" data-prepare-publication="${escapeHtml(graphic.id)}" ${graphic.status !== "approved" || content.status !== "approved" || (dryRunPublicationMode && !dryRunPublicationReady) ? "disabled" : ""}>${dryRunPublicationMode ? "Run Dry-Run Publication Test" : "Prepare for Instagram"}</button>
+                ${(graphic.graphicType || graphic.metadata?.graphicType) === "daily_3_stats" ? "" : `<button class="studio-button secondary" type="button" data-prepare-publication="${escapeHtml(graphic.id)}" ${graphic.status !== "approved" || content.status !== "approved" || (dryRunPublicationMode && !dryRunPublicationReady) ? "disabled" : ""}>${dryRunPublicationMode ? "Run Dry-Run Publication Test" : "Prepare for Instagram"}</button>`}
                 <button class="studio-button danger" type="button" data-graphic-action="archive" data-graphic-id="${escapeHtml(graphic.id)}">Archive Graphic</button>
               </div>
             </div>
@@ -905,34 +912,40 @@ async function handleContentAction(action) {
   renderContentDetail(state.selectedContent);
 }
 
-async function generateGraphic(format, button = null) {
+async function generateGraphic(format, button = null, graphicType = "standard") {
   const normalizedFormat = String(format || "feed").toLowerCase();
+  const normalizedGraphicType = String(graphicType || "standard").toLowerCase();
   const content = state.selectedContent;
   if (!content) {
     showStatus("Select a content item before generating a graphic.");
     return;
   }
-  const inFlightKey = `${content.id}:${normalizedFormat}`;
+  if (normalizedGraphicType === "daily_3_stats" && !state.pickStatsByContent.get(content.id)?.picks?.length) {
+    showStatus("Load Daily Pick Stats before generating a Stats Board.");
+    return;
+  }
+  const label = graphicLabel(normalizedFormat, normalizedGraphicType);
+  const inFlightKey = `${content.id}:${normalizedFormat}:${normalizedGraphicType}`;
   if (state.graphicGenerationInFlight.has(inFlightKey)) return;
   state.graphicGenerationInFlight.add(inFlightKey);
   const originalText = button?.textContent || "";
   if (button) {
     button.disabled = true;
-    button.textContent = `Generating ${graphicLabel(normalizedFormat)}...`;
+    button.textContent = `Generating ${label}...`;
   }
-  showStatus(`Generating ${graphicLabel(normalizedFormat)} graphic...`);
+  showStatus(`Generating ${label} graphic...`);
   try {
     const payload = await api(`/api/social/content/${encodeURIComponent(content.id)}/graphics`, {
       method: "POST",
-      body: JSON.stringify({ format: normalizedFormat })
+      body: JSON.stringify({ format: normalizedFormat, graphicType: normalizedGraphicType })
     });
     await loadGraphicsForContent(content.id);
     const latestContent = state.content.find((item) => item.id === content.id) || content;
     state.selectedContent = latestContent;
-    showStatus(payload.graphic?.status === "failed" ? payload.graphic.generationError || payload.error || "Graphic generation failed." : `${graphicLabel(normalizedFormat)} graphic generated.`);
+    showStatus(payload.graphic?.status === "failed" ? payload.graphic.generationError || payload.error || "Graphic generation failed." : `${label} graphic generated.`);
     renderContentDetail(latestContent);
   } catch (error) {
-    showStatus(error.message || `${graphicLabel(normalizedFormat)} graphic generation failed.`);
+    showStatus(error.message || `${label} graphic generation failed.`);
   } finally {
     state.graphicGenerationInFlight.delete(inFlightKey);
     if (button) {
@@ -1179,6 +1192,11 @@ function initializeSocialStudio() {
       const copyMusicButton = event.target.closest("[data-copy-story-music]");
       if (copyMusicButton) {
         copyStoryMusic();
+        return;
+      }
+      const statsBoardButton = event.target.closest("[data-generate-stats-board]");
+      if (statsBoardButton) {
+        generateGraphic("feed", statsBoardButton, "daily_3_stats").catch((error) => showStatus(error.message));
         return;
       }
       const graphicGenerateButton = event.target.closest("[data-generate-graphic]");
