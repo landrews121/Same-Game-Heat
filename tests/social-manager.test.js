@@ -1093,7 +1093,7 @@ test("frontend dry-run publication action is explicit", async () => {
 
 test("social studio cache version is bumped for Social Studio UI updates", async () => {
   const html = await fs.readFile(path.join(__dirname, "../social.html"), "utf8");
-  assert.match(html, /social\.js\?v=social-studio-v22/);
+  assert.match(html, /social\.js\?v=social-studio-v23/);
   assert.match(html, /livePublishConfirmPanel/);
   assert.match(html, /livePublishUnderstand/);
 });
@@ -1246,7 +1246,7 @@ test("Social Studio browser login posts the secret key and verifies its new sess
   assert.match(client, /const session = await api\("\/api\/social\/session"\)/);
   assert.match(client, /if \(!session\.authorized\) \{/);
   assert.match(client, /error\.code = "missing_session_cookie"/);
-  assert.match(page, /social\.js\?v=social-studio-v22/);
+  assert.match(page, /social\.js\?v=social-studio-v23/);
   assert.match(page, /story-music\.js\?v=story-music-v2/);
 });
 
@@ -1277,11 +1277,26 @@ test("Social Studio login exposes submit progress and restores the button after 
   assert.match(client, /Checking credentials\.\.\./);
   assert.match(client, /Credentials accepted\. Verifying session\.\.\./);
   assert.match(client, /Session verified\. Opening Social Studio\.\.\./);
-  assert.match(client, /Login failed during credential check:/);
-  assert.match(client, /Login failed during session verification\. Social Studio session was not created\./);
+  assert.match(client, /event\.preventDefault\(\);\s*event\.stopPropagation\(\);/);
+  assert.match(client, /return safeMessage;/);
+  assert.match(client, /Social Studio authentication is not configured\./);
+  assert.match(client, /Credentials were accepted, but the session could not be verified\./);
   assert.match(client, /Login request could not reach the server\./);
+  assert.match(client, /if \(!unlocked\) els\.socialSecret\.focus\(\);/);
   assert.match(client, /window\.addEventListener\("error", showClientError\)/);
   assert.match(client, /window\.addEventListener\("unhandledrejection", showClientError\)/);
+});
+
+test("Social Studio login uses AJAX without resetting the form or navigating away on failure", async () => {
+  const client = await fs.readFile(path.join(__dirname, "..", "social.js"), "utf8");
+  const page = await fs.readFile(path.join(__dirname, "..", "social.html"), "utf8");
+
+  assert.match(client, /async function submitSocialLogin\(event\) \{\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);/);
+  assert.match(client, /body: JSON\.stringify\(\{ secret: els\.socialSecret\.value\.trim\(\) \}\)/);
+  assert.match(client, /els\.socialSecret\.value = "";/);
+  assert.ok(client.indexOf('els.socialSecret.value = "";') < client.indexOf("els.loginPanel.classList.add(\"hidden\")"));
+  assert.doesNotMatch(client, /loginForm\.reset\(|els\.loginForm\.reset\(|\.requestSubmit\(|\.submit\(|location\.reload\(|window\.location/);
+  assert.doesNotMatch(page, /<form id="loginForm"[^>]+\b(?:action|method)=/);
 });
 
 test("production cookie includes Secure", async () => {

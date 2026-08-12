@@ -982,21 +982,19 @@ function loginFailureMessage(stage, error) {
   if (error?.code === "network") return "Login request could not reach the server.";
   if (error?.code === "invalid_response") return `Login failed during ${stage}: Server returned an invalid response.`;
   if (stage === "credential check") {
-    if ([
-      "Invalid Social Studio secret.",
-      "SOCIAL_ADMIN_SECRET is not configured on the server.",
-      "Invalid Social Studio login request."
-    ].includes(safeMessage)) {
-      return `Login failed during credential check: ${safeMessage}`;
+    if (safeMessage === "Invalid Social Studio secret.") return safeMessage;
+    if (safeMessage === "SOCIAL_ADMIN_SECRET is not configured on the server.") {
+      return "Social Studio authentication is not configured.";
     }
-    return "Login failed during credential check.";
+    return "Unable to verify Social Studio credentials.";
   }
-  if (stage === "session verification") return "Login failed during session verification. Social Studio session was not created.";
+  if (stage === "session verification") return "Credentials were accepted, but the session could not be verified.";
   return "Unable to open Social Studio.";
 }
 
 async function submitSocialLogin(event) {
   event.preventDefault();
+  event.stopPropagation();
   showLoginStatus("Login request started...");
   setLoginBusy(true);
   let unlocked = false;
@@ -1031,6 +1029,7 @@ async function submitSocialLogin(event) {
   } catch (error) {
     const message = loginFailureMessage(stage, error);
     showStatus(message, unlocked ? els.studioStatus : els.loginStatus);
+    if (!unlocked) els.socialSecret.focus();
   } finally {
     setLoginBusy(false);
   }
