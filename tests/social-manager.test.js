@@ -22,6 +22,7 @@ const {
   estimateTextWidth,
   fitTextToWidth,
   wrapTextToWidth,
+  formatStatsBoardWatchText,
   shortenStatsWatch,
   selectStatsBoardMetrics
 } = require("../social-graphics");
@@ -2230,6 +2231,33 @@ test("Stats Board omits redundant supporting copy when metrics already show the 
   const graphic = renderSocialGraphic({ content, snapshots, format: "feed", graphicType: "daily_3_stats", pickStats });
   assert.doesNotMatch(graphic.svg, /Chicago Cubs is 7-3 in its last 10 games/);
   assert.match(graphic.svg, /WSH/);
+});
+
+test("Stats Board watch formatter produces concise deterministic matchup labels", () => {
+  assert.equal(
+    formatStatsBoardWatchText(
+      "Opponent starter Gerrit Cole owns a 3.41 season ERA.",
+      "Chicago White Sox",
+      "Washington Nationals"
+    ),
+    "Opp. starter: 3.41 ERA"
+  );
+  assert.equal(
+    formatStatsBoardWatchText(
+      "Washington Nationals is 6-4 in its last 10 games.",
+      "Chicago White Sox",
+      "Washington Nationals"
+    ),
+    "WSH: 6-4 last 10"
+  );
+  assert.equal(
+    formatStatsBoardWatchText(
+      "Tampa Bay Rays has averaged 4.8 runs over its last 10 games.",
+      "Chicago White Sox",
+      "Tampa Bay Rays"
+    ),
+    "TB: 4.8 runs/game L10"
+  );
 });
 
 test("normal Daily 3 Feed and Story graphics are unchanged by Stats Board layout repair", () => {

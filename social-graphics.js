@@ -1,7 +1,7 @@
 const crypto = require("node:crypto");
 
 const GRAPHIC_TEMPLATE_VERSION = "social-graphics-template-v2";
-const STATS_GRAPHIC_TEMPLATE_VERSION = "social-stats-template-v3";
+const STATS_GRAPHIC_TEMPLATE_VERSION = "social-stats-template-v4";
 const GRAPHIC_RENDER_VERSION = "social-graphics-renderer-v1";
 const RESPONSIBLE_FOOTER = "21+ | Bet responsibly.";
 const GRAPHIC_TYPES = {
@@ -16,23 +16,25 @@ const GRAPHIC_FORMATS = {
 const STATS_BOARD_LAYOUT = {
   cardX: 34,
   cardWidth: 1012,
-  cardHeight: 198,
-  headerY: 466,
-  firstRowY: 534,
-  rowGap: 16,
-  rankWidth: 76,
-  badgeX: 96,
-  badgeSize: 108,
-  teamTextX: 214,
-  teamTextWidth: 238,
-  metricsX: 468,
-  metricsWidth: 358,
-  metricBoxWidth: 112,
-  metricBoxHeight: 70,
-  metricColGap: 10,
-  metricRowGap: 12,
-  watchX: 846,
-  watchWidth: 178
+  cardHeight: 202,
+  headerY: 458,
+  firstRowY: 530,
+  rowGap: 10,
+  rankWidth: 72,
+  badgeX: 92,
+  badgeSize: 92,
+  teamTextX: 204,
+  teamTextWidth: 250,
+  metricsX: 474,
+  metricsWidth: 336,
+  metricBoxWidth: 104,
+  metricBoxHeight: 72,
+  metricColGap: 8,
+  metricRowGap: 8,
+  watchX: 830,
+  watchWidth: 190,
+  watchTextX: 888,
+  watchTextWidth: 132
 };
 const PROHIBITED_PHRASES = [
   "GUARANTEED",
@@ -527,12 +529,13 @@ function trimNumericStat(value) {
 function statCell(label, value, x, y, width, options = {}) {
   const display = validMetricValue(value) ? trimNumericStat(value) : "Unavailable";
   const labelSize = label.length > 8 ? 13 : label.length > 6 ? 15 : 16;
-  const valueSize = options.valueSize || Math.max(18, Math.min(26, Math.floor((width - 28) / Math.max(1, display.length) * 1.45)));
+  const fittedValue = fitTextToWidth(display, width - 14, { preferred: options.valueSize || 25, min: 15, maxLines: 1 });
+  const valueSize = fittedValue.fontSize;
   const unit = validMetricValue(value) && /\s+ERA$/i.test(clean(value)) ? "ERA" : "";
   return [
     `<rect x="${x}" y="${y}" width="${width}" height="${options.height || 86}" rx="12" fill="${options.fill || "#07162f"}" stroke="${options.stroke || "#244f85"}" stroke-width="2"/>`,
     `<text x="${x + width / 2}" y="${y + 27}" text-anchor="middle" font-size="${labelSize}" font-weight="900" letter-spacing="0.6" fill="${options.labelColor || "#8fb7e7"}">${escapeXml(label)}</text>`,
-    `<text x="${x + width / 2}" y="${y + (unit ? 56 : 62)}" text-anchor="middle" font-size="${valueSize}" font-weight="900" fill="${options.valueColor || "#ffffff"}">${escapeXml(display)}</text>`,
+    `<text x="${x + width / 2}" y="${y + (unit ? 54 : 58)}" text-anchor="middle" font-size="${valueSize}" font-weight="900" fill="${options.valueColor || "#ffffff"}">${escapeXml(fittedValue.lines[0] || display)}</text>`,
     unit ? `<text x="${x + width / 2}" y="${y + 68}" text-anchor="middle" font-size="12" font-weight="900" fill="${options.labelColor || "#8fb7e7"}">${unit}</text>` : ""
   ].join("");
 }
@@ -541,14 +544,31 @@ function compactStat(label, value) {
   return { label, value: validMetricValue(value) ? clean(value) : "Unavailable" };
 }
 
-function shortenStatsWatch(text, teamName, opponent) {
-  let shortened = clean(text, "Watch matchup context.");
+function shortTeamLabel(teamName) {
+  const words = clean(teamName).split(/\s+/).filter(Boolean);
+  return words.at(-1) || "Team";
+}
+
+function formatStatsBoardWatchText(text, teamName, opponent) {
+  const raw = clean(text);
+  if (!raw) return "Watch matchup context.";
+
+  const starterEra = raw.match(/(?:opponent\s+)?starter(?:\s+[A-Za-z.'-]+)*\s+(?:owns|has|carries)\s+(?:a\s+)?([\d.]+)(?:\s+season)?\s+ERA/i)
+    || raw.match(/(?:opponent\s+)?starter[^.]*?([\d.]+)\s+(?:season\s+)?ERA/i);
+  if (starterEra) return `Opp. starter: ${starterEra[1]} ERA`;
+
+  const record = raw.match(/^(.*?)\s+(?:is|went)\s+(\d+-\d+)\s+in\s+(?:its|their|the)\s+last\s+10\s+games?/i);
+  if (record) return `${teamAbbreviation(record[1])}: ${record[2]} last 10`;
+
+  const runs = raw.match(/^(.*?)\s+(?:has|have)\s+averaged\s+([\d.]+)\s+runs?\s+(?:over|in)\s+(?:its|their|the)\s+last\s+10/i);
+  if (runs) return `${teamAbbreviation(runs[1])}: ${runs[2]} runs/game L10`;
+
+  let shortened = raw;
   const selected = clean(teamName);
   const opp = clean(opponent);
   if (selected) shortened = shortened.replaceAll(selected, teamAbbreviation(selected));
   if (opp) shortened = shortened.replaceAll(opp, teamAbbreviation(opp));
   shortened = shortened
-    .replace(/\bis\s+/gi, "")
     .replace(/\bin its last\s+/gi, "last ")
     .replace(/\bowns a\s+/gi, "")
     .replace(/\bowns the\s+/gi, "")
@@ -559,6 +579,10 @@ function shortenStatsWatch(text, teamName, opponent) {
     .trim();
   if (/starter/i.test(shortened)) shortened = shortened.replace(/opponent starter/i, "Opp. starter");
   return shortened || "Watch matchup context.";
+}
+
+function shortenStatsWatch(text, teamName, opponent) {
+  return formatStatsBoardWatchText(text, teamName, opponent);
 }
 
 function isRedundantStatsSentence(text, details) {
@@ -676,12 +700,13 @@ function renderStatsBoardCard({ snapshot, pick, index, y }) {
   const teamClip = `stats-team-clip-${index + 1}`;
   const metricsClip = `stats-metrics-clip-${index + 1}`;
   const watchClip = `stats-watch-clip-${index + 1}`;
-  const teamText = fitTextToWidth(details.teamName, layout.teamTextWidth, { preferred: 38, min: 30, maxLines: 2 });
+  const teamText = fitTextToWidth(details.teamName, layout.teamTextWidth, { preferred: 34, min: 25, maxLines: 2 });
+  const teamLineHeight = Math.max(28, teamText.fontSize * 1.04);
   const teamNameBlock = teamText.lines.map((line, lineIndex) =>
-    `<text x="${layout.teamTextX}" y="${y + 58 + lineIndex * (teamText.fontSize * 1.06)}" font-size="${teamText.fontSize}" font-weight="900" fill="#ffffff">${escapeXml(line)}</text>`
+    `<text x="${layout.teamTextX}" y="${y + 50 + lineIndex * teamLineHeight}" font-size="${teamText.fontSize}" font-weight="900" fill="#ffffff">${escapeXml(line)}</text>`
   ).join("");
-  const moneylineY = y + (teamText.lines.length > 1 ? 130 : 116);
-  const matchupY = moneylineY + 28;
+  const moneylineY = y + 120;
+  const matchupY = y + 148;
   const matchupLines = wrapTextToWidth(`vs ${details.opponent}`, layout.teamTextWidth, 15, 2);
   const primaryStats = details.stats.slice(0, 6);
   const supportIsDuplicate = isRedundantStatsSentence(details.supporting, details);
@@ -691,7 +716,7 @@ function renderStatsBoardCard({ snapshot, pick, index, y }) {
     `<g class="daily3-stats-card" data-rank="${index + 1}">`,
     `<title>${escapeXml(`${index + 1}. ${details.teamName} stats board ${details.odds}`)}</title>`,
     `<desc>${escapeXml(`${details.teamName} moneyline ${details.odds}. ${watchLine}`)}</desc>`,
-    `<clipPath id="${teamClip}"><rect x="${layout.teamTextX}" y="${y + 24}" width="${layout.teamTextWidth}" height="${height - 40}"/></clipPath>`,
+    `<clipPath id="${teamClip}"><rect x="${layout.teamTextX}" y="${y + 18}" width="${layout.teamTextWidth}" height="${height - 28}"/></clipPath>`,
     `<clipPath id="${metricsClip}"><rect x="${layout.metricsX}" y="${y + 18}" width="${layout.metricsWidth}" height="${height - 36}"/></clipPath>`,
     `<clipPath id="${watchClip}"><rect x="${layout.watchX}" y="${y + 18}" width="${layout.watchWidth}" height="${height - 36}"/></clipPath>`,
     `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="16" fill="#051222" stroke="#6f89aa" stroke-width="2" opacity="0.96"/>`,
@@ -699,9 +724,9 @@ function renderStatsBoardCard({ snapshot, pick, index, y }) {
     `<rect x="${x + 48}" y="${y}" width="38" height="${height}" fill="#b7081c"/>`,
     `<text x="${x + 38}" y="${y + 108}" text-anchor="middle" font-size="63" font-weight="900" fill="#ffffff">${index + 1}</text>`,
     `<line x1="${x + layout.rankWidth}" y1="${y}" x2="${x + layout.rankWidth}" y2="${y + height}" stroke="#ffffff" stroke-width="1.5" opacity="0.35"/>`,
-    `<circle cx="${layout.badgeX + 54}" cy="${y + 90}" r="54" fill="#07162f" stroke="#ffffff" stroke-width="4"/>`,
-    `<circle cx="${layout.badgeX + 54}" cy="${y + 90}" r="45" fill="#0b4c9c" stroke="#75a8df" stroke-width="3"/>`,
-    `<text x="${layout.badgeX + 54}" y="${y + 108}" text-anchor="middle" font-size="${details.abbreviation.length > 3 ? 31 : 39}" font-weight="900" fill="#ffffff">${escapeXml(details.abbreviation)}</text>`,
+    `<circle cx="${layout.badgeX + layout.badgeSize / 2}" cy="${y + height / 2}" r="${layout.badgeSize / 2}" fill="#07162f" stroke="#ffffff" stroke-width="4"/>`,
+    `<circle cx="${layout.badgeX + layout.badgeSize / 2}" cy="${y + height / 2}" r="${layout.badgeSize / 2 - 9}" fill="#0b4c9c" stroke="#75a8df" stroke-width="3"/>`,
+    `<text x="${layout.badgeX + layout.badgeSize / 2}" y="${y + height / 2 + 14}" text-anchor="middle" font-size="${details.abbreviation.length > 3 ? 27 : 34}" font-weight="900" fill="#ffffff">${escapeXml(details.abbreviation)}</text>`,
     `<g clip-path="url(#${teamClip})">`,
     teamNameBlock,
     `<text x="${layout.teamTextX}" y="${moneylineY}" font-size="18" font-weight="900" fill="#ec2037" letter-spacing="1.3">MONEYLINE ${escapeXml(details.odds)}</text>`,
@@ -726,7 +751,7 @@ function renderStatsBoardCard({ snapshot, pick, index, y }) {
     `<g clip-path="url(#${watchClip})">`,
     reasonIcon(reasonIconType(watchLine), layout.watchX, y + 30),
     `<text x="${layout.watchX + 56}" y="${y + 48}" font-size="18" font-weight="900" fill="#ff344a" letter-spacing="1">WATCH</text>`,
-    renderWatchText(watchLine, layout.watchX, y + 82, layout.watchWidth, { size: 16, maxLines: 4, lineHeight: 21 }),
+    renderWatchText(watchLine, layout.watchTextX, y + 82, layout.watchTextWidth, { size: 14, maxLines: 4, lineHeight: 18 }),
     `</g>`,
     `</g>`
   ].join("");
@@ -1055,6 +1080,7 @@ module.exports = {
   estimateTextWidth,
   fitTextToWidth,
   wrapTextToWidth,
+  formatStatsBoardWatchText,
   shortenStatsWatch,
   prohibitedHits,
   canonicalStringify,
