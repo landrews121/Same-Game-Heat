@@ -1,7 +1,7 @@
 const crypto = require("node:crypto");
 
 const GRAPHIC_TEMPLATE_VERSION = "social-graphics-template-v2";
-const STATS_GRAPHIC_TEMPLATE_VERSION = "social-stats-template-v2";
+const STATS_GRAPHIC_TEMPLATE_VERSION = "social-stats-template-v3";
 const GRAPHIC_RENDER_VERSION = "social-graphics-renderer-v1";
 const RESPONSIBLE_FOOTER = "21+ | Bet responsibly.";
 const GRAPHIC_TYPES = {
@@ -12,6 +12,27 @@ const GRAPHIC_FORMATS = {
   feed: { width: 1080, height: 1350, label: "Feed Portrait" },
   story: { width: 1080, height: 1920, label: "Story / Reel Cover" },
   square: { width: 1080, height: 1080, label: "Square" }
+};
+const STATS_BOARD_LAYOUT = {
+  cardX: 34,
+  cardWidth: 1012,
+  cardHeight: 198,
+  headerY: 466,
+  firstRowY: 534,
+  rowGap: 16,
+  rankWidth: 76,
+  badgeX: 96,
+  badgeSize: 108,
+  teamTextX: 214,
+  teamTextWidth: 238,
+  metricsX: 468,
+  metricsWidth: 358,
+  metricBoxWidth: 112,
+  metricBoxHeight: 70,
+  metricColGap: 10,
+  metricRowGap: 12,
+  watchX: 846,
+  watchWidth: 178
 };
 const PROHIBITED_PHRASES = [
   "GUARANTEED",
@@ -188,6 +209,75 @@ function textLines(text, x, y, size, options = {}) {
   const lines = wrapText(text, maxChars, options.maxLines || 3);
   return lines.map((line, index) =>
     `<text x="${x}" y="${y + index * (options.lineHeight || size * 1.16)}" font-size="${size}" font-weight="${options.weight || 800}" fill="${options.fill || "#101827"}" ${options.anchor ? `text-anchor="${options.anchor}"` : ""}>${escapeXml(line)}</text>`
+  ).join("");
+}
+
+function estimateTextWidth(text, fontSize) {
+  return clean(text).split("").reduce((width, char) => {
+    if (char === " ") return width + fontSize * 0.32;
+    if (/[A-Z]/.test(char)) return width + fontSize * 0.66;
+    if (/[0-9]/.test(char)) return width + fontSize * 0.58;
+    if (/[-+./]/.test(char)) return width + fontSize * 0.36;
+    return width + fontSize * 0.53;
+  }, 0);
+}
+
+function wrapTextToWidth(text, maxWidth, fontSize, maxLines = 2) {
+  const words = clean(text).split(/\s+/).filter(Boolean);
+  const lines = [];
+  let current = "";
+  words.forEach((word) => {
+    const next = current ? `${current} ${word}` : word;
+    if (current && estimateTextWidth(next, fontSize) > maxWidth) {
+      lines.push(current);
+      current = word;
+      return;
+    }
+    current = next;
+  });
+  if (current) lines.push(current);
+  if (lines.length <= maxLines) return lines;
+  const kept = lines.slice(0, maxLines);
+  let last = kept[maxLines - 1];
+  while (last.length > 4 && estimateTextWidth(`${last}...`, fontSize) > maxWidth) {
+    last = last.slice(0, -1).trim();
+  }
+  kept[maxLines - 1] = `${last}...`;
+  return kept;
+}
+
+function fitTextToWidth(text, maxWidth, options = {}) {
+  const preferred = options.preferred || 42;
+  const minimum = options.min || 30;
+  const maxLines = options.maxLines || 2;
+  for (let fontSize = preferred; fontSize >= minimum; fontSize -= 1) {
+    if (estimateTextWidth(text, fontSize) <= maxWidth) {
+      return { fontSize, lines: [clean(text)], maxLineWidth: estimateTextWidth(text, fontSize) };
+    }
+  }
+  for (let fontSize = preferred; fontSize >= minimum; fontSize -= 1) {
+    const lines = wrapTextToWidth(text, maxWidth, fontSize, maxLines);
+    if (lines.every((line) => estimateTextWidth(line, fontSize) <= maxWidth)) {
+      return {
+        fontSize,
+        lines,
+        maxLineWidth: Math.max(...lines.map((line) => estimateTextWidth(line, fontSize)), 0)
+      };
+    }
+  }
+  const lines = wrapTextToWidth(text, maxWidth, minimum, maxLines);
+  return {
+    fontSize: minimum,
+    lines,
+    maxLineWidth: Math.max(...lines.map((line) => estimateTextWidth(line, minimum)), 0)
+  };
+}
+
+function renderFittedText(text, x, y, maxWidth, options = {}) {
+  const fitted = fitTextToWidth(text, maxWidth, options);
+  const lineHeight = options.lineHeight || fitted.fontSize * 1.08;
+  return fitted.lines.map((line, index) =>
+    `<text x="${x}" y="${y + index * lineHeight}" font-size="${fitted.fontSize}" font-weight="${options.weight || 900}" fill="${options.fill || "#ffffff"}">${escapeXml(line)}</text>`
   ).join("");
 }
 
@@ -429,19 +519,67 @@ function formatEra(value) {
   return Number.isFinite(number) ? number.toFixed(2) : clean(value);
 }
 
+function trimNumericStat(value) {
+  const text = clean(value);
+  return text.replace(/\s+R\/G$/i, "").replace(/\s+ERA$/i, "");
+}
+
 function statCell(label, value, x, y, width, options = {}) {
-  const display = validMetricValue(value) ? clean(value) : "Unavailable";
-  const labelSize = label.length > 8 ? 15 : 18;
-  const valueSize = options.valueSize || (display.length > 9 ? 18 : display.length > 6 ? 21 : 25);
+  const display = validMetricValue(value) ? trimNumericStat(value) : "Unavailable";
+  const labelSize = label.length > 8 ? 13 : label.length > 6 ? 15 : 16;
+  const valueSize = options.valueSize || Math.max(18, Math.min(26, Math.floor((width - 28) / Math.max(1, display.length) * 1.45)));
+  const unit = validMetricValue(value) && /\s+ERA$/i.test(clean(value)) ? "ERA" : "";
   return [
     `<rect x="${x}" y="${y}" width="${width}" height="${options.height || 86}" rx="12" fill="${options.fill || "#07162f"}" stroke="${options.stroke || "#244f85"}" stroke-width="2"/>`,
-    `<text x="${x + 18}" y="${y + 30}" font-size="${labelSize}" font-weight="900" letter-spacing="1" fill="${options.labelColor || "#8fb7e7"}">${escapeXml(label)}</text>`,
-    `<text x="${x + 18}" y="${y + 68}" font-size="${valueSize}" font-weight="900" fill="${options.valueColor || "#ffffff"}">${escapeXml(display)}</text>`
+    `<text x="${x + width / 2}" y="${y + 27}" text-anchor="middle" font-size="${labelSize}" font-weight="900" letter-spacing="0.6" fill="${options.labelColor || "#8fb7e7"}">${escapeXml(label)}</text>`,
+    `<text x="${x + width / 2}" y="${y + (unit ? 56 : 62)}" text-anchor="middle" font-size="${valueSize}" font-weight="900" fill="${options.valueColor || "#ffffff"}">${escapeXml(display)}</text>`,
+    unit ? `<text x="${x + width / 2}" y="${y + 68}" text-anchor="middle" font-size="12" font-weight="900" fill="${options.labelColor || "#8fb7e7"}">${unit}</text>` : ""
   ].join("");
 }
 
 function compactStat(label, value) {
   return { label, value: validMetricValue(value) ? clean(value) : "Unavailable" };
+}
+
+function shortenStatsWatch(text, teamName, opponent) {
+  let shortened = clean(text, "Watch matchup context.");
+  const selected = clean(teamName);
+  const opp = clean(opponent);
+  if (selected) shortened = shortened.replaceAll(selected, teamAbbreviation(selected));
+  if (opp) shortened = shortened.replaceAll(opp, teamAbbreviation(opp));
+  shortened = shortened
+    .replace(/\bis\s+/gi, "")
+    .replace(/\bin its last\s+/gi, "last ")
+    .replace(/\bowns a\s+/gi, "")
+    .replace(/\bowns the\s+/gi, "")
+    .replace(/\bhas been\s+/gi, "")
+    .replace(/\bprofile\b/gi, "")
+    .replace(/\bseason ERA\b/gi, "ERA")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (/starter/i.test(shortened)) shortened = shortened.replace(/opponent starter/i, "Opp. starter");
+  return shortened || "Watch matchup context.";
+}
+
+function isRedundantStatsSentence(text, details) {
+  const normalized = clean(text).toLowerCase();
+  if (!normalized) return true;
+  return details.stats.some((metric) => {
+    if (!validMetricValue(metric.value) || metric.value === "Unavailable") return false;
+    const value = trimNumericStat(metric.value).toLowerCase();
+    if (!value || !normalized.includes(value)) return false;
+    if (metric.label === "LAST 10" && /last 10/.test(normalized)) return true;
+    if (metric.label === "LAST 5" && /last 5/.test(normalized)) return true;
+    if ((metric.label === "RUNS/G" || metric.label === "OPS") && normalized.includes(metric.label.toLowerCase().replace("/", ""))) return true;
+    return false;
+  });
+}
+
+function renderWatchText(text, x, y, width, options = {}) {
+  const lines = wrapTextToWidth(text, width, options.size || 16, options.maxLines || 4);
+  return lines.map((line, index) =>
+    `<text x="${x}" y="${y + index * (options.lineHeight || 21)}" font-size="${options.size || 16}" font-weight="${options.weight || 800}" fill="${options.fill || "#ffffff"}">${escapeXml(line)}</text>`
+  ).join("");
 }
 
 function statsBoardPickDetails({ snapshot, pick }) {
@@ -458,7 +596,7 @@ function statsBoardPickDetails({ snapshot, pick }) {
     ? wrapText(starterName, 18, 1)[0]
     : "Probable starter";
   const offense = selectedTeam.offense || {};
-  const runs = validMetricValue(offense.runsPerGame) ? `${offense.runsPerGame} R/G` : "";
+  const runs = validMetricValue(offense.runsPerGame) ? String(offense.runsPerGame) : "";
   const homeRuns = firstValid(offense.homeRuns, offense.hr);
   const supporting = clean((pick?.supportingStats || []).find(validMetricValue), "Verified stats pending.");
   const watch = clean(pick?.riskStat || (pick?.unavailable || []).find(validMetricValue), "");
@@ -530,39 +668,66 @@ function renderStatsBoardHeader({ width, slateDate }) {
 }
 
 function renderStatsBoardCard({ snapshot, pick, index, y }) {
-  const x = 34;
-  const width = 1012;
-  const height = 184;
+  const layout = STATS_BOARD_LAYOUT;
+  const x = layout.cardX;
+  const width = layout.cardWidth;
+  const height = layout.cardHeight;
   const details = statsBoardPickDetails({ snapshot, pick });
-  const teamFont = details.teamName.length > 24 ? 31 : details.teamName.length > 18 ? 35 : 44;
-  const teamLines = wrapText(details.teamName, details.teamName.length > 24 ? 20 : 18, 2);
+  const teamClip = `stats-team-clip-${index + 1}`;
+  const metricsClip = `stats-metrics-clip-${index + 1}`;
+  const watchClip = `stats-watch-clip-${index + 1}`;
+  const teamText = fitTextToWidth(details.teamName, layout.teamTextWidth, { preferred: 38, min: 30, maxLines: 2 });
+  const teamNameBlock = teamText.lines.map((line, lineIndex) =>
+    `<text x="${layout.teamTextX}" y="${y + 58 + lineIndex * (teamText.fontSize * 1.06)}" font-size="${teamText.fontSize}" font-weight="900" fill="#ffffff">${escapeXml(line)}</text>`
+  ).join("");
+  const moneylineY = y + (teamText.lines.length > 1 ? 130 : 116);
+  const matchupY = moneylineY + 28;
+  const matchupLines = wrapTextToWidth(`vs ${details.opponent}`, layout.teamTextWidth, 15, 2);
   const primaryStats = details.stats.slice(0, 6);
-  const watchLine = details.watch || details.supporting;
-  const reasonLine = details.supporting;
+  const supportIsDuplicate = isRedundantStatsSentence(details.supporting, details);
+  const watchSource = supportIsDuplicate ? details.watch : (details.watch || details.supporting);
+  const watchLine = shortenStatsWatch(watchSource, details.teamName, details.opponent);
   return [
     `<g class="daily3-stats-card" data-rank="${index + 1}">`,
     `<title>${escapeXml(`${index + 1}. ${details.teamName} stats board ${details.odds}`)}</title>`,
-    `<desc>${escapeXml(`${details.teamName} moneyline ${details.odds}. ${details.supporting}`)}</desc>`,
+    `<desc>${escapeXml(`${details.teamName} moneyline ${details.odds}. ${watchLine}`)}</desc>`,
+    `<clipPath id="${teamClip}"><rect x="${layout.teamTextX}" y="${y + 24}" width="${layout.teamTextWidth}" height="${height - 40}"/></clipPath>`,
+    `<clipPath id="${metricsClip}"><rect x="${layout.metricsX}" y="${y + 18}" width="${layout.metricsWidth}" height="${height - 36}"/></clipPath>`,
+    `<clipPath id="${watchClip}"><rect x="${layout.watchX}" y="${y + 18}" width="${layout.watchWidth}" height="${height - 36}"/></clipPath>`,
     `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="16" fill="#051222" stroke="#6f89aa" stroke-width="2" opacity="0.96"/>`,
-    `<rect x="${x}" y="${y}" width="76" height="${height}" rx="16" fill="#b7081c"/>`,
+    `<rect x="${x}" y="${y}" width="${layout.rankWidth}" height="${height}" rx="16" fill="#b7081c"/>`,
     `<rect x="${x + 48}" y="${y}" width="38" height="${height}" fill="#b7081c"/>`,
     `<text x="${x + 38}" y="${y + 108}" text-anchor="middle" font-size="63" font-weight="900" fill="#ffffff">${index + 1}</text>`,
-    `<line x1="${x + 76}" y1="${y}" x2="${x + 76}" y2="${y + height}" stroke="#ffffff" stroke-width="1.5" opacity="0.35"/>`,
-    `<circle cx="${x + 142}" cy="${y + 86}" r="58" fill="#07162f" stroke="#ffffff" stroke-width="4"/>`,
-    `<circle cx="${x + 142}" cy="${y + 86}" r="49" fill="#0b4c9c" stroke="#75a8df" stroke-width="3"/>`,
-    `<text x="${x + 142}" y="${y + 104}" text-anchor="middle" font-size="${details.abbreviation.length > 3 ? 34 : 43}" font-weight="900" fill="#ffffff">${escapeXml(details.abbreviation)}</text>`,
-    teamLines.map((line, lineIndex) => `<text x="${x + 222}" y="${y + 56 + lineIndex * (teamFont * 1.04)}" font-size="${teamFont}" font-weight="900" fill="#ffffff">${escapeXml(line)}</text>`).join(""),
-    `<text x="${x + 222}" y="${y + 122}" font-size="20" font-weight="900" fill="#ec2037" letter-spacing="1.8">MONEYLINE ${escapeXml(details.odds)}</text>`,
-    `<text x="${x + 222}" y="${y + 154}" font-size="17" font-weight="800" fill="#9fb4ce">${escapeXml(wrapText(details.matchup, 30, 1)[0])}</text>`,
+    `<line x1="${x + layout.rankWidth}" y1="${y}" x2="${x + layout.rankWidth}" y2="${y + height}" stroke="#ffffff" stroke-width="1.5" opacity="0.35"/>`,
+    `<circle cx="${layout.badgeX + 54}" cy="${y + 90}" r="54" fill="#07162f" stroke="#ffffff" stroke-width="4"/>`,
+    `<circle cx="${layout.badgeX + 54}" cy="${y + 90}" r="45" fill="#0b4c9c" stroke="#75a8df" stroke-width="3"/>`,
+    `<text x="${layout.badgeX + 54}" y="${y + 108}" text-anchor="middle" font-size="${details.abbreviation.length > 3 ? 31 : 39}" font-weight="900" fill="#ffffff">${escapeXml(details.abbreviation)}</text>`,
+    `<g clip-path="url(#${teamClip})">`,
+    teamNameBlock,
+    `<text x="${layout.teamTextX}" y="${moneylineY}" font-size="18" font-weight="900" fill="#ec2037" letter-spacing="1.3">MONEYLINE ${escapeXml(details.odds)}</text>`,
+    matchupLines.map((line, lineIndex) => `<text x="${layout.teamTextX}" y="${matchupY + lineIndex * 18}" font-size="15" font-weight="800" fill="#9fb4ce">${escapeXml(line)}</text>`).join(""),
+    `</g>`,
+    `<line x1="${layout.metricsX - 14}" y1="${y + 24}" x2="${layout.metricsX - 14}" y2="${y + height - 24}" stroke="#d7e4f5" stroke-width="1.5" opacity="0.20"/>`,
+    `<g clip-path="url(#${metricsClip})">`,
     primaryStats.map((metric, metricIndex) => {
       const col = metricIndex % 3;
       const row = Math.floor(metricIndex / 3);
-      return statCell(metric.label, metric.value, x + 405 + col * 116, y + 22 + row * 78, 104, { height: 64, valueSize: 25 });
+      return statCell(
+        metric.label,
+        metric.value,
+        layout.metricsX + col * (layout.metricBoxWidth + layout.metricColGap),
+        y + 24 + row * (layout.metricBoxHeight + layout.metricRowGap),
+        layout.metricBoxWidth,
+        { height: layout.metricBoxHeight }
+      );
     }).join(""),
-    `<line x1="${x + 758}" y1="${y + 24}" x2="${x + 758}" y2="${y + height - 24}" stroke="#d7e4f5" stroke-width="2" opacity="0.32"/>`,
-    reasonIcon(reasonIconType(reasonLine), x + 780, y + 36),
-    textLines(reasonLine, x + 840, y + 54, 20, { maxChars: 19, maxLines: 3, weight: 900, fill: "#ffffff", lineHeight: 26 }),
-    `<text x="${x + 840}" y="${y + 158}" font-size="17" font-weight="900" fill="#ff344a">WATCH: ${escapeXml(wrapText(watchLine, 24, 1)[0])}</text>`,
+    `</g>`,
+    `<line x1="${layout.watchX - 18}" y1="${y + 24}" x2="${layout.watchX - 18}" y2="${y + height - 24}" stroke="#d7e4f5" stroke-width="2" opacity="0.32"/>`,
+    `<g clip-path="url(#${watchClip})">`,
+    reasonIcon(reasonIconType(watchLine), layout.watchX, y + 30),
+    `<text x="${layout.watchX + 56}" y="${y + 48}" font-size="18" font-weight="900" fill="#ff344a" letter-spacing="1">WATCH</text>`,
+    renderWatchText(watchLine, layout.watchX, y + 82, layout.watchWidth, { size: 16, maxLines: 4, lineHeight: 21 }),
+    `</g>`,
     `</g>`
   ].join("");
 }
@@ -571,19 +736,19 @@ function renderDaily3StatsBoard({ content, snapshots, pickStats, width, height }
   const picks = snapshots.slice(0, 3);
   const statsPicks = Array.isArray(pickStats?.picks) ? pickStats.picks : [];
   const bySnapshotId = new Map(statsPicks.map((pick) => [clean(pick.snapshotId), pick]));
+  const layout = STATS_BOARD_LAYOUT;
   return [
     renderStatsBoardHeader({ width, slateDate: content.slateDate || picks[0]?.slateDate || pickStats?.slateDate }),
-    `<rect x="34" y="478" width="1012" height="52" rx="14" fill="#061733" stroke="#6f89aa" stroke-width="2" opacity="0.96"/>`,
-    `<text x="74" y="513" font-size="20" font-weight="900" letter-spacing="2" fill="#ffffff">#</text>`,
-    `<text x="130" y="513" font-size="20" font-weight="900" letter-spacing="1.4" fill="#ffffff">PICK</text>`,
-    `<text x="442" y="513" font-size="20" font-weight="900" letter-spacing="1.4" fill="#ffffff">RECENT / VENUE</text>`,
-    `<text x="679" y="513" font-size="20" font-weight="900" letter-spacing="1.4" fill="#ffffff">STARTER / OFFENSE</text>`,
-    `<text x="838" y="513" font-size="20" font-weight="900" letter-spacing="1.4" fill="#ffffff">WATCH</text>`,
+    `<rect x="${layout.cardX}" y="${layout.headerY}" width="${layout.cardWidth}" height="50" rx="14" fill="#061733" stroke="#6f89aa" stroke-width="2" opacity="0.96"/>`,
+    `<text x="${layout.cardX + 40}" y="${layout.headerY + 33}" font-size="19" font-weight="900" letter-spacing="2" fill="#ffffff">#</text>`,
+    `<text x="${layout.badgeX + 28}" y="${layout.headerY + 33}" font-size="19" font-weight="900" letter-spacing="1.4" fill="#ffffff">PICK</text>`,
+    `<text x="${layout.metricsX + 20}" y="${layout.headerY + 33}" font-size="19" font-weight="900" letter-spacing="1.4" fill="#ffffff">RECENT / STARTER / OFFENSE</text>`,
+    `<text x="${layout.watchX + 2}" y="${layout.headerY + 33}" font-size="19" font-weight="900" letter-spacing="1.4" fill="#ffffff">WATCH</text>`,
     picks.map((snapshot, index) => renderStatsBoardCard({
       snapshot,
       pick: bySnapshotId.get(clean(snapshot.id)) || { selectedTeam: { name: snapshot.selectedTeam }, unavailable: ["Verified stats pending"] },
       index,
-      y: 548 + index * 198
+      y: layout.firstRowY + index * (layout.cardHeight + layout.rowGap)
     })).join(""),
     `<rect x="34" y="1164" width="1012" height="92" rx="16" fill="#061733" stroke="#6f89aa" stroke-width="2" opacity="0.96"/>`,
     `<text x="92" y="1204" font-size="23" font-weight="900" fill="#ffffff">TEAM OPS / RUNS / STARTER FORM</text>`,
@@ -886,6 +1051,11 @@ module.exports = {
   normalizeGraphicType,
   renderSocialGraphic,
   selectStatsBoardMetrics,
+  STATS_BOARD_LAYOUT,
+  estimateTextWidth,
+  fitTextToWidth,
+  wrapTextToWidth,
+  shortenStatsWatch,
   prohibitedHits,
   canonicalStringify,
   sha256

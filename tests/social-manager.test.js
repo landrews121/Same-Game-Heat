@@ -18,6 +18,11 @@ const {
   RESPONSIBLE_FOOTER,
   GRAPHIC_TEMPLATE_VERSION,
   STATS_GRAPHIC_TEMPLATE_VERSION,
+  STATS_BOARD_LAYOUT,
+  estimateTextWidth,
+  fitTextToWidth,
+  wrapTextToWidth,
+  shortenStatsWatch,
   selectStatsBoardMetrics
 } = require("../social-graphics");
 const { STORY_MUSIC_RECOMMENDATIONS } = require("../story-music");
@@ -1144,6 +1149,23 @@ test("frontend testing reset clears local workspace and avoids refresh rehydrati
   assert.match(source, /function refreshCurrentBoard/);
 });
 
+test("MLB Moneyline V2 uses qualified plays and does not backfill to force three picks", async () => {
+  const source = await fs.readFile(path.join(__dirname, "../app.js"), "utf8");
+  assert.match(source, /const moneylineModelVersion = "mlb-moneyline-v2"/);
+  assert.match(source, /Today's Qualified Moneyline Plays/);
+  assert.match(source, /No moneyline wager met the V2 edge, risk, pitcher, and price requirements/);
+  assert.match(source, /minimumWinProbability:\s*0\.62/);
+  assert.match(source, /minimumMarketEdge:\s*0\.04/);
+  assert.match(source, /minimumAdvantages:\s*3/);
+  assert.match(source, /noVigProbabilityForSide/);
+  assert.match(source, /isMoneylineWorseThanPlayable/);
+  assert.match(source, /killCritic/);
+  assert.match(source, /failurePath/);
+  assert.match(source, /verdict:\s*qualifies \? "QUALIFIED" : leanEligible \? "LEAN" : avoid \? "AVOID" : "PASS"/);
+  assert.doesNotMatch(source, /Best Available/);
+  assert.doesNotMatch(source, /Backfilled as the next-best unique team/);
+});
+
 test("forged high modelWinProbability is rejected", () => {
   assert.throws(() => createSocialPickSnapshot(samplePick({ modelWinProbability: 99 })), /modelWinProbability/);
 });
@@ -2118,12 +2140,107 @@ test("Daily 3 Stats Board renders as a separate deterministic template without r
   assert.match(graphic.svg, /Chicago White Sox/);
   assert.match(graphic.svg, /-166/);
   assert.match(graphic.svg, /LAST 10/);
-  assert.match(graphic.svg, /WATCH:/);
+  assert.match(graphic.svg, /WATCH/);
   assert.match(graphic.svg, /@sg_heater/);
   assert.match(graphic.svg, /Stats: MLB Stats API/);
   assert.doesNotMatch(graphic.svg, /58\.2%/);
   assert.doesNotMatch(graphic.svg, /FAIR/i);
   assert.doesNotMatch(graphic.svg, /PLAYABLE/i);
+});
+
+test("Daily 3 Stats Board layout fits long teams metrics and watch copy inside strict regions", () => {
+  const snapshots = [
+    createSocialPickSnapshot(samplePickForTeam("Arizona Diamondbacks", "Washington Nationals", 1, { sportsbookOdds: -171 })),
+    createSocialPickSnapshot(samplePickForTeam("Philadelphia Phillies", "San Francisco Giants", 2, { sportsbookOdds: -102 })),
+    createSocialPickSnapshot(samplePickForTeam("San Francisco Giants", "Kansas City Royals", 3, { sportsbookOdds: +120 }))
+  ];
+  const content = sampleContent("DAILY_3", snapshots);
+  const pickStats = samplePickStatsPackage(snapshots);
+  pickStats.picks[0].selectedPitcher.last3Starts.era = 2.12;
+  pickStats.picks[1].selectedPitcher.last3Starts.era = 0;
+  pickStats.picks[0].selectedTeam.relevantRecord = { wins: 35, losses: 26 };
+  pickStats.picks[0].selectedTeam.offense.runsPerGame = 5.2;
+  pickStats.picks[0].selectedTeam.offense.ops = ".757";
+  pickStats.picks[0].riskStat = "Washington Nationals is 6-4 in its last 10 games and opponent starter owns a 3.41 season ERA with traffic allowed early.";
+  pickStats.picks[1].riskStat = "San Francisco Giants is 7-3 in its last 10 games with a bullpen that has been competitive lately.";
+  pickStats.picks[2].riskStat = "Kansas City Royals opponent starter owns a 4.88 season ERA and the bullpen was used heavily yesterday.";
+
+  const graphic = renderSocialGraphic({ content, snapshots, format: "feed", graphicType: "daily_3_stats", pickStats });
+  const layout = STATS_BOARD_LAYOUT;
+  assert.equal(graphic.width, 1080);
+  assert.equal(graphic.height, 1350);
+  assert.equal((graphic.svg.match(/class="daily3-stats-card"/g) || []).length, 3);
+  assert.match(graphic.svg, /Arizona Diamondbacks/);
+  assert.match(graphic.svg, /Philadelphia Phillies/);
+  assert.match(graphic.svg, /San Francisco Giants/);
+  assert.match(graphic.svg, /STARTER L3/);
+  assert.match(graphic.svg, />2\.12</);
+  assert.match(graphic.svg, />0\.00</);
+  assert.match(graphic.svg, />ERA</);
+  assert.match(graphic.svg, />35-26</);
+  assert.match(graphic.svg, />5\.2</);
+  assert.match(graphic.svg, />\.757</);
+
+  const fittedArizona = fitTextToWidth("Arizona Diamondbacks", layout.teamTextWidth, { preferred: 38, min: 30, maxLines: 2 });
+  assert.ok(fittedArizona.lines.length <= 2);
+  assert.ok(fittedArizona.fontSize >= 30);
+  assert.ok(fittedArizona.maxLineWidth <= layout.teamTextWidth);
+
+  const fittedPhiladelphia = fitTextToWidth("Philadelphia Phillies", layout.teamTextWidth, { preferred: 38, min: 30, maxLines: 2 });
+  assert.ok(fittedPhiladelphia.maxLineWidth <= layout.teamTextWidth);
+
+  const matchupLines = wrapTextToWidth("vs Washington Nationals", layout.teamTextWidth, 15, 2);
+  assert.ok(matchupLines.every((line) => estimateTextWidth(line, 15) <= layout.teamTextWidth));
+
+  const starterWidth = estimateTextWidth("2.12", 26);
+  const zeroEraWidth = estimateTextWidth("0.00", 26);
+  const venueWidth = estimateTextWidth("35-26", 26);
+  assert.ok(starterWidth < layout.metricBoxWidth - 24);
+  assert.ok(zeroEraWidth < layout.metricBoxWidth - 24);
+  assert.ok(venueWidth < layout.metricBoxWidth - 24);
+
+  const watch = shortenStatsWatch(pickStats.picks[0].riskStat, "Arizona Diamondbacks", "Washington Nationals");
+  const watchLines = wrapTextToWidth(watch, layout.watchWidth, 16, 4);
+  assert.ok(watchLines.length <= 4);
+  assert.ok(watchLines.every((line) => estimateTextWidth(line, 16) <= layout.watchWidth));
+  assert.doesNotMatch(watch, /Washington Nationals/);
+
+  assert.match(graphic.svg, new RegExp(`clipPath id="stats-team-clip-1"`));
+  assert.match(graphic.svg, new RegExp(`clipPath id="stats-metrics-clip-1"`));
+  assert.match(graphic.svg, new RegExp(`clipPath id="stats-watch-clip-1"`));
+});
+
+test("Stats Board omits redundant supporting copy when metrics already show the same Last 10", () => {
+  const snapshots = [
+    createSocialPickSnapshot(samplePickForTeam("Chicago Cubs", "Washington Nationals", 1, { sportsbookOdds: -171 })),
+    createSocialPickSnapshot(samplePickForTeam("Tampa Bay Rays", "Baltimore Orioles", 2, { sportsbookOdds: -135 })),
+    createSocialPickSnapshot(samplePickForTeam("Toronto Blue Jays", "New York Yankees", 3, { sportsbookOdds: -154 }))
+  ];
+  const content = sampleContent("DAILY_3", snapshots);
+  const pickStats = samplePickStatsPackage(snapshots);
+  pickStats.picks[0].supportingStats = ["Chicago Cubs is 7-3 in its last 10 games."];
+  pickStats.picks[0].riskStat = "Washington Nationals is 6-4 in its last 10 games.";
+
+  const graphic = renderSocialGraphic({ content, snapshots, format: "feed", graphicType: "daily_3_stats", pickStats });
+  assert.doesNotMatch(graphic.svg, /Chicago Cubs is 7-3 in its last 10 games/);
+  assert.match(graphic.svg, /WSH/);
+});
+
+test("normal Daily 3 Feed and Story graphics are unchanged by Stats Board layout repair", () => {
+  const snapshots = [
+    createSocialPickSnapshot(samplePickForTeam("Los Angeles Angels", "Houston Astros", 1)),
+    createSocialPickSnapshot(samplePickForTeam("Detroit Tigers", "Baltimore Orioles", 2)),
+    createSocialPickSnapshot(samplePickForTeam("New York Mets", "Atlanta Braves", 3))
+  ];
+  const content = sampleContent("DAILY_3", snapshots);
+  const feed = renderSocialGraphic({ content, snapshots, format: "feed" });
+  const story = renderSocialGraphic({ content, snapshots, format: "story" });
+  assert.equal(feed.templateVersion, GRAPHIC_TEMPLATE_VERSION);
+  assert.equal(story.templateVersion, GRAPHIC_TEMPLATE_VERSION);
+  assert.equal(feed.graphicType, "standard");
+  assert.equal(story.graphicType, "standard");
+  assert.doesNotMatch(feed.svg, /STATS BOARD/);
+  assert.doesNotMatch(story.svg, /STATS BOARD/);
 });
 
 test("Stats Board graphic route creates a distinct type and regeneration preserves it", async () => {
