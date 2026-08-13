@@ -1086,6 +1086,23 @@ select:focus {
   border-radius: 8px;
 }
 
+.mlb-slate-grade,
+.mlb-first-team-out {
+  margin: 10px 0;
+  padding: 9px 11px;
+  border: 1px solid #dbe6f6;
+  border-radius: 8px;
+  background: #f5f9ff;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
+.mlb-slate-grade strong,
+.mlb-first-team-out strong {
+  color: var(--accent-deep);
+}
+
 .mlb-full-slate-table {
   width: 100%;
   min-width: 820px;
@@ -1144,6 +1161,11 @@ select:focus {
 .mlb-verdict.avoid {
   background: #ffe4e6;
   color: #9f1239;
+}
+
+.mlb-verdict.pass {
+  background: #f1f3f6;
+  color: #596579;
 }
 
 .mlb-slate-read h4 {

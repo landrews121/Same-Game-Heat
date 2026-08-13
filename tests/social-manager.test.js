@@ -1149,20 +1149,26 @@ test("frontend testing reset clears local workspace and avoids refresh rehydrati
   assert.match(source, /function refreshCurrentBoard/);
 });
 
-test("MLB Moneyline V2 uses qualified plays and does not backfill to force three picks", async () => {
+test("MLB Moneyline V2.1 ranks a daily top three without elite-only hard gates", async () => {
   const source = await fs.readFile(path.join(__dirname, "../app.js"), "utf8");
-  assert.match(source, /const moneylineModelVersion = "mlb-moneyline-v2"/);
-  assert.match(source, /Today's Qualified Moneyline Plays/);
-  assert.match(source, /No moneyline wager met the V2 edge, risk, pitcher, and price requirements/);
-  assert.match(source, /minimumWinProbability:\s*0\.62/);
-  assert.match(source, /minimumMarketEdge:\s*0\.04/);
-  assert.match(source, /minimumAdvantages:\s*3/);
+  assert.match(source, /const moneylineModelVersion = "mlb-moneyline-v2\.1"/);
+  assert.match(source, /Today's Top 3 Moneylines/);
+  assert.match(source, /dailyPickCount:\s*3/);
+  assert.match(source, /mlbSlateQuality/);
+  assert.match(source, /firstTeamOut/);
+  assert.match(source, /mlbMarketValueAdjustment/);
+  assert.match(source, /mlbFavoritePricePenalty/);
+  assert.match(source, /mlbKillCriticRisk/);
+  assert.match(source, /dailyBoardEligible/);
+  assert.match(source, /dailyVerdict/);
   assert.match(source, /noVigProbabilityForSide/);
   assert.match(source, /isMoneylineWorseThanPlayable/);
   assert.match(source, /killCritic/);
   assert.match(source, /failurePath/);
   assert.match(source, /verdict:\s*qualifies \? "QUALIFIED" : leanEligible \? "LEAN" : avoid \? "AVOID" : "PASS"/);
-  assert.doesNotMatch(source, /Best Available/);
+  assert.doesNotMatch(source, /No moneyline wager met the V2 edge/);
+  assert.doesNotMatch(source, /minimumWinProbability:\s*0\.62/);
+  assert.doesNotMatch(source, /minimumMarketEdge:\s*0\.04/);
   assert.doesNotMatch(source, /Backfilled as the next-best unique team/);
 });
 
