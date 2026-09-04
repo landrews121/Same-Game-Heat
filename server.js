@@ -29,6 +29,8 @@ const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const oddsApiKey = process.env.ODDS_API_KEY || process.env.THE_ODDS_API_KEY || "";
 const ballDontLieKey = process.env.BALL_DONT_LIE_API_KEY || process.env.BDL_API_KEY || "";
 const defaultMarkets = ["h2h"];
+const nflGameMarkets = ["h2h", "spreads", "totals"];
+const nflPlayerPropMarkets = NFL_MARKETS.filter((market) => !nflGameMarkets.includes(market));
 const socialManager = createSocialManager({
   root,
   env: process.env,
@@ -635,6 +637,27 @@ async function fetchOddsSlate({ sport, date, region, markets }) {
     const batch = eventList.slice(i, i + concurrency);
     const results = await Promise.all(
       batch.map(async (event) => {
+        if (sport === "americanfootball_nfl") {
+          const marketResponses = await Promise.all([
+            fetchEventOdds({ sport, eventId: event.id, region, markets: nflGameMarkets })
+              .then((payload) => ({ payload, error: null }))
+              .catch((error) => ({ payload: {}, error: error.message })),
+            fetchEventOdds({ sport, eventId: event.id, region, markets: nflPlayerPropMarkets })
+              .then((payload) => ({ payload, error: null }))
+              .catch((error) => ({ payload: {}, error: error.message }))
+          ]);
+          const mergedOdds = mergeOddsPayloadMarkets(marketResponses[0].payload, marketResponses[1].payload);
+          mergedOdds.marketErrors = {
+            gameMarkets: marketResponses[0].error,
+            playerProps: marketResponses[1].error
+          };
+          return {
+            event,
+            odds: mergedOdds,
+            gameMarketError: marketResponses[0].error,
+            propMarketError: marketResponses[1].error
+          };
+        }
         let odds = await fetchEventOdds({ sport, eventId: event.id, region, markets });
         const shouldEnsureMlbMoneylines = sport === "baseball_mlb" && (markets || []).includes("h2h") && !oddsPayloadHasMarket(odds, "h2h");
 
@@ -668,19 +691,51 @@ function parseNflOddsPayload(event, odds) {
   const awayTeam = event.away_team || "";
   const moneylines = {};
   const propMap = new Map();
-  let spread = null;
-  let total = null;
+  const bookmakers = odds?.bookmakers || [];
+  const preferredBook = String(process.env.NFL_SPORTSBOOK || process.env.SELECTED_SPORTSBOOK || "").toLowerCase();
+  const bookmakerLabel = (bookmaker) => String(bookmaker?.title || bookmaker?.key || "");
+  const bookMatches = (bookmaker) => preferredBook && `${bookmaker?.key || ""} ${bookmaker?.title || ""}`.toLowerCase().includes(preferredBook);
+  const marketRecords = (marketKey) => bookmakers.flatMap((bookmaker) => (bookmaker.markets || [])
+    .filter((market) => market.key === marketKey)
+    .map((market) => ({ bookmaker, market })));
+  const outcomeByTeam = (record) => new Map((record?.market?.outcomes || [])
+    .filter((outcome) => outcome.name)
+    .map((outcome) => [outcome.name, outcome]));
+  const teamMarketRecord = (marketKey, requireBoth = false) => {
+    const records = marketRecords(marketKey);
+    const preferred = records.find((record) => bookMatches(record.bookmaker) && (!requireBoth || [homeTeam, awayTeam].every((team) => outcomeByTeam(record).has(team))));
+    if (preferred) return preferred;
+    return records.find((record) => !requireBoth || [homeTeam, awayTeam].every((team) => outcomeByTeam(record).has(team))) || records.find((record) => bookMatches(record.bookmaker)) || records[0] || null;
+  };
 
-  (odds?.bookmakers || []).forEach((bookmaker) => {
+  const h2hRecord = teamMarketRecord("h2h", true);
+  outcomeByTeam(h2hRecord).forEach((outcome, team) => {
+    if (team === homeTeam || team === awayTeam) moneylines[team] = outcome.price;
+  });
+
+  const spreadRecord = teamMarketRecord("spreads", true);
+  const spreads = (spreadRecord?.market?.outcomes || [])
+    .filter((outcome) => outcome.name && (outcome.name === homeTeam || outcome.name === awayTeam))
+    .map((outcome) => ({
+      team: outcome.name,
+      name: outcome.name,
+      point: outcome.point ?? null,
+      odds: outcome.price ?? null,
+      bookmaker: bookmakerLabel(spreadRecord.bookmaker)
+    }));
+  const totalRecord = marketRecords("totals").find((record) => bookMatches(record.bookmaker)) || marketRecords("totals")[0] || null;
+  const total = (totalRecord?.market?.outcomes || []).map((outcome) => ({
+    name: outcome.name,
+    point: outcome.point ?? null,
+    odds: outcome.price ?? null,
+    bookmaker: bookmakerLabel(totalRecord.bookmaker)
+  }));
+  const marketSource = h2hRecord || spreadRecord || totalRecord ? `The Odds API · ${bookmakerLabel((h2hRecord || spreadRecord || totalRecord).bookmaker)}` : "NO_MARKET";
+  const marketErrors = odds?.marketErrors || {};
+
+  bookmakers.forEach((bookmaker) => {
     (bookmaker.markets || []).forEach((market) => {
-      if (market.key === "h2h") {
-        (market.outcomes || []).forEach((outcome) => {
-          if (outcome.name && moneylines[outcome.name] === undefined) moneylines[outcome.name] = outcome.price;
-        });
-        return;
-      }
-      if (market.key === "spreads" && !spread) spread = market.outcomes || [];
-      if (market.key === "totals" && !total) total = market.outcomes || [];
+      if (market.key === "h2h" || market.key === "spreads" || market.key === "totals") return;
       if (!Object.prototype.hasOwnProperty.call(nflMarketLabels, market.key)) return;
 
       (market.outcomes || []).forEach((outcome) => {
@@ -712,10 +767,63 @@ function parseNflOddsPayload(event, odds) {
     homeTeam,
     awayTeam,
     moneylines,
-    spread,
+    homeMoneyline: moneylines[homeTeam] ?? null,
+    awayMoneyline: moneylines[awayTeam] ?? null,
+    spreads,
+    spread: spreads,
     total,
+    marketSource,
+    marketErrors,
     candidates: Array.from(propMap.values())
   };
+}
+
+function normalizedTeamKey(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function gameHasWinnerMarket(game) {
+  const moneylines = game.moneylines || {};
+  const values = [
+    moneylines[game.homeTeam],
+    moneylines[game.awayTeam],
+    game.home?.moneyline,
+    game.away?.moneyline
+  ];
+  const hasMoneyline = values.some((value) => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value)));
+  const spreads = Array.isArray(game.spreads) ? game.spreads : Array.isArray(game.spread) ? game.spread : [];
+  return hasMoneyline || spreads.some((entry) => Number.isFinite(Number(entry?.point ?? entry?.spread ?? entry?.line)));
+}
+
+async function addEspnNflMarketFallback(games, date) {
+  if (!games.some((game) => !gameHasWinnerMarket(game))) return { games, used: false, error: null };
+  try {
+    const payload = await fetchJson(espnNflScoreboardUrl(date));
+    const publicGames = parseEspnNflScoreboard(payload);
+    const byMatchup = new Map(publicGames.map((game) => [`${normalizedTeamKey(game.awayTeam)}@${normalizedTeamKey(game.homeTeam)}`, game]));
+    let used = false;
+    const merged = games.map((game) => {
+      if (gameHasWinnerMarket(game)) return game;
+      const fallback = byMatchup.get(`${normalizedTeamKey(game.awayTeam)}@${normalizedTeamKey(game.homeTeam)}`);
+      if (!fallback) return game;
+      const moneylines = { ...(game.moneylines || {}), ...(fallback.moneylines || {}) };
+      const spreads = (game.spreads?.length ? game.spreads : fallback.spreads || fallback.spread || []).map((entry) => ({ ...entry }));
+      used = true;
+      return {
+        ...game,
+        moneylines,
+        home: { ...(game.home || {}), moneyline: moneylines[game.homeTeam] ?? game.home?.moneyline ?? null, spread: fallback.home?.spread ?? game.home?.spread ?? null },
+        away: { ...(game.away || {}), moneyline: moneylines[game.awayTeam] ?? game.away?.moneyline ?? null, spread: fallback.away?.spread ?? game.away?.spread ?? null },
+        spreads,
+        spread: spreads,
+        total: game.total?.length ? game.total : fallback.total,
+        marketSource: "ESPN public scoreboard"
+      };
+    });
+    return { games: merged, used, error: null };
+  } catch (error) {
+    return { games, used: false, error: error.message };
+  }
 }
 
 async function fetchNflBoard({ date, region, mode, week, rollover }) {
@@ -754,15 +862,18 @@ async function fetchNflBoard({ date, region, mode, week, rollover }) {
     };
   }
 
-  const games = eventPayloads.map(({ event, odds }) => {
+  let games = eventPayloads.map(({ event, odds, gameMarketError, propMarketError }) => {
     const parsed = parseNflOddsPayload(event, odds);
     return {
       ...parsed,
-      home: { name: parsed.homeTeam, moneyline: parsed.moneylines[parsed.homeTeam] },
-      away: { name: parsed.awayTeam, moneyline: parsed.moneylines[parsed.awayTeam] },
+      home: { name: parsed.homeTeam, moneyline: parsed.homeMoneyline, spread: parsed.spreads.find((entry) => entry.team === parsed.homeTeam)?.point ?? null },
+      away: { name: parsed.awayTeam, moneyline: parsed.awayMoneyline, spread: parsed.spreads.find((entry) => entry.team === parsed.awayTeam)?.point ?? null },
+      marketErrors: { gameMarkets: gameMarketError, playerProps: propMarketError },
       source
     };
   });
+  const espnFallback = await addEspnNflMarketFallback(games, date);
+  games = espnFallback.games;
   const rawCandidates = games.flatMap((game) => game.candidates || []);
   const enrichedCandidates = enrichNflPropCandidates(games, rawCandidates, { week, date });
   const board = buildNflBoard({
@@ -778,6 +889,8 @@ async function fetchNflBoard({ date, region, mode, week, rollover }) {
     source,
     dataNotes: [
       "Sportsbook markets are connected.",
+      ...(espnFallback.used ? ["ESPN public market context was used for games missing an Odds API winner market."] : []),
+      ...(espnFallback.error ? [`ESPN market fallback was unavailable (${espnFallback.error}).`] : []),
       "Add verified NFL team, injury, lineup, and player-role feeds before treating a pick as model-qualified.",
       "No team or prop is forced when the supporting football data is incomplete."
     ]
@@ -1330,5 +1443,6 @@ if (require.main === module) {
 
 module.exports = {
   server,
-  socialManager
+  socialManager,
+  parseNflOddsPayload
 };

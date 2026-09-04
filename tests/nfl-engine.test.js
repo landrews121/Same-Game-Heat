@@ -23,6 +23,7 @@ const {
   espnNflScoreboardUrl,
   parseEspnNflScoreboard
 } = require("../nfl-public-source");
+const { parseNflOddsPayload } = require("../server");
 const fs = require("node:fs");
 
 function team(name, overrides = {}) {
@@ -108,7 +109,7 @@ test("Week 1 sparse market data still selects one official winner with neutral o
   assert.equal(pick.preseasonPriorMode, true);
   assert.equal(pick.metrics.rosterTalent, 50);
   assert.equal(pick.metrics.metricSources.rosterTalent, "NEUTRAL_FALLBACK");
-  assert.equal(pick.marketBaselineSource, "MARKET_DERIVED");
+  assert.equal(pick.marketBaselineSource, "NO_VIG_MONEYLINE");
   assert.equal(pick.criticalData.valid, true);
   assert.equal(pick.killCritic.hardVeto, false);
 });
@@ -214,12 +215,12 @@ test("spread-only markets produce a conservative market-derived baseline", () =>
     home: { name: "Spread Home", spread: -3.5 },
     away: { name: "Spread Away", spread: 3.5 }
   }], { mode: "standalone", week: 1 });
-  assert.equal(board.picks[0].marketBaselineSource, "MARKET_DERIVED");
-  assert.equal(board.picks[0].criticalData.market, "MARKET_DERIVED");
+  assert.equal(board.picks[0].marketBaselineSource, "SPREAD_DERIVED");
+  assert.equal(board.picks[0].criticalData.market, "SPREAD_DERIVED");
   assert.ok(Math.abs(board.picks[0].modelWinProbability - 0.5875) < 0.001);
 });
 
-test("critical data failures hard-veto recommendations but remain visible for inspection", () => {
+test("a valid scheduled game without a market gets a neutral baseline instead of a hard veto", () => {
   const board = buildNflWinnerBoard([{
     id: "missing-market-game",
     commenceTime: "2026-09-10T00:00:00Z",
@@ -228,10 +229,84 @@ test("critical data failures hard-veto recommendations but remain visible for in
     home: { name: "Missing Home" },
     away: { name: "Missing Away" }
   }], { mode: "standalone", week: 1 });
-  assert.equal(board.picks.length, 0);
+  assert.equal(board.picks.length, 1);
   assert.equal(board.all.length, 2);
-  assert.equal(board.all.every((pick) => pick.killCritic.hardVeto), true);
+  assert.equal(board.all.every((pick) => pick.killCritic.hardVeto), false);
   assert.equal(board.all[0].criticalData.market, "MISSING");
+  assert.equal(board.picks[0].marketBaselineSource, "NO_MARKET_NEUTRAL_BASELINE");
+  assert.ok(Math.abs(board.picks[0].modelWinProbability - 0.5) < 0.001);
+  assert.match(board.picks[0].killCritic.reasons.join(" "), /neutral baseline/i);
+});
+
+test("one moneyline uses the available side's implied market probability", () => {
+  const board = buildNflWinnerBoard([{
+    id: "one-moneyline-game",
+    commenceTime: "2026-09-10T00:00:00Z",
+    homeTeam: "One ML Home",
+    awayTeam: "One ML Away",
+    home: { name: "One ML Home" },
+    away: { name: "One ML Away", moneyline: -150 }
+  }], { mode: "standalone", week: 1 });
+  assert.equal(board.picks.length, 1);
+  assert.equal(board.picks[0].team, "One ML Away");
+  assert.equal(board.picks[0].marketBaselineSource, "MONEYLINE_IMPLIED");
+  assert.ok(Math.abs(board.picks[0].marketBaselineProbability - 0.6) < 0.001);
+  assert.equal(board.winnerMarketStatus[0].marketSource, "MONEYLINE_IMPLIED");
+  assert.equal(board.winnerMarketStatus[0].awayMoneyline, -150);
+});
+
+test("NFL odds parsing keeps both game markets and normalized spreads separate from props", () => {
+  const parsed = parseNflOddsPayload({
+    id: "odds-game",
+    commence_time: "2026-09-13T17:00:00Z",
+    home_team: "Parser Home",
+    away_team: "Parser Away"
+  }, {
+    bookmakers: [{
+      key: "testbook",
+      title: "Test Book",
+      markets: [
+        {
+          key: "h2h",
+          outcomes: [
+            { name: "Parser Home", price: -135 },
+            { name: "Parser Away", price: 115 }
+          ]
+        },
+        {
+          key: "spreads",
+          outcomes: [
+            { name: "Parser Home", point: -3.5, price: -110 },
+            { name: "Parser Away", point: 3.5, price: -110 }
+          ]
+        },
+        {
+          key: "totals",
+          outcomes: [
+            { name: "Over", point: 44.5, price: -110 },
+            { name: "Under", point: 44.5, price: -110 }
+          ]
+        },
+        {
+          key: "player_pass_yds",
+          outcomes: [
+            { name: "Over", description: "Parser Quarterback", point: 249.5, price: -115 },
+            { name: "Under", description: "Parser Quarterback", point: 249.5, price: -105 }
+          ]
+        }
+      ]
+    }]
+  });
+  assert.equal(parsed.homeMoneyline, -135);
+  assert.equal(parsed.awayMoneyline, 115);
+  assert.deepEqual(parsed.moneylines, { "Parser Home": -135, "Parser Away": 115 });
+  assert.deepEqual(parsed.spreads.map(({ team, point, odds }) => ({ team, point, odds })), [
+    { team: "Parser Home", point: -3.5, odds: -110 },
+    { team: "Parser Away", point: 3.5, odds: -110 }
+  ]);
+  assert.equal(parsed.total.length, 2);
+  assert.equal(parsed.candidates.length, 1);
+  assert.equal(parsed.marketSource, "The Odds API · Test Book");
 });
 
 test("prop scoring classifies variance and Safe 6 uses a touchdown fallback only when needed", () => {

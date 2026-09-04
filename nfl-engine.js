@@ -186,11 +186,39 @@ function spreadWinProbability(spread) {
 function marketBaseline(game, side) {
   const odds = sideOdds(game, side);
   const opponentOdds = pairedOdds(game, side);
-  const moneylineProbability = noVigProbability(odds, opponentOdds) ?? americanOddsToProbability(odds);
-  if (moneylineProbability !== null) return { probability: moneylineProbability, source: "MARKET_DERIVED", market: "moneyline" };
-  const spreadProbability = spreadWinProbability(spreadForSide(game, side));
-  if (spreadProbability !== null) return { probability: spreadProbability, source: "MARKET_DERIVED", market: "spread" };
-  return { probability: null, source: "MISSING", market: null };
+  const espnFallback = String(game?.source || game?.marketSource || "").toUpperCase().includes("ESPN");
+  const noVig = noVigProbability(odds, opponentOdds);
+  if (noVig !== null) return { probability: noVig, source: espnFallback ? "ESPN_MARKET_FALLBACK" : "NO_VIG_MONEYLINE", market: "moneyline" };
+  const implied = americanOddsToProbability(odds);
+  if (implied !== null) return { probability: implied, source: espnFallback ? "ESPN_MARKET_FALLBACK" : "MONEYLINE_IMPLIED", market: "moneyline" };
+  const spread = spreadForSide(game, side);
+  const spreadProbability = spreadWinProbability(spread);
+  if (spreadProbability !== null) {
+    const source = String(game?.source || game?.marketSource || "").toUpperCase().includes("ESPN")
+      ? "ESPN_MARKET_FALLBACK"
+      : "SPREAD_DERIVED";
+    return { probability: spreadProbability, source, market: "spread" };
+  }
+  return { probability: null, source: "NO_MARKET_NEUTRAL_BASELINE", market: null };
+}
+
+function winnerMarketStatus(game = {}) {
+  const home = sideName(game, "home");
+  const away = sideName(game, "away");
+  const homeMarket = marketBaseline(game, "home");
+  const awayMarket = marketBaseline(game, "away");
+  const representativeMarket = homeMarket.probability !== null ? homeMarket : awayMarket;
+  return {
+    gameId: game.id || null,
+    homeTeam: home,
+    awayTeam: away,
+    homeMoneyline: sideOdds(game, "home"),
+    awayMoneyline: sideOdds(game, "away"),
+    homeSpread: spreadForSide(game, "home"),
+    awaySpread: spreadForSide(game, "away"),
+    marketSource: representativeMarket.source,
+    marketBaselineProbability: homeMarket.probability ?? awayMarket.probability
+  };
 }
 
 function criticalDataStatus(game, side) {
@@ -198,12 +226,18 @@ function criticalDataStatus(game, side) {
   const away = sideName(game, "away");
   const status = String(game?.status || game?.gameStatus || "").toLowerCase();
   const market = marketBaseline(game, side);
-  const valid = Boolean(home && away && (game?.commenceTime || game?.commence_time) && market.probability !== null && !/(cancel|postpon|suspend)/.test(status));
+  const scheduleValid = Boolean(home && away && (game?.commenceTime || game?.commence_time));
+  const valid = Boolean(scheduleValid && !/(cancel|postpon|suspend)/.test(status));
+  const reason = !valid
+    ? "Game identity, kickoff, or scheduled status is missing or invalid."
+    : market.probability === null
+      ? "Current game market unavailable; model is using a neutral baseline."
+      : "";
   return {
     valid,
-    schedule: Boolean(home && away && (game?.commenceTime || game?.commence_time)) ? "VERIFIED" : "MISSING",
+    schedule: scheduleValid ? "VERIFIED" : "MISSING",
     market: market.probability === null ? "MISSING" : market.source,
-    reason: valid ? "" : "Game identity, kickoff, or a usable moneyline/spread is missing."
+    reason
   };
 }
 
@@ -264,7 +298,7 @@ function dataConfidence(metrics = {}, critical = {}) {
   const verified = NFL_OPTIONAL_METRICS.filter((key) => ["VERIFIED", "MARKET_DERIVED"].includes(String(sources[key]).toUpperCase())).length;
   const prior = NFL_OPTIONAL_METRICS.filter((key) => String(sources[key]).toUpperCase() === "PRIOR").length;
   const optionalScore = (verified + prior * 0.7) / NFL_OPTIONAL_METRICS.length;
-  const criticalScore = critical.valid ? 1 : 0;
+  const criticalScore = !critical.valid ? 0 : critical.market === "MISSING" ? 0.25 : 1;
   const score = Math.round((criticalScore * 0.35 + optionalScore * 0.65) * 100);
   return {
     score,
@@ -302,10 +336,10 @@ function dataCompleteness(metrics = {}) {
 }
 
 function modelProbability(teamScore, opponentScore, marketProbability) {
-  if (marketProbability === null || marketProbability === undefined) return null;
-  if (teamScore === null || opponentScore === null) return marketProbability;
+  const baseline = marketProbability === null || marketProbability === undefined ? 0.5 : marketProbability;
+  if (teamScore === null || opponentScore === null) return baseline;
   const footballAdjustment = (teamScore - opponentScore) * 0.002;
-  return clamp(marketProbability + footballAdjustment, 0.05, 0.95);
+  return clamp(baseline + footballAdjustment, 0.05, 0.95);
 }
 
 function gradeScore(score) {
@@ -355,6 +389,7 @@ function killCriticWinner(pick, opponent = {}) {
   }
   if (metrics.injuries !== null && metrics.injuries < 55) reasons.push("Injury or depth-chart risk lowers confidence.");
   if (pick.edge !== null && pick.edge < 0) reasons.push("The market price is stronger than the model edge.");
+  if (pick.marketBaselineSource === "NO_MARKET_NEUTRAL_BASELINE") reasons.push("Current game market unavailable; model is using a neutral baseline.");
   return {
     hardVeto: pick.criticalData?.valid === false || pick.status === "cancelled" || pick.status === "postponed" || pick.status === "suspended" || pick.qbStatus === "confirmed_scratch",
     scorePenalty: reasons.length * 3,
@@ -478,7 +513,9 @@ function buildNflWinnerBoard(games = [], options = {}) {
   });
 
   const ranked = picks
-    .sort((a, b) => (b.betQualityScore || 0) - (a.betQualityScore || 0) || (b.modelWinProbability || 0) - (a.modelWinProbability || 0));
+    .sort((a, b) => (b.modelWinProbability || 0) - (a.modelWinProbability || 0)
+      || (b.betQualityScore || 0) - (a.betQualityScore || 0)
+      || (b.dataConfidence?.score || 0) - (a.dataConfidence?.score || 0));
   const eligible = ranked.filter((pick) => !pick.killCritic.hardVeto);
   const bestByGame = [];
   const gamesSeen = new Set();
@@ -499,7 +536,8 @@ function buildNflWinnerBoard(games = [], options = {}) {
     complete: selected.length >= Math.min(selectedLimit, selectedGames.length),
     ...summary,
     firstTeamOut: firstTeamOut(bestByGame, selectedLimit),
-    window: normalizeNflMode(options.mode)
+    window: normalizeNflMode(options.mode),
+    winnerMarketStatus: selectedGames.map(winnerMarketStatus)
   };
 }
 
@@ -1015,6 +1053,7 @@ function buildNflBoard({ games = [], candidates = [], rawCandidates = null, mode
     preseasonPriorMode: week <= 1,
     games: selectedGames,
     winners: winnerBoard,
+    winnerMarketStatus: selectedGames.map(winnerMarketStatus),
     rawProps,
     props,
     propModelStatus,

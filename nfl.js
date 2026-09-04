@@ -57,7 +57,8 @@ function renderWinners(board, targetId = "nflWinners", heading = "") {
         <small class="nfl-official-label">OFFICIAL GAME WINNER</small>
         <strong>${escapeHtml(pick.team)} ML ${pick.moneyline ?? "—"}</strong>
         <span>${escapeHtml(pick.opponent)} · ${escapeHtml(pick.homeOrAway)}</span>
-        <span>Win ${percent(pick.modelWinProbability)} · Market baseline ${percent(pick.marketBaselineProbability)} · Football adjustment ${percent(pick.footballAdjustment)}</span>
+        <span>Win ${percent(pick.modelWinProbability)} · Market baseline ${percent(pick.marketBaselineProbability)} · ${escapeHtml(sourceLabel(pick.marketBaselineSource))}</span>
+        <span>Football adjustment ${percent(pick.footballAdjustment)} · Data confidence ${pick.dataConfidence?.score ?? "—"}%</span>
         <span>Bet grade ${escapeHtml(pick.grade)} · Data confidence ${pick.dataConfidence?.score ?? "—"}% ${escapeHtml(pick.dataConfidence?.level || "LOW")}</span>
       </div>
       <div class="nfl-pick-score">${pick.betQualityScore ?? "—"}<small>${escapeHtml(pick.grade)}</small></div>
@@ -66,7 +67,14 @@ function renderWinners(board, targetId = "nflWinners", heading = "") {
 }
 
 function sourceLabel(source) {
-  return String(source || "MISSING").replaceAll("_", " ");
+  const labels = {
+    NO_VIG_MONEYLINE: "NO-VIG MONEYLINE",
+    MONEYLINE_IMPLIED: "MONEYLINE IMPLIED",
+    SPREAD_DERIVED: "SPREAD DERIVED",
+    ESPN_MARKET_FALLBACK: "ESPN MARKET FALLBACK",
+    NO_MARKET_NEUTRAL_BASELINE: "NO-MARKET NEUTRAL"
+  };
+  return labels[source] || String(source || "MISSING").replaceAll("_", " ");
 }
 
 function renderDataStatus(board) {
@@ -81,6 +89,7 @@ function renderDataStatus(board) {
   $("nflDataStatus").innerHTML = summary + games.map((game) => {
     const sides = [game.homeTeam, game.awayTeam].map((teamName) => board.winners?.all?.find((pick) => pick.gameId === game.id && pick.team === teamName)).filter(Boolean);
     const representative = sides[0];
+    const market = board.winnerMarketStatus?.find((item) => item.gameId === game.id) || {};
     const metrics = representative?.metrics?.metricSources || {};
     const critical = representative?.criticalData || {};
     const confidence = representative?.dataConfidence;
@@ -90,6 +99,13 @@ function renderDataStatus(board) {
       <div class="nfl-data-grid">
         <span>Schedule: ${sourceLabel(critical.schedule || "MISSING")}</span>
         <span>Market: ${sourceLabel(critical.market || "MISSING")}</span>
+        <span>Home ML: ${market.homeMoneyline ?? "—"}</span>
+        <span>Away ML: ${market.awayMoneyline ?? "—"}</span>
+        <span>Home spread: ${market.homeSpread ?? "—"}</span>
+        <span>Away spread: ${market.awaySpread ?? "—"}</span>
+        <span>Market source: ${sourceLabel(market.marketSource || "MISSING")}</span>
+        <span>Baseline: ${percent(representative?.marketBaselineProbability ?? market.marketBaselineProbability)}</span>
+        <span>Final model: ${percent(representative?.modelWinProbability)}</span>
         <span>QB: ${escapeHtml(representative?.qbStatus === "uncertain" ? "UNCERTAIN" : metric("quarterback"))}</span>
         <span>Efficiency: ${escapeHtml(metric("previousSeasonEfficiency"))}</span>
         <span>Roster: ${escapeHtml(metric("rosterTalent"))}</span>
