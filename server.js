@@ -8,6 +8,7 @@ const { createSocialManager } = require("./social-manager");
 const {
   NFL_MARKETS,
   buildNflBoard,
+  enrichNflPropCandidates,
   normalizeNflMode
 } = require("./nfl-engine");
 const {
@@ -685,10 +686,12 @@ function parseNflOddsPayload(event, odds) {
       (market.outcomes || []).forEach((outcome) => {
         if (!outcome.description) return;
         const key = [outcome.description, market.key, outcome.point ?? ""].join("|");
-        const current = propMap.get(key) || {
+          const current = propMap.get(key) || {
           id: `${event.id}-${market.key}-${outcome.description}-${outcome.point ?? ""}`.replace(/[^a-z0-9-]/gi, "-"),
           gameId: event.id,
-          player: outcome.description,
+            player: outcome.description,
+            team: outcome.team || outcome.team_name || outcome.player_team || "",
+            opponent: outcome.opponent || outcome.opponent_team || "",
           market: nflMarketLabels[market.key],
           marketKey: market.key,
           line: outcome.point ?? null,
@@ -760,9 +763,12 @@ async function fetchNflBoard({ date, region, mode, week, rollover }) {
       source
     };
   });
+  const rawCandidates = games.flatMap((game) => game.candidates || []);
+  const enrichedCandidates = enrichNflPropCandidates(games, rawCandidates, { week, date });
   const board = buildNflBoard({
     games,
-    candidates: games.flatMap((game) => game.candidates || []),
+    candidates: enrichedCandidates,
+    rawCandidates,
     mode: normalizeNflMode(mode),
     week,
     rollover

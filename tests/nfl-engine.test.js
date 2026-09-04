@@ -15,7 +15,8 @@ const {
   buildNflSafe6,
   buildNflHeat6,
   calculateRollover,
-  buildNflBoard
+  buildNflBoard,
+  enrichNflPropCandidates
 } = require("../nfl-engine");
 const {
   espnNflScoreboardUrl,
@@ -171,17 +172,48 @@ test("critical data failures hard-veto recommendations but remain visible for in
   assert.equal(board.all[0].criticalData.market, "MISSING");
 });
 
-test("prop scoring classifies variance and KILLCRITIC keeps touchdown legs out of Safe 6", () => {
+test("prop scoring classifies variance and Safe 6 uses a touchdown fallback only when needed", () => {
   assert.equal(classifyPropVariance("Rush Attempts"), "low");
   assert.equal(classifyPropVariance("Anytime Touchdown"), "high");
   assert.ok(calculatePropQualityScore(prop(1)) >= 80);
   const props = buildNflPropBoard([prop(1), prop(2, { market: "Anytime Touchdown" })]);
   const safe = buildNflSafe6(props);
-  assert.equal(safe.legs.length, 1);
+  assert.equal(safe.legs.length, 2);
   assert.equal(safe.legs[0].player, "Player 1");
 });
 
-test("Safe 6 and Heat 6 never manufacture legs, while Heat 6 reports correlation", () => {
+test("raw sportsbook props become modeled over and under candidates with side-specific odds", () => {
+  const raw = [{ id: "raw-1", gameId: "game-1", player: "Quarterback One", market: "Passing Yards", marketKey: "player_pass_yds", line: 250.5, overOdds: -115, underOdds: -105 }];
+  const enriched = enrichNflPropCandidates([{ id: "game-1", homeTeam: "Home Team", awayTeam: "Away Team" }], raw, { week: 1, priorSeason: 2025, playerContexts: { "Quarterback One": { position: "QB", priorStats: { passingYardsPerGame: 275, passAttemptsPerGame: 35, yardsPerAttempt: 7.8 } } } });
+  assert.equal(enriched.length, 2);
+  assert.deepEqual(enriched.map((candidate) => candidate.side).sort(), ["over", "under"]);
+  assert.ok(enriched.every((candidate) => Number.isFinite(candidate.projection)));
+  assert.ok(enriched.every((candidate) => Number.isFinite(candidate.hitProbability)));
+  assert.equal(enriched.find((candidate) => candidate.side === "over").odds, -115);
+  assert.equal(enriched.find((candidate) => candidate.side === "under").odds, -105);
+  assert.equal(enriched[0].sourceMetadata.sourceType, "PRIOR");
+  assert.equal(enriched[0].sourceMetadata.sourceSeason, 2025);
+});
+
+test("model board keeps only the stronger side of an opposite prop pair", () => {
+  const raw = [{ id: "raw-2", gameId: "game-1", player: "Receiver One", market: "Receptions", marketKey: "player_receptions", line: 5.5, overOdds: -140, underOdds: 115 }];
+  const board = buildNflBoard({ games: [{ id: "game-1", homeTeam: "Home Team", awayTeam: "Away Team" }], candidates: raw, week: 1 });
+  assert.equal(board.props.length, 1);
+  assert.ok(["over", "under"].includes(board.props[0].side));
+  assert.equal(board.propModelStatus.rawPropMarkets, 1);
+  assert.equal(board.propModelStatus.modeledCandidates, 2);
+});
+
+test("Safe 6 ranks lower-variance fallbacks and Heat 6 fills six modeled markets", () => {
+  const raw = Array.from({ length: 6 }, (_, index) => ({ id: `raw-${index}`, gameId: `game-${index}`, player: `Player ${index}`, market: "Receptions", marketKey: "player_receptions", line: 4.5, overOdds: -110, underOdds: -110 }));
+  const board = buildNflBoard({ games: raw.map((candidate) => ({ id: candidate.gameId, homeTeam: `Home ${candidate.gameId}`, awayTeam: `Away ${candidate.gameId}` })), candidates: raw, week: 1 });
+  assert.equal(board.safe6.legs.length, 6);
+  assert.equal(board.safe6.complete, true);
+  assert.equal(board.heat6.legs.length, 6);
+  assert.equal(board.heat6.complete, true);
+});
+
+test("Safe 6 and Heat 6 fill available modeled legs, while Heat 6 reports correlation", () => {
   const props = buildNflPropBoard([
     prop(1, { gameId: "same-game", market: "Passing Yards" }),
     prop(2, { gameId: "same-game", market: "Receiving Yards" }),
@@ -192,7 +224,7 @@ test("Safe 6 and Heat 6 never manufacture legs, while Heat 6 reports correlation
   ]);
   const safe = buildNflSafe6(props);
   const heat = buildNflHeat6(props);
-  assert.equal(safe.complete, false);
+  assert.equal(safe.complete, true);
   assert.equal(heat.complete, true);
   assert.equal(heat.correlated, true);
   assert.equal(correlationType({ ...props[0], gameId: "same-game", market: "Passing Yards" }, { ...props[1], gameId: "same-game", market: "Receiving Yards" }), "positive");
@@ -263,6 +295,6 @@ test("public ESPN fallback preserves moneylines when exposed by the payload", ()
 
 test("NFL page uses the current asset cache version", () => {
   const html = fs.readFileSync(require.resolve("../nfl.html"), "utf8");
-  assert.match(html, /styles\.css\?v=nfl-v2/);
-  assert.match(html, /nfl\.js\?v=nfl-v2/);
+  assert.match(html, /styles\.css\?v=nfl-v3/);
+  assert.match(html, /nfl\.js\?v=nfl-v3/);
 });

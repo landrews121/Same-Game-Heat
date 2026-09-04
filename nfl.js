@@ -67,7 +67,9 @@ function renderDataStatus(board) {
     return;
   }
 
-  $("nflDataStatus").innerHTML = games.map((game) => {
+  const propStatus = board.propModelStatus || {};
+  const summary = `<article class="nfl-data-game"><div class="nfl-data-game-heading"><strong>Prop model pipeline</strong><span>${escapeHtml(`${propStatus.modeledCandidates || 0} modeled candidates`)}</span></div><div class="nfl-data-grid"><span>Raw markets: ${propStatus.rawPropMarkets ?? 0}</span><span>Players resolved: ${propStatus.playersResolved ?? 0}</span><span>Projections: ${propStatus.propsProjected ?? 0}</span><span>Hit probabilities: ${propStatus.propsWithHitProbability ?? 0}</span><span>Safe eligible: ${propStatus.safeEligibleProps ?? 0}</span><span>Heat eligible: ${propStatus.heatEligibleProps ?? 0}</span></div></article>`;
+  $("nflDataStatus").innerHTML = summary + games.map((game) => {
     const sides = [game.homeTeam, game.awayTeam].map((teamName) => board.winners?.all?.find((pick) => pick.gameId === game.id && pick.team === teamName)).filter(Boolean);
     const representative = sides[0];
     const metrics = representative?.metrics?.metricSources || {};
@@ -93,17 +95,22 @@ function renderDataStatus(board) {
 function renderProps(board) {
   const props = (board.props || []).slice(0, 12);
   if (!props.length) {
-    $("nflProps").innerHTML = '<p class="nfl-empty">No player prop markets were returned for this slate.</p>';
+    $("nflProps").innerHTML = '<p class="nfl-empty">No modeled player prop markets were returned for this slate.</p>';
     return;
   }
-  $("nflProps").innerHTML = `<p class="nfl-empty">${props.length} available market${props.length === 1 ? "" : "s"}. Recommendations remain unqualified until role, projection, matchup, health, and hit-probability inputs are connected.</p>` + props.map((prop) => `
-    <div class="nfl-market-row"><strong>${escapeHtml(prop.player)}</strong><span>${escapeHtml(prop.market)} ${prop.line ?? "—"}</span><span>Over ${prop.overOdds ?? "—"} · Under ${prop.underOdds ?? "—"}</span></div>`).join("");
+  const rawCount = board.propModelStatus?.rawPropMarkets ?? board.rawProps?.length ?? props.length;
+  $("nflProps").innerHTML = `<p class="nfl-empty">${rawCount} raw market${rawCount === 1 ? "" : "s"} became ${props.length} strongest-side model recommendation${props.length === 1 ? "" : "s"}.</p>` + props.map((prop) => `
+    <div class="nfl-market-row"><strong>${escapeHtml(prop.player)}</strong><span>${escapeHtml(String(prop.side || "").toUpperCase())} ${escapeHtml(prop.market)} ${prop.line ?? "—"} · ${prop.odds ?? "—"}</span><span>Projection ${Number.isFinite(Number(prop.projection)) ? Number(prop.projection).toFixed(1) : "—"} · Hit ${percent(prop.hitProbability)} · ${escapeHtml(prop.dataConfidence?.level || "LOW")}</span></div>`).join("");
 }
 
 function renderCard(targetId, state, emptyMessage) {
   const legs = state?.legs || [];
+  const label = targetId === "nflSafe6" ? "SAFE 6" : "HEAT 6";
+  const summary = legs.length && state?.averageLegProbability !== null && state?.averageLegProbability !== undefined
+    ? `<p class="nfl-empty">${label} · ${escapeHtml(state.strength || "RANKED")} · Average ${percent(state.averageLegProbability)} · Lowest ${percent(state.lowestLegProbability)} · Highest ${percent(state.highestLegProbability)} · Combined estimate ${percent(state.estimatedCombinedProbability)}</p>`
+    : "";
   $(targetId).innerHTML = legs.length
-    ? legs.map((leg) => `<div class="nfl-market-row"><strong>${escapeHtml(leg.player)}</strong><span>${escapeHtml(leg.market)} ${leg.line ?? "—"}</span><span>${percent(leg.hitProbability)} · ${escapeHtml(leg.grade)}</span></div>`).join("")
+    ? summary + legs.map((leg) => `<div class="nfl-market-row"><strong>${escapeHtml(leg.player)}</strong><span>${escapeHtml(String(leg.side || "").toUpperCase())} ${escapeHtml(leg.market)} ${leg.line ?? "—"} · ${leg.odds ?? "—"}</span><span>Projection ${Number.isFinite(Number(leg.projection)) ? Number(leg.projection).toFixed(1) : "—"} · Hit ${percent(leg.hitProbability)} · ${escapeHtml(leg.grade)} · ${escapeHtml(leg.dataConfidence?.level || "LOW")}</span></div>`).join("")
     : `<p class="nfl-empty">${escapeHtml(state?.reason || emptyMessage)}</p>`;
 }
 
@@ -127,12 +134,12 @@ function renderBoard(board) {
   $("nflPriorNotice").hidden = !board.preseasonPriorMode;
   $("nflGameCount").textContent = games.length;
   $("nflQualifiedCount").textContent = board.winners?.picks?.length || 0;
-  $("nflSafeState").textContent = board.safe6?.complete ? "6 qualified" : "Not complete";
-  $("nflHeatState").textContent = board.heat6?.complete ? "6 qualified" : "Not complete";
+  $("nflSafeState").textContent = board.safe6?.complete ? `6 legs · ${board.safe6.strength || "RANKED"}` : "Not complete";
+  $("nflHeatState").textContent = board.heat6?.complete ? `6 legs · ${board.heat6.strength || "RANKED"}` : "Not complete";
   renderWinners(board);
   renderProps(board);
-  renderCard("nflSafe6", board.safe6, "No Safe 6 generated. Six low-to-medium variance props must clear the 68% threshold.");
-  renderCard("nflHeat6", board.heat6, "No Heat 6 generated. Six props must clear the 60% threshold; no legs are forced.");
+  renderCard("nflSafe6", board.safe6, "No Safe 6 generated. Fewer than six usable lower-variance modeled markets were returned.");
+  renderCard("nflHeat6", board.heat6, "No Heat 6 generated. Fewer than six usable modeled markets were returned.");
   renderDataStatus(board);
   $("nflNotes").innerHTML = (board.dataNotes || ["No board has been loaded."]).map((note) => `<p>${escapeHtml(note)}</p>`).join("");
 }
@@ -147,7 +154,7 @@ async function loadBoard() {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "NFL board request failed");
     renderBoard(payload);
-    setStatus(`${payload.games.length} NFL game${payload.games.length === 1 ? "" : "s"} loaded. Official winners are ranked from market data and available football inputs; data confidence shows what is missing.`, "success");
+    setStatus(`${payload.games.length} NFL game${payload.games.length === 1 ? "" : "s"} loaded. Player markets were modeled from available prior, role, market, and fallback inputs.`, "success");
   } catch (error) {
     setStatus(`Could not load NFL board: ${error.message}`, "error");
     renderBoard({ mode: modeInput.value, week: weekInput.value, games: [], winners: { picks: [] }, safe6: {}, heat6: {}, dataNotes: ["NFL board unavailable until the server and Odds API are connected."] });

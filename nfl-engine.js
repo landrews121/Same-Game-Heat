@@ -451,6 +451,281 @@ function classifyPropVariance(market = "") {
   return "medium";
 }
 
+const NFL_PROP_MARKET_SPECS = Object.freeze({
+  player_pass_yds: { kind: "passingYards", variance: "medium", standardDeviation: 36 },
+  player_pass_attempts: { kind: "passAttempts", variance: "low", standardDeviation: 5 },
+  player_pass_tds: { kind: "passingTouchdowns", variance: "high", standardDeviation: 0.75 },
+  player_rush_yds: { kind: "rushingYards", variance: "medium", standardDeviation: 22 },
+  player_rush_attempts: { kind: "rushAttempts", variance: "low", standardDeviation: 5 },
+  player_reception_yds: { kind: "receivingYards", variance: "medium", standardDeviation: 18 },
+  player_receptions: { kind: "receptions", variance: "low", standardDeviation: 2.5 },
+  player_anytime_td: { kind: "anytimeTouchdown", variance: "high", standardDeviation: null }
+});
+
+function firstNumeric(source, keys = []) {
+  for (const key of keys) {
+    const value = numeric(source?.[key]);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function normalizePlayerName(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function playerContextFor(candidate, options = {}) {
+  const configured = options.playerContexts || options.playerStats || options.contextByPlayer || {};
+  const name = normalizePlayerName(candidate.player);
+  let found = {};
+  if (Array.isArray(configured)) {
+    found = configured.find((item) => normalizePlayerName(item?.player || item?.name || item?.fullName) === name) || {};
+  } else if (configured && typeof configured === "object") {
+    found = configured[candidate.player] || configured[name] || {};
+    if (!Object.keys(found).length) {
+      const matchingKey = Object.keys(configured).find((key) => normalizePlayerName(key) === name);
+      found = matchingKey ? configured[matchingKey] || {} : {};
+    }
+  }
+  return { ...(candidate.playerContext || {}), ...found };
+}
+
+function propMarketSpec(candidate = {}) {
+  const marketKey = String(candidate.marketKey || "").toLowerCase();
+  if (NFL_PROP_MARKET_SPECS[marketKey]) return { marketKey, ...NFL_PROP_MARKET_SPECS[marketKey] };
+  const market = String(candidate.market || "").toLowerCase();
+  if (market.includes("pass") && market.includes("yard")) return { marketKey, kind: "passingYards", variance: "medium", standardDeviation: 36 };
+  if (market.includes("pass") && market.includes("attempt")) return { marketKey, kind: "passAttempts", variance: "low", standardDeviation: 5 };
+  if (market.includes("pass") && (market.includes("td") || market.includes("touchdown"))) return { marketKey, kind: "passingTouchdowns", variance: "high", standardDeviation: 0.75 };
+  if (market.includes("rush") && market.includes("yard")) return { marketKey, kind: "rushingYards", variance: "medium", standardDeviation: 22 };
+  if (market.includes("rush") && market.includes("attempt")) return { marketKey, kind: "rushAttempts", variance: "low", standardDeviation: 5 };
+  if ((market.includes("receiv") || market.includes("catch")) && market.includes("yard")) return { marketKey, kind: "receivingYards", variance: "medium", standardDeviation: 18 };
+  if (market.includes("reception")) return { marketKey, kind: "receptions", variance: "low", standardDeviation: 2.5 };
+  if (market.includes("td") || market.includes("touchdown")) return { marketKey, kind: "anytimeTouchdown", variance: "high", standardDeviation: null };
+  return { marketKey, kind: "generic", variance: classifyPropVariance(candidate.market), standardDeviation: 20 };
+}
+
+function normalCdf(value) {
+  const x = Number(value);
+  if (!Number.isFinite(x)) return 0.5;
+  const sign = x < 0 ? -1 : 1;
+  const absolute = Math.abs(x) / Math.sqrt(2);
+  const t = 1 / (1 + 0.3275911 * absolute);
+  const polynomial = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-absolute * absolute);
+  return 0.5 * (1 + sign * polynomial);
+}
+
+function propLineOdds(candidate, side) {
+  if (side === "over") return numeric(candidate.overOdds ?? candidate.overPrice ?? (candidate.side === "over" ? candidate.odds : null));
+  return numeric(candidate.underOdds ?? candidate.underPrice ?? (candidate.side === "under" ? candidate.odds : null));
+}
+
+function propGameContext(candidate, game) {
+  const team = candidate.team || candidate.playerTeam || candidate.teamName || "";
+  const homeTeam = sideName(game, "home");
+  const awayTeam = sideName(game, "away");
+  const opponent = candidate.opponent || (team && team === homeTeam ? awayTeam : team && team === awayTeam ? homeTeam : "");
+  const teamSide = team && team === homeTeam ? "home" : team && team === awayTeam ? "away" : null;
+  const spread = teamSide ? spreadForSide(game, teamSide) : null;
+  return { team, opponent, teamSide, spread };
+}
+
+function priorStatsFor(context = {}) {
+  return context.previousSeasonStats || context.priorSeasonStats || context.priorStats || context.previousSeason || context.stats || context;
+}
+
+function projectionForProp(candidate, game, context, spec) {
+  const stats = priorStatsFor(context);
+  const direct = firstNumeric(candidate, ["projection", "projectedValue"]);
+  if (direct !== null) return { value: direct, sourceType: "VERIFIED", sourceSeason: null, assumptions: [] };
+  const contextProjection = firstNumeric(context, ["projection", "projectedValue"]);
+  if (contextProjection !== null) return { value: contextProjection, sourceType: "PRIOR", sourceSeason: context.sourceSeason || null, assumptions: [] };
+  if (spec.kind === "anytimeTouchdown") {
+    const probability = firstNumeric(stats, ["anytimeTdProbability", "touchdownProbability", "tdProbability", "redZoneScoreProbability"]);
+    if (probability !== null) return { value: clamp(probability, 0, 1), sourceType: "PRIOR", sourceSeason: context.sourceSeason || null, assumptions: ["Used prior touchdown probability."] };
+    return { value: 0.5, sourceType: "NEUTRAL_FALLBACK", sourceSeason: null, assumptions: ["No prior touchdown probability was supplied; binary projection is neutral."] };
+  }
+
+  const attempts = firstNumeric(stats, ["passAttemptsPerGame", "passingAttemptsPerGame", "attemptsPerGame", "projectedPassAttempts"]);
+  const ypa = firstNumeric(stats, ["yardsPerAttempt", "passingYardsPerAttempt", "ypa"]);
+  const passYards = firstNumeric(stats, ["passingYardsPerGame", "passYardsPerGame", "passYards"]);
+  const passTds = firstNumeric(stats, ["passingTouchdownsPerGame", "passTouchdownsPerGame", "passTdsPerGame"]);
+  const carries = firstNumeric(stats, ["rushAttemptsPerGame", "rushingAttemptsPerGame", "carriesPerGame", "projectedRushAttempts"]);
+  const ypc = firstNumeric(stats, ["yardsPerCarry", "rushingYardsPerCarry", "ypc"]);
+  const rushYards = firstNumeric(stats, ["rushingYardsPerGame", "rushYardsPerGame", "rushYards"]);
+  const targets = firstNumeric(stats, ["targetsPerGame", "targetPerGame", "projectedTargets"]);
+  const ypt = firstNumeric(stats, ["yardsPerTarget", "receivingYardsPerTarget", "ypt"]);
+  const receptions = firstNumeric(stats, ["receptionsPerGame", "catchesPerGame", "receptions"]);
+  const catchRate = firstNumeric(stats, ["catchRate", "receptionRate"]);
+  let value = null;
+  switch (spec.kind) {
+    case "passingYards": value = passYards ?? (attempts !== null && ypa !== null ? attempts * ypa : null); break;
+    case "passAttempts": value = attempts; break;
+    case "passingTouchdowns": value = passTds ?? (attempts !== null && firstNumeric(stats, ["passingTdRate", "passTdRate"]) !== null ? attempts * firstNumeric(stats, ["passingTdRate", "passTdRate"]) : null); break;
+    case "rushingYards": value = rushYards ?? (carries !== null && ypc !== null ? carries * ypc : null); break;
+    case "rushAttempts": value = carries; break;
+    case "receivingYards": value = firstNumeric(stats, ["receivingYardsPerGame", "receivingYards", "recYardsPerGame"]) ?? (targets !== null && ypt !== null ? targets * ypt : null); break;
+    case "receptions": value = receptions ?? (targets !== null && catchRate !== null ? targets * catchRate : null); break;
+    default: value = null;
+  }
+  if (value !== null) {
+    return {
+      value,
+      sourceType: context.sourceType || "PRIOR",
+      sourceSeason: context.sourceSeason || null,
+      assumptions: ["Projection uses supplied player prior/depth-chart context."]
+    };
+  }
+
+  const line = numeric(candidate.line);
+  return {
+    value: line,
+    sourceType: "NEUTRAL_FALLBACK",
+    sourceSeason: null,
+    assumptions: ["Player prior and depth-chart detail were unavailable; projection is centered on the posted line."]
+  };
+}
+
+function roleScores(candidate, context, spec) {
+  const supplied = firstNumeric(context, ["roleVolume", "opportunityScore"]);
+  if (supplied !== null) return { roleVolume: clamp(supplied), roleConfidence: clamp(firstNumeric(context, ["roleConfidence", "roleSecurity"]) ?? supplied) };
+  const role = String(context.position || context.role || "").toLowerCase();
+  const starterAdjustment = context.starter === false || context.isStarter === false ? -18 : context.starter || context.isStarter ? 5 : 0;
+  const defaults = {
+    passingYards: 88,
+    passAttempts: 92,
+    passingTouchdowns: 82,
+    rushingYards: 76,
+    rushAttempts: 82,
+    receivingYards: 70,
+    receptions: 74,
+    anytimeTouchdown: 62,
+    generic: 55
+  };
+  let score = defaults[spec.kind] ?? defaults.generic;
+  if (role.includes("quarterback") || role === "qb") score += spec.kind.startsWith("pass") ? 5 : 0;
+  if (role.includes("workhorse") || role.includes("wr1") || role.includes("rb1")) score += 5;
+  score += starterAdjustment;
+  return { roleVolume: clamp(score), roleConfidence: clamp(score - (role ? 0 : 12)) };
+}
+
+function gameScriptScore(game, spec, gameContext, context = {}) {
+  const supplied = firstNumeric(context, ["gameScript", "scriptScore"]);
+  if (supplied !== null) return clamp(supplied);
+  if (gameContext.spread === null) return 50;
+  const favorite = gameContext.spread < 0;
+  if (spec.kind === "rushAttempts" || spec.kind === "rushingYards") return favorite ? 58 : 44;
+  if (spec.kind === "passAttempts" || spec.kind === "passingYards") return favorite ? 46 : 57;
+  return 50;
+}
+
+function propDataConfidence(projection, context, candidate) {
+  const sourceType = String(projection.sourceType || context.sourceType || "LIMITED_DATA").toUpperCase();
+  const score = sourceType === "VERIFIED" ? 78 : sourceType === "PRIOR" ? 66 : sourceType === "MARKET_DERIVED" ? 55 : 42;
+  return {
+    score,
+    level: score >= 75 ? "HIGH" : score >= 50 ? "MODERATE" : "LOW",
+    sourceType,
+    sourceSeason: projection.sourceSeason || context.sourceSeason || null,
+    playerContext: Boolean(Object.keys(context).length),
+    marketContext: Boolean(candidate.overOdds ?? candidate.underOdds ?? candidate.odds)
+  };
+}
+
+function propHitProbability(projection, line, side, standardDeviation, odds, opposingOdds, spec) {
+  if (spec.kind === "anytimeTouchdown") {
+    const marketProbability = noVigProbability(odds, opposingOdds) ?? americanOddsToProbability(odds);
+    return marketProbability === null ? clamp(side === "over" ? projection : 1 - projection, 0.5, 0.82) : clamp(marketProbability, 0.5, 0.82);
+  }
+  if (line === null || projection === null || standardDeviation === null || standardDeviation <= 0) return null;
+  const modeled = normalCdf((side === "over" ? projection - line : line - projection) / standardDeviation);
+  const marketProbability = noVigProbability(odds, opposingOdds) ?? americanOddsToProbability(odds);
+  const combined = marketProbability === null ? modeled : modeled * 0.7 + marketProbability * 0.3;
+  return clamp(combined, 0.5, 0.82);
+}
+
+function propProjectionEdge(projection, line, side, standardDeviation) {
+  if (line === null || projection === null || !standardDeviation) return 50;
+  const raw = side === "over" ? projection - line : line - projection;
+  return clamp(50 + (raw / standardDeviation) * 15);
+}
+
+function propMarketValue(hitProbability, odds) {
+  const implied = americanOddsToProbability(odds);
+  return implied === null || hitProbability === null ? 50 : clamp(50 + (hitProbability - implied) * 200);
+}
+
+function enrichNflPropCandidates(games = [], candidates = [], options = {}) {
+  const gameById = new Map(games.map((game) => [String(game.id), game]));
+  const week = Math.max(1, Math.floor(Number(options.week) || 1));
+  const priorSeason = options.priorSeason || (new Date().getUTCFullYear() - 1);
+  const enriched = [];
+  candidates.forEach((candidate) => {
+    if (candidate.projection !== undefined && candidate.hitProbability !== undefined && candidate.side) {
+      enriched.push(candidate);
+      return;
+    }
+    const game = gameById.get(String(candidate.gameId)) || {};
+    const context = playerContextFor(candidate, options);
+    const spec = propMarketSpec(candidate);
+    const gameContext = propGameContext({ ...candidate, ...context }, game);
+    const projection = projectionForProp(candidate, game, context, spec);
+    const line = numeric(candidate.line);
+    const sides = ["over", "under"].filter((side) => propLineOdds(candidate, side) !== null);
+    if (!sides.length && candidate.side && numeric(candidate.odds) !== null) sides.push(String(candidate.side).toLowerCase());
+    sides.forEach((side) => {
+      const odds = propLineOdds(candidate, side) ?? numeric(candidate.odds);
+      const opposingOdds = propLineOdds(candidate, side === "over" ? "under" : "over");
+      const probability = propHitProbability(projection.value, line, side, spec.standardDeviation, odds, opposingOdds, spec);
+      if (probability === null) return;
+      const roles = roleScores(candidate, context, spec);
+      const injuryStatus = String(candidate.injuryStatus || context.injuryStatus || "").toLowerCase();
+      const injuryConfidence = clamp(firstNumeric(context, ["injuryConfidence", "healthScore"]) ?? (injuryStatus === "inactive" ? 0 : injuryStatus === "questionable" ? 45 : injuryStatus === "limited" ? 55 : 75));
+      const team = gameContext.team;
+      const opponent = gameContext.opponent;
+      const sourceType = projection.sourceType === "PRIOR" && week <= 1 ? "PRIOR" : projection.sourceType;
+      enriched.push({
+        ...candidate,
+        id: `${candidate.id || `${candidate.gameId}-${candidate.player}-${candidate.market}-${line}`}-${side}`.replace(/[^a-z0-9-]/gi, "-"),
+        team,
+        opponent,
+        marketKey: candidate.marketKey || spec.marketKey || candidate.market,
+        side,
+        line,
+        odds,
+        projection: projection.value,
+        hitProbability: probability,
+        projectionEdge: propProjectionEdge(projection.value, line, side, spec.standardDeviation),
+        roleVolume: roles.roleVolume,
+        matchup: clamp(firstNumeric(context, ["matchup", "matchupScore"]) ?? 50),
+        gameScript: gameScriptScore(game, spec, gameContext, context),
+        marketValue: propMarketValue(probability, odds),
+        injuryConfidence,
+        roleConfidence: roles.roleConfidence,
+        dataConfidence: propDataConfidence(projection, context, candidate),
+        variance: candidate.variance || spec.variance || classifyPropVariance(candidate.market),
+        injuryStatus: injuryStatus || candidate.injuryStatus,
+        sourceMetadata: {
+          ...(candidate.sourceMetadata || {}),
+          sourceType,
+          sourceSeason: sourceType === "PRIOR" ? (projection.sourceSeason || priorSeason) : null,
+          fields: {
+            projection: sourceType,
+            hitProbability: opposingOdds === null ? "MARKET_DERIVED" : "MARKET_DERIVED_AND_MODELED",
+            roleVolume: context.roleVolume !== undefined ? "PRIOR" : "LIMITED_DATA",
+            matchup: context.matchup !== undefined ? "PRIOR" : "NEUTRAL_FALLBACK",
+            gameScript: gameContext.spread === null ? "NEUTRAL_FALLBACK" : "MARKET_DERIVED",
+            marketValue: "MARKET_DERIVED",
+            injuryConfidence: context.injuryConfidence !== undefined ? "VERIFIED" : "LIMITED_DATA"
+          },
+          assumptions: projection.assumptions
+        }
+      });
+    });
+  });
+  return enriched;
+}
+
 function calculatePropQualityScore(prop = {}) {
   const varianceScore = prop.varianceScore ?? (classifyPropVariance(prop.market) === "low" ? 90 : classifyPropVariance(prop.market) === "medium" ? 72 : 45);
   const values = {
@@ -493,7 +768,7 @@ function correlationType(first, second) {
 }
 
 function buildNflPropBoard(candidates = [], options = {}) {
-  return candidates
+  const mapped = candidates
     .map((candidate) => {
       const score = calculatePropQualityScore(candidate);
       const critic = killCriticProp(candidate);
@@ -509,35 +784,76 @@ function buildNflPropBoard(candidates = [], options = {}) {
       return result;
     })
     .sort((a, b) => (b.hitProbability || 0) - (a.hitProbability || 0) || (b.qualityScore || 0) - (a.qualityScore || 0));
+  const strongestSide = new Map();
+  mapped.forEach((candidate) => {
+    const key = [candidate.gameId, normalizePlayerName(candidate.player), candidate.marketKey || candidate.market, candidate.line ?? ""].join("|");
+    const current = strongestSide.get(key);
+    if (!current || (candidate.hitProbability || 0) > (current.hitProbability || 0) || ((candidate.hitProbability || 0) === (current.hitProbability || 0) && (candidate.qualityScore || 0) > (current.qualityScore || 0))) strongestSide.set(key, candidate);
+  });
+  return Array.from(strongestSide.values())
+    .sort((a, b) => (b.hitProbability || 0) - (a.hitProbability || 0) || (b.qualityScore || 0) - (a.qualityScore || 0));
 }
 
 function chooseDiversified(candidates, count) {
   const selected = [];
   const usedGames = new Set();
+  const playerCounts = new Map();
   for (const candidate of candidates) {
     if (selected.length >= count) break;
-    if (!usedGames.has(candidate.gameId)) {
+    const player = normalizePlayerName(candidate.player);
+    if (!usedGames.has(candidate.gameId) && (playerCounts.get(player) || 0) < 2) {
       selected.push(candidate);
       usedGames.add(candidate.gameId);
+      playerCounts.set(player, (playerCounts.get(player) || 0) + 1);
     }
   }
   candidates.forEach((candidate) => {
-    if (selected.length < count && !selected.some((item) => item.id === candidate.id)) selected.push(candidate);
+    const player = normalizePlayerName(candidate.player);
+    if (selected.length < count && !selected.some((item) => item.id === candidate.id) && (playerCounts.get(player) || 0) < 2) {
+      selected.push(candidate);
+      playerCounts.set(player, (playerCounts.get(player) || 0) + 1);
+    }
   });
   return selected;
 }
 
+function propBoardSummary(legs) {
+  const probabilities = legs.map((leg) => Number(leg.hitProbability)).filter(Number.isFinite);
+  const average = probabilities.length ? probabilities.reduce((sum, value) => sum + value, 0) / probabilities.length : null;
+  return {
+    averageLegProbability: average,
+    lowestLegProbability: probabilities.length ? Math.min(...probabilities) : null,
+    highestLegProbability: probabilities.length ? Math.max(...probabilities) : null,
+    estimatedCombinedProbability: probabilities.length ? probabilities.reduce((product, value) => product * value, 1) : null,
+    strength: average === null ? "WEAK" : average >= 0.65 ? "STRONG" : average >= 0.58 ? "AVERAGE" : "WEAK"
+  };
+}
+
 function buildNflSafe6(candidates = []) {
-  const qualified = candidates.filter((candidate) => candidate.qualified && ["low", "medium"].includes(candidate.variance) && (candidate.hitProbability || 0) >= 0.68);
-  const legs = chooseDiversified(qualified, 6);
-  return { legs, qualified, complete: legs.length === 6, reason: legs.length === 6 ? "Six low-to-medium variance legs cleared the Safe 6 threshold." : "Fewer than six low-to-medium variance legs cleared the 68% threshold; no legs were forced." };
+  const lowerVariance = candidates.filter((candidate) => !candidate.killCritic?.hardVeto && ["low", "medium"].includes(candidate.variance));
+  const strong = lowerVariance.filter((candidate) => (candidate.hitProbability || 0) >= 0.62);
+  const fallback = lowerVariance.filter((candidate) => !strong.includes(candidate));
+  const usable = lowerVariance.length >= 6 ? [...strong, ...fallback] : strong;
+  const expanded = usable.length >= 6 ? usable : [...usable, ...candidates.filter((candidate) => !candidate.killCritic?.hardVeto && candidate.variance === "high")];
+  const legs = chooseDiversified(expanded, 6);
+  const summary = propBoardSummary(legs);
+  return {
+    legs,
+    qualified: strong,
+    complete: legs.length === 6,
+    ...summary,
+    reason: legs.length === 6
+      ? (strong.length >= 6 ? "Six lower-variance legs cleared the preferred 62% Safe 6 threshold." : "Safe 6 is complete with the strongest available lower-variance legs; fallback legs are labeled by their individual probability.")
+      : "Fewer than six usable modeled prop markets were returned for Safe 6."
+  };
 }
 
 function buildNflHeat6(candidates = []) {
-  const qualified = candidates.filter((candidate) => candidate.qualified && (candidate.hitProbability || 0) >= 0.60);
-  const legs = chooseDiversified(qualified, 6);
+  const qualified = candidates.filter((candidate) => !candidate.killCritic?.hardVeto && (candidate.hitProbability || 0) >= 0.56);
+  const usable = candidates.filter((candidate) => !candidate.killCritic?.hardVeto && candidate.projection !== null && candidate.projection !== undefined);
+  const legs = chooseDiversified([...qualified, ...usable.filter((candidate) => !qualified.includes(candidate))], 6);
   const correlated = legs.some((leg, index) => legs.slice(index + 1).some((other) => correlationType(leg, other) === "positive"));
-  return { legs, qualified, complete: legs.length === 6, correlated, reason: legs.length === 6 ? "Six edge-focused legs cleared the Heat 6 threshold." : "Fewer than six props cleared the 60% threshold; no legs were forced." };
+  return { legs, qualified, complete: legs.length === 6, correlated, ...propBoardSummary(legs), reason: legs.length === 6 ? (qualified.length >= 6 ? "Six edge-focused legs cleared the preferred 56% Heat 6 threshold." : "Heat 6 is complete with the strongest available modeled legs; lower-confidence fallbacks remain visible.") : "Fewer than six modeled prop markets were returned for Heat 6." };
 }
 
 function calculateRollover({ startingBankroll = 0, earlyWager = 0, earlyReturn = 0, mode = "standard" } = {}) {
@@ -555,16 +871,29 @@ function calculateRollover({ startingBankroll = 0, earlyWager = 0, earlyReturn =
   };
 }
 
-function buildNflBoard({ games = [], candidates = [], mode = "standalone", week = 1, rollover } = {}) {
+function buildNflBoard({ games = [], candidates = [], rawCandidates = null, mode = "standalone", week = 1, rollover } = {}) {
   const winnerBoard = buildNflWinnerBoard(games, { mode, week });
-  const props = buildNflPropBoard(candidates, { minimumProbability: 0.60 });
+  const rawProps = rawCandidates || candidates;
+  const enrichedCandidates = enrichNflPropCandidates(games, candidates, { week });
+  const props = buildNflPropBoard(enrichedCandidates, { minimumProbability: 0.60 });
+  const propModelStatus = {
+    rawPropMarkets: rawProps.length,
+    playersResolved: enrichedCandidates.filter((candidate) => Boolean(candidate.player)).length,
+    propsProjected: enrichedCandidates.filter((candidate) => candidate.projection !== null && candidate.projection !== undefined).length,
+    propsWithHitProbability: enrichedCandidates.filter((candidate) => candidate.hitProbability !== null && candidate.hitProbability !== undefined).length,
+    safeEligibleProps: buildNflSafe6(props).qualified.length,
+    heatEligibleProps: buildNflHeat6(props).qualified.length,
+    modeledCandidates: enrichedCandidates.length
+  };
   return {
     mode: normalizeNflMode(mode),
     week,
     preseasonPriorMode: week <= 1,
     games: nflWindowFilter(games, mode),
     winners: winnerBoard,
+    rawProps,
     props,
+    propModelStatus,
     safe6: buildNflSafe6(props),
     heat6: buildNflHeat6(props),
     rollover: rollover ? calculateRollover(rollover) : null,
@@ -602,6 +931,7 @@ module.exports = {
   gradeScore,
   calculatePropQualityScore,
   classifyPropVariance,
+  enrichNflPropCandidates,
   correlationType,
   killCriticWinner,
   killCriticProp,
