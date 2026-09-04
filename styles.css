@@ -2990,6 +2990,11 @@ select:focus {
 .nfl-data-game-heading { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
 .nfl-data-game-heading span, .nfl-data-grid { color: #66758d; font-size: 13px; }
 .nfl-data-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.nfl-sunday-sessions { display: grid; grid-template-columns: 1fr; gap: 18px; margin-top: 18px; }
+.nfl-sunday-session h3 { margin: 18px 0 10px; color: #173f76; }
+.nfl-session-subheading { border-top: 1px solid #d9e3f0; margin-top: 20px; }
+.nfl-session-results, .nfl-first-out { display: grid; gap: 5px; margin-top: 16px; padding: 14px; border: 1px solid #c9d8ed; border-radius: 8px; background: #f2f6fb; color: #173f76; }
+.nfl-session-results span, .nfl-first-out span, .nfl-first-out small { color: #66758d; }
 
 @media (max-width: 850px) {
   .nfl-controls, .nfl-summary-grid, .nfl-board-grid, .nfl-rollover-grid { grid-template-columns: 1fr; }

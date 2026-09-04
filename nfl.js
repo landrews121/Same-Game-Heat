@@ -2,6 +2,7 @@
 
 const modeLabels = {
   standalone: "Standalone game",
+  sunday: "Sunday sessions · Early + Late",
   sunday_early: "Sunday early window",
   sunday_late: "Sunday late window",
   rollover: "Sunday rollover"
@@ -35,13 +36,21 @@ function setStatus(message, kind = "") {
   status.className = `status ${kind}`.trim();
 }
 
-function renderWinners(board) {
+function renderWinners(board, targetId = "nflWinners", heading = "") {
   const winners = board.winners?.picks || [];
+  const target = $(targetId);
   if (!winners.length) {
-    $("nflWinners").innerHTML = '<p class="nfl-empty">No official game winner is available because the schedule or market data is incomplete.</p>';
+    target.innerHTML = `${heading ? `<h3>${escapeHtml(heading)}</h3>` : ""}<p class="nfl-empty">No official game winner is available because the schedule or market data is incomplete.</p>`;
     return;
   }
-  $("nflWinners").innerHTML = winners.map((pick, index) => `
+  const summary = board.averageWinProbability !== null && board.averageWinProbability !== undefined
+    ? `<p class="nfl-empty">Card grade ${escapeHtml(board.cardGrade || "AVERAGE")} · Average win ${percent(board.averageWinProbability)} · Lowest ${percent(board.lowestWinProbability)} · Combined estimate ${percent(board.approximateCombinedModelProbability)} · Parlay odds ${board.parlayOdds ?? "—"}</p>`
+    : "";
+  const firstOutLabel = heading ? `${heading.replace(/\s*3 WINNER CARD$/, "")} FIRST TEAM OUT` : "FIRST TEAM OUT";
+  const firstOut = board.firstTeamOut
+    ? `<div class="nfl-first-out"><strong>${escapeHtml(firstOutLabel)}</strong><span>${escapeHtml(board.firstTeamOut.team)} · Win ${percent(board.firstTeamOut.modelWinProbability)} · Score ${board.firstTeamOut.betQualityScore ?? "—"} · ${escapeHtml(board.firstTeamOut.grade)}</span><small>${escapeHtml(board.firstTeamOut.whyItMissed)}</small></div>`
+    : "";
+  target.innerHTML = `${heading ? `<h3>${escapeHtml(heading)}</h3>` : ""}${summary}${winners.map((pick, index) => `
     <article class="nfl-pick-card">
       <div class="nfl-rank">${index + 1}</div>
       <div class="nfl-pick-main">
@@ -53,7 +62,7 @@ function renderWinners(board) {
       </div>
       <div class="nfl-pick-score">${pick.betQualityScore ?? "—"}<small>${escapeHtml(pick.grade)}</small></div>
       <p class="nfl-risk">${escapeHtml((pick.killCritic?.reasons || pick.riskFlags || ["No major risk flag returned."])[0])}</p>
-    </article>`).join("");
+    </article>`).join("")}${firstOut}`;
 }
 
 function sourceLabel(source) {
@@ -105,13 +114,25 @@ function renderProps(board) {
 
 function renderCard(targetId, state, emptyMessage) {
   const legs = state?.legs || [];
-  const label = targetId === "nflSafe6" ? "SAFE 6" : "HEAT 6";
+  const label = targetId.toLowerCase().includes("safe") ? "SAFE 6" : "HEAT 6";
   const summary = legs.length && state?.averageLegProbability !== null && state?.averageLegProbability !== undefined
     ? `<p class="nfl-empty">${label} · ${escapeHtml(state.strength || "RANKED")} · Average ${percent(state.averageLegProbability)} · Lowest ${percent(state.lowestLegProbability)} · Highest ${percent(state.highestLegProbability)} · Combined estimate ${percent(state.estimatedCombinedProbability)}</p>`
     : "";
   $(targetId).innerHTML = legs.length
     ? summary + legs.map((leg) => `<div class="nfl-market-row"><strong>${escapeHtml(leg.player)}</strong><span>${escapeHtml(String(leg.side || "").toUpperCase())} ${escapeHtml(leg.market)} ${leg.line ?? "—"} · ${leg.odds ?? "—"}</span><span>Projection ${Number.isFinite(Number(leg.projection)) ? Number(leg.projection).toFixed(1) : "—"} · Hit ${percent(leg.hitProbability)} · ${escapeHtml(leg.grade)} · ${escapeHtml(leg.dataConfidence?.level || "LOW")}</span></div>`).join("")
     : `<p class="nfl-empty">${escapeHtml(state?.reason || emptyMessage)}</p>`;
+}
+
+function renderSundaySession(session) {
+  const winnerTarget = session.window === "sunday_early" ? "nflEarlyWinners" : "nflLateWinners";
+  const safeTarget = session.window === "sunday_early" ? "nflEarlySafe6" : "nflLateSafe6";
+  const heatTarget = session.window === "sunday_early" ? "nflEarlyHeat6" : "nflLateHeat6";
+  const heading = session.window === "sunday_early" ? "EARLY 3 WINNER CARD" : "LATE 3 WINNER CARD";
+  renderWinners(session.winners, winnerTarget, heading);
+  renderCard(safeTarget, session.safe6, `No ${session.window === "sunday_early" ? "early" : "late"} Safe 6 generated. Fewer than six usable modeled markets were returned.`);
+  renderCard(heatTarget, session.heat6, `No ${session.window === "sunday_early" ? "early" : "late"} Heat 6 generated. Fewer than six usable modeled markets were returned.`);
+  const stageTarget = session.window === "sunday_early" ? "nflEarlyStage" : "nflLateStage";
+  $(stageTarget).textContent = session.stage || "FINAL";
 }
 
 function renderRollover() {
@@ -129,14 +150,24 @@ function renderRollover() {
 
 function renderBoard(board) {
   const games = board.games || [];
+  const sunday = board.mode === "sunday" && board.sundaySessions;
   $("nflModeLabel").textContent = modeLabels[board.mode] || board.mode;
   $("nflSource").textContent = `${board.source || "NFL market feed"} · Week ${board.week || 1}`;
   $("nflPriorNotice").hidden = !board.preseasonPriorMode;
   $("nflGameCount").textContent = games.length;
-  $("nflQualifiedCount").textContent = board.winners?.picks?.length || 0;
+  const sundayWinnerCount = sunday ? board.sundaySessions.early.winners.picks.length + board.sundaySessions.late.winners.picks.length : 0;
+  $("nflQualifiedCount").textContent = sunday ? sundayWinnerCount : board.winners?.picks?.length || 0;
+  $("nflSundaySessions").hidden = !sunday;
+  $("nflStandardBoards").hidden = Boolean(sunday);
+  $("nflStandardPropCards").hidden = Boolean(sunday);
   $("nflSafeState").textContent = board.safe6?.complete ? `6 legs · ${board.safe6.strength || "RANKED"}` : "Not complete";
   $("nflHeatState").textContent = board.heat6?.complete ? `6 legs · ${board.heat6.strength || "RANKED"}` : "Not complete";
-  renderWinners(board);
+  if (sunday) {
+    renderSundaySession(board.sundaySessions.early);
+    renderSundaySession(board.sundaySessions.late);
+  } else {
+    renderWinners(board);
+  }
   renderProps(board);
   renderCard("nflSafe6", board.safe6, "No Safe 6 generated. Fewer than six usable lower-variance modeled markets were returned.");
   renderCard("nflHeat6", board.heat6, "No Heat 6 generated. Fewer than six usable modeled markets were returned.");

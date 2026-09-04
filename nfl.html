@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Same Game Heat · NFL</title>
     <meta name="description" content="Same Game Heat NFL winner, player prop, and rollover research board." />
-    <link rel="stylesheet" href="styles.css?v=nfl-v3" />
+    <link rel="stylesheet" href="styles.css?v=nfl-v4" />
   </head>
   <body>
     <main class="nfl-shell">
@@ -27,6 +27,7 @@
           Board mode
           <select id="nflMode">
             <option value="standalone">Standalone game</option>
+            <option value="sunday" selected>Sunday sessions · Early + Late</option>
             <option value="sunday_early">Sunday early window</option>
             <option value="sunday_late">Sunday late window</option>
             <option value="rollover">Sunday rollover</option>
@@ -60,7 +61,40 @@
         </article>
       </section>
 
-      <section class="nfl-board-grid">
+      <section id="nflSundaySessions" class="nfl-sunday-sessions" hidden>
+        <article class="panel nfl-board-section nfl-sunday-session">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Sunday early</p>
+              <h2>EARLY 3 WINNER CARD</h2>
+            </div>
+            <span id="nflEarlyStage" class="pill">FINAL</span>
+          </div>
+          <div id="nflEarlyWinners" class="nfl-stack"></div>
+          <div class="nfl-session-subheading"><h3>EARLY SAFE 6</h3></div>
+          <div id="nflEarlySafe6" class="nfl-stack"></div>
+          <div class="nfl-session-subheading"><h3>EARLY HEAT 6</h3></div>
+          <div id="nflEarlyHeat6" class="nfl-stack"></div>
+          <div class="nfl-session-results"><strong>EARLY RESULTS</strong><span>Stake, return, profit/loss, and rollover are tracked separately from the late session.</span></div>
+        </article>
+        <article class="panel nfl-board-section nfl-sunday-session">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Sunday late</p>
+              <h2>LATE 3 WINNER CARD</h2>
+            </div>
+            <span id="nflLateStage" class="pill">PREVIEW</span>
+          </div>
+          <div id="nflLateWinners" class="nfl-stack"></div>
+          <div class="nfl-session-subheading"><h3>LATE SAFE 6</h3></div>
+          <div id="nflLateSafe6" class="nfl-stack"></div>
+          <div class="nfl-session-subheading"><h3>LATE HEAT 6</h3></div>
+          <div id="nflLateHeat6" class="nfl-stack"></div>
+          <div class="nfl-session-results"><strong>FINAL LATE 3</strong><span>Refresh 45–60 minutes before late-window kickoffs for the final read.</span></div>
+        </article>
+      </section>
+
+      <section id="nflStandardBoards" class="nfl-board-grid">
         <article class="panel nfl-board-section">
           <div class="section-heading">
             <div>
@@ -89,7 +123,7 @@
         <div id="nflDataStatus" class="nfl-data-status-list"></div>
       </details>
 
-      <section class="nfl-board-grid">
+      <section id="nflStandardPropCards" class="nfl-board-grid">
         <article class="panel nfl-board-section">
           <div class="section-heading">
             <div>
@@ -134,6 +168,6 @@
         <div id="nflNotes" class="nfl-note-list"></div>
       </section>
     </main>
-    <script src="nfl.js?v=nfl-v3"></script>
+    <script src="nfl.js?v=nfl-v4"></script>
   </body>
 </html>

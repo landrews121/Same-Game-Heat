@@ -11,6 +11,7 @@ const {
   classifyPropVariance,
   correlationType,
   buildNflWinnerBoard,
+  buildNflSundaySessions,
   buildNflPropBoard,
   buildNflSafe6,
   buildNflHeat6,
@@ -141,6 +142,67 @@ test("Sunday late mode returns every available unique game up to the daily limit
   const board = buildNflWinnerBoard(games, { mode: "sunday_late", week: 1 });
   assert.equal(board.picks.length, 2);
   assert.deepEqual(board.picks.map((pick) => pick.gameId).sort(), ["late-game-0", "late-game-1"]);
+});
+
+test("Sunday sessions build independent early and late cards with first team out", () => {
+  const games = [
+    ...Array.from({ length: 4 }, (_, index) => ({
+      id: `early-${index}`,
+      window: "sunday_early",
+      commenceTime: `2026-09-13T${17 + Math.floor(index / 2)}:${index % 2 ? "30" : "00"}:00Z`,
+      homeTeam: `Early Home ${index}`,
+      awayTeam: `Early Away ${index}`,
+      home: { name: `Early Home ${index}`, moneyline: -120 - index },
+      away: { name: `Early Away ${index}`, moneyline: 100 + index }
+    })),
+    ...Array.from({ length: 4 }, (_, index) => ({
+      id: `late-${index}`,
+      window: "sunday_late",
+      commenceTime: `2026-09-13T${20 + Math.floor(index / 2)}:${index % 2 ? "30" : "00"}:00Z`,
+      homeTeam: `Late Home ${index}`,
+      awayTeam: `Late Away ${index}`,
+      home: { name: `Late Home ${index}`, moneyline: -115 - index },
+      away: { name: `Late Away ${index}`, moneyline: 105 + index }
+    }))
+  ];
+  const sessions = buildNflSundaySessions(games, [], { week: 1, lateStage: "PREVIEW" });
+  assert.equal(sessions.early.winners.picks.length, 3);
+  assert.equal(sessions.late.winners.picks.length, 3);
+  assert.equal(new Set(sessions.early.winners.picks.map((pick) => pick.gameId)).size, 3);
+  assert.equal(new Set(sessions.late.winners.picks.map((pick) => pick.gameId)).size, 3);
+  assert.ok(sessions.early.winners.picks.every((pick) => pick.gameId.startsWith("early-")));
+  assert.ok(sessions.late.winners.picks.every((pick) => pick.gameId.startsWith("late-")));
+  assert.equal(sessions.early.winners.firstTeamOut.gameId.startsWith("early-"), true);
+  assert.equal(sessions.late.winners.firstTeamOut.gameId.startsWith("late-"), true);
+  assert.equal(sessions.late.stage, "PREVIEW");
+});
+
+test("Sunday winner cards return available teams without duplicating a game", () => {
+  const board = buildNflWinnerBoard([
+    {
+      id: "only-early-1",
+      window: "sunday_early",
+      commenceTime: "2026-09-13T17:00:00Z",
+      homeTeam: "Only Home 1",
+      awayTeam: "Only Away 1",
+      home: { name: "Only Home 1", moneyline: -130 },
+      away: { name: "Only Away 1", moneyline: 110 }
+    },
+    {
+      id: "only-early-2",
+      window: "sunday_early",
+      commenceTime: "2026-09-13T18:00:00Z",
+      homeTeam: "Only Home 2",
+      awayTeam: "Only Away 2",
+      home: { name: "Only Home 2", moneyline: -125 },
+      away: { name: "Only Away 2", moneyline: 105 }
+    }
+  ], { mode: "sunday_early", week: 1 });
+  assert.equal(board.picks.length, 2);
+  assert.equal(board.complete, true);
+  assert.equal(board.firstTeamOut, null);
+  assert.equal(board.cardGrade, "WEAK");
+  assert.ok(Number.isFinite(board.approximateCombinedModelProbability));
 });
 
 test("spread-only markets produce a conservative market-derived baseline", () => {
@@ -295,6 +357,6 @@ test("public ESPN fallback preserves moneylines when exposed by the payload", ()
 
 test("NFL page uses the current asset cache version", () => {
   const html = fs.readFileSync(require.resolve("../nfl.html"), "utf8");
-  assert.match(html, /styles\.css\?v=nfl-v3/);
-  assert.match(html, /nfl\.js\?v=nfl-v3/);
+  assert.match(html, /styles\.css\?v=nfl-v4/);
+  assert.match(html, /nfl\.js\?v=nfl-v4/);
 });

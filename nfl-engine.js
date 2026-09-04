@@ -14,7 +14,7 @@ const NFL_MARKETS = [
   "player_anytime_td"
 ];
 
-const NFL_BOARD_MODES = ["standalone", "sunday_early", "sunday_late", "rollover"];
+const NFL_BOARD_MODES = ["standalone", "sunday", "sunday_early", "sunday_late", "rollover"];
 
 const NFL_OPTIONAL_METRICS = [
   "previousSeasonEfficiency",
@@ -118,6 +118,13 @@ function getSeasonWeighting(week) {
 function nflWindowFilter(games, mode) {
   const selectedMode = normalizeNflMode(mode);
   if (selectedMode === "standalone" || selectedMode === "rollover") return [...games];
+  if (selectedMode === "sunday") {
+    return games.filter((game) => {
+      if (game.window === "sunday_early" || game.window === "sunday_late") return true;
+      const kickoff = Date.parse(game.commenceTime || game.commence_time || "");
+      return Number.isFinite(kickoff) && new Date(kickoff).getUTCDay() === 0;
+    });
+  }
   return games.filter((game) => {
     if (game.window === selectedMode) return true;
     const kickoff = Date.parse(game.commenceTime || game.commence_time || "");
@@ -355,6 +362,55 @@ function killCriticWinner(pick, opponent = {}) {
   };
 }
 
+function americanOddsToDecimal(odds) {
+  const value = numeric(odds);
+  if (value === null || value === 0) return null;
+  return value < 0 ? 1 + 100 / Math.abs(value) : 1 + value / 100;
+}
+
+function combinedParlayOdds(picks = []) {
+  if (!picks.length || picks.some((pick) => americanOddsToDecimal(pick.moneyline) === null)) return null;
+  const decimal = picks.reduce((product, pick) => product * americanOddsToDecimal(pick.moneyline), 1);
+  if (!Number.isFinite(decimal) || decimal <= 1) return null;
+  return decimal >= 2 ? Math.round((decimal - 1) * 100) : Math.round(-100 / (decimal - 1));
+}
+
+function winnerCardSummary(picks = []) {
+  const probabilities = picks.map((pick) => Number(pick.modelWinProbability)).filter(Number.isFinite);
+  const grades = picks.map((pick) => pick.grade).filter(Boolean);
+  const gradePoints = { "A+": 7, A: 6, "B+": 5, B: 4, "B-": 3, "C+": 2, C: 1 };
+  const qualityScores = picks.map((pick) => Number(pick.betQualityScore)).filter(Number.isFinite);
+  const average = probabilities.length ? probabilities.reduce((sum, value) => sum + value, 0) / probabilities.length : null;
+  const cardGrade = !picks.length
+    ? "WEAK"
+    : picks.length === 3 && grades.every((grade) => (gradePoints[grade] || 0) >= gradePoints["B+"])
+    ? "STRONG"
+    : picks.length >= 3 && grades.filter((grade) => (gradePoints[grade] || 0) >= gradePoints["B+"]).length >= 2 && grades.every((grade) => (gradePoints[grade] || 0) >= gradePoints.B)
+      ? "GOOD"
+      : grades.some((grade) => (gradePoints[grade] || 0) <= gradePoints["C+"])
+        ? "WEAK"
+        : "AVERAGE";
+  return {
+    cardGrade,
+    averageWinProbability: average,
+    lowestWinProbability: probabilities.length ? Math.min(...probabilities) : null,
+    approximateCombinedModelProbability: probabilities.length ? probabilities.reduce((product, value) => product * value, 1) : null,
+    parlayOdds: combinedParlayOdds(picks),
+    averageBetQualityScore: qualityScores.length ? qualityScores.reduce((sum, value) => sum + value, 0) / qualityScores.length : null
+  };
+}
+
+function firstTeamOut(preferred = [], selectedLimit = 3) {
+  const pick = preferred[selectedLimit];
+  if (!pick) return null;
+  return {
+    ...pick,
+    whyItMissed: pick.killCritic?.reasons?.length
+      ? pick.killCritic.reasons.join(" ")
+      : "Ranked just below the selected card after the post-KILLCRITIC quality review."
+  };
+}
+
 function buildNflWinnerBoard(games = [], options = {}) {
   const week = options.week || 1;
   const selectedGames = nflWindowFilter(games, options.mode);
@@ -422,7 +478,7 @@ function buildNflWinnerBoard(games = [], options = {}) {
   });
 
   const ranked = picks
-    .sort((a, b) => (b.modelWinProbability || 0) - (a.modelWinProbability || 0) || (b.betQualityScore || 0) - (a.betQualityScore || 0));
+    .sort((a, b) => (b.betQualityScore || 0) - (a.betQualityScore || 0) || (b.modelWinProbability || 0) - (a.modelWinProbability || 0));
   const eligible = ranked.filter((pick) => !pick.killCritic.hardVeto);
   const bestByGame = [];
   const gamesSeen = new Set();
@@ -434,12 +490,16 @@ function buildNflWinnerBoard(games = [], options = {}) {
   const qualified = eligible.filter((pick) => pick.qualified);
   const selectedLimit = normalizeNflMode(options.mode) === "standalone" ? 1 : Math.min(3, bestByGame.length);
   const selected = bestByGame.slice(0, selectedLimit);
+  const summary = winnerCardSummary(selected);
   return {
     all: ranked,
     qualified,
     picks: selected,
     eligible: bestByGame,
-    complete: selected.length >= Math.min(selectedLimit, selectedGames.length)
+    complete: selected.length >= Math.min(selectedLimit, selectedGames.length),
+    ...summary,
+    firstTeamOut: firstTeamOut(bestByGame, selectedLimit),
+    window: normalizeNflMode(options.mode)
   };
 }
 
@@ -856,6 +916,54 @@ function buildNflHeat6(candidates = []) {
   return { legs, qualified, complete: legs.length === 6, correlated, ...propBoardSummary(legs), reason: legs.length === 6 ? (qualified.length >= 6 ? "Six edge-focused legs cleared the preferred 56% Heat 6 threshold." : "Heat 6 is complete with the strongest available modeled legs; lower-confidence fallbacks remain visible.") : "Fewer than six modeled prop markets were returned for Heat 6." };
 }
 
+function sundayLateStage(games = [], now = Date.now()) {
+  const kickoffs = games
+    .map((game) => Date.parse(game.commenceTime || game.commence_time || ""))
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
+  if (!kickoffs.length) return "PREVIEW";
+  const minutesUntilFirstKickoff = (kickoffs[0] - Number(now)) / 60000;
+  return minutesUntilFirstKickoff <= 60 ? "FINAL" : "PREVIEW";
+}
+
+function buildNflPropSession(games, candidates, window) {
+  const props = buildNflPropBoard(candidates, { minimumProbability: 0.60 });
+  return {
+    window,
+    games,
+    props,
+    safe6: buildNflSafe6(props),
+    heat6: buildNflHeat6(props),
+    rawPropMarkets: candidates.length,
+    note: games.length < 3 ? `Only ${games.length} eligible game${games.length === 1 ? "" : "s"} exist in this window.` : ""
+  };
+}
+
+function buildNflSundaySessions(games = [], enrichedCandidates = [], options = {}) {
+  const earlyGames = nflWindowFilter(games, "sunday_early");
+  const lateGames = nflWindowFilter(games, "sunday_late");
+  const earlyIds = new Set(earlyGames.map((game) => String(game.id)));
+  const lateIds = new Set(lateGames.map((game) => String(game.id)));
+  const earlyCandidates = enrichedCandidates.filter((candidate) => earlyIds.has(String(candidate.gameId)));
+  const lateCandidates = enrichedCandidates.filter((candidate) => lateIds.has(String(candidate.gameId)));
+  const earlyWinners = buildNflWinnerBoard(games, { ...options, mode: "sunday_early" });
+  const lateWinners = buildNflWinnerBoard(games, { ...options, mode: "sunday_late" });
+  return {
+    early: {
+      label: "SUNDAY EARLY",
+      stage: "FINAL",
+      winners: earlyWinners,
+      ...buildNflPropSession(earlyGames, earlyCandidates, "sunday_early")
+    },
+    late: {
+      label: "SUNDAY LATE",
+      stage: options.lateStage || sundayLateStage(lateGames, options.now || Date.now()),
+      winners: lateWinners,
+      ...buildNflPropSession(lateGames, lateCandidates, "sunday_late")
+    }
+  };
+}
+
 function calculateRollover({ startingBankroll = 0, earlyWager = 0, earlyReturn = 0, mode = "standard" } = {}) {
   const rates = { conservative: 0.25, standard: 0.50, aggressive: 0.75 };
   const earlyProfit = Number(earlyReturn) - Number(earlyWager);
@@ -872,10 +980,26 @@ function calculateRollover({ startingBankroll = 0, earlyWager = 0, earlyReturn =
 }
 
 function buildNflBoard({ games = [], candidates = [], rawCandidates = null, mode = "standalone", week = 1, rollover } = {}) {
-  const winnerBoard = buildNflWinnerBoard(games, { mode, week });
+  const normalizedMode = normalizeNflMode(mode);
   const rawProps = rawCandidates || candidates;
   const enrichedCandidates = enrichNflPropCandidates(games, candidates, { week });
-  const props = buildNflPropBoard(enrichedCandidates, { minimumProbability: 0.60 });
+  const sundaySessions = normalizedMode === "sunday"
+    ? buildNflSundaySessions(games, enrichedCandidates, { week })
+    : null;
+  const winnerBoard = sundaySessions
+    ? {
+        all: [...sundaySessions.early.winners.all, ...sundaySessions.late.winners.all],
+        qualified: [...sundaySessions.early.winners.qualified, ...sundaySessions.late.winners.qualified],
+        // Session picks stay inside their own early/late card; never expose a combined winner card.
+        picks: [],
+        sessions: sundaySessions,
+        complete: sundaySessions.early.winners.complete && sundaySessions.late.winners.complete
+      }
+    : buildNflWinnerBoard(games, { mode: normalizedMode, week });
+  const selectedGames = normalizedMode === "sunday" ? nflWindowFilter(games, "sunday") : nflWindowFilter(games, normalizedMode);
+  const props = sundaySessions
+    ? [...sundaySessions.early.props, ...sundaySessions.late.props]
+    : buildNflPropBoard(enrichedCandidates, { minimumProbability: 0.60 });
   const propModelStatus = {
     rawPropMarkets: rawProps.length,
     playersResolved: enrichedCandidates.filter((candidate) => Boolean(candidate.player)).length,
@@ -886,16 +1010,17 @@ function buildNflBoard({ games = [], candidates = [], rawCandidates = null, mode
     modeledCandidates: enrichedCandidates.length
   };
   return {
-    mode: normalizeNflMode(mode),
+    mode: normalizedMode,
     week,
     preseasonPriorMode: week <= 1,
-    games: nflWindowFilter(games, mode),
+    games: selectedGames,
     winners: winnerBoard,
     rawProps,
     props,
     propModelStatus,
-    safe6: buildNflSafe6(props),
-    heat6: buildNflHeat6(props),
+    sundaySessions,
+    safe6: sundaySessions ? sundaySessions.early.safe6 : buildNflSafe6(props),
+    heat6: sundaySessions ? sundaySessions.early.heat6 : buildNflHeat6(props),
     rollover: rollover ? calculateRollover(rollover) : null,
     generatedAt: new Date().toISOString()
   };
@@ -936,6 +1061,7 @@ module.exports = {
   killCriticWinner,
   killCriticProp,
   buildNflWinnerBoard,
+  buildNflSundaySessions,
   buildNflPropBoard,
   buildNflSafe6,
   buildNflHeat6,
