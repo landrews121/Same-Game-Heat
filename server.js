@@ -745,8 +745,8 @@ async function fetchNflBoard({ date, region, mode, week, rollover }) {
       dataNotes: [
         "Temporary fallback: games and any publicly exposed market context came from ESPN's public scoreboard.",
         `The Odds API was unavailable (${fallbackReason}).`,
-        "ESPN does not provide the complete verified NFL team, injury, lineup, role, and player-prop inputs needed for model-qualified picks here.",
-        "No team or prop recommendation was forced from incomplete public data."
+        "ESPN does not provide the complete verified NFL team, injury, lineup, role, and player-prop inputs needed for high data confidence here.",
+        "Winner cards use a market-derived moneyline or conservative spread baseline when available; no game is forced without a usable market."
       ]
     };
   }

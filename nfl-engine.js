@@ -16,6 +16,18 @@ const NFL_MARKETS = [
 
 const NFL_BOARD_MODES = ["standalone", "sunday_early", "sunday_late", "rollover"];
 
+const NFL_OPTIONAL_METRICS = [
+  "previousSeasonEfficiency",
+  "rosterTalent",
+  "quarterback",
+  "trenchEdge",
+  "coachingContinuity",
+  "passMatchup",
+  "defensiveMatchup",
+  "injuries",
+  "homeTravelWeather"
+];
+
 const NFL_TEAM_SCORE_WEIGHTS = Object.freeze({
   previousSeasonEfficiency: 0.22,
   rosterTalent: 0.18,
@@ -64,6 +76,7 @@ function clamp(value, min = 0, max = 100) {
 }
 
 function numeric(value) {
+  if (value === null || value === undefined || value === "") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
@@ -141,6 +154,52 @@ function pairedOdds(game, side) {
   return sideOdds(game, otherSide);
 }
 
+function spreadForSide(game, side) {
+  const data = sideForGame(game, side);
+  const direct = numeric(data.spread ?? data.pointSpread ?? data.line);
+  if (direct !== null) return direct;
+  const entries = Array.isArray(game?.spread) ? game.spread : Array.isArray(game?.spreads) ? game.spreads : [];
+  const name = sideName(game, side);
+  const entry = entries.find((item) => item?.name === name || item?.team === name || item?.description === name);
+  const entryPoint = numeric(entry?.point ?? entry?.spread ?? entry?.line);
+  if (entryPoint !== null) return entryPoint;
+  const detail = typeof game?.spread === "string" ? game.spread : "";
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = escapedName ? detail.match(new RegExp(`${escapedName}\\s+([+-]?\\d+(?:\\.\\d+)?)`, "i")) : null;
+  return numeric(match?.[1]);
+}
+
+function spreadWinProbability(spread) {
+  const value = numeric(spread);
+  if (value === null) return null;
+  // A conservative approximation used only when a moneyline is unavailable.
+  return clamp(0.5 - value * 0.025, 0.15, 0.85);
+}
+
+function marketBaseline(game, side) {
+  const odds = sideOdds(game, side);
+  const opponentOdds = pairedOdds(game, side);
+  const moneylineProbability = noVigProbability(odds, opponentOdds) ?? americanOddsToProbability(odds);
+  if (moneylineProbability !== null) return { probability: moneylineProbability, source: "MARKET_DERIVED", market: "moneyline" };
+  const spreadProbability = spreadWinProbability(spreadForSide(game, side));
+  if (spreadProbability !== null) return { probability: spreadProbability, source: "MARKET_DERIVED", market: "spread" };
+  return { probability: null, source: "MISSING", market: null };
+}
+
+function criticalDataStatus(game, side) {
+  const home = sideName(game, "home");
+  const away = sideName(game, "away");
+  const status = String(game?.status || game?.gameStatus || "").toLowerCase();
+  const market = marketBaseline(game, side);
+  const valid = Boolean(home && away && (game?.commenceTime || game?.commence_time) && market.probability !== null && !/(cancel|postpon|suspend)/.test(status));
+  return {
+    valid,
+    schedule: Boolean(home && away && (game?.commenceTime || game?.commence_time)) ? "VERIFIED" : "MISSING",
+    market: market.probability === null ? "MISSING" : market.source,
+    reason: valid ? "" : "Game identity, kickoff, or a usable moneyline/spread is missing."
+  };
+}
+
 function metricValues(metrics = {}) {
   return {
     previousSeasonEfficiency: metrics.previousSeasonEfficiency ?? metrics.efficiency ?? metrics.epa,
@@ -155,6 +214,57 @@ function metricValues(metrics = {}) {
     offensiveMatchup: metrics.offensiveMatchup ?? metrics.passMatchup,
     defensiveMatchup: metrics.defensiveMatchup ?? metrics.defense,
     weatherSituational: metrics.weatherSituational ?? metrics.situation
+  };
+}
+
+function metricSource(metrics = {}, key) {
+  const sources = metrics.metricSources || metrics.sources || {};
+  return String(sources[key] || "").toUpperCase() || null;
+}
+
+function resolveTeamMetrics(data = {}, options = {}) {
+  const raw = { ...(data.metrics || data) };
+  const prior = data.priorMetrics || data.preseasonMetrics || {};
+  const current = data.currentMetrics || {};
+  const values = metricValues(raw);
+  const resolved = {};
+  const sources = {};
+
+  NFL_OPTIONAL_METRICS.forEach((key) => {
+    const direct = scoreValue(values[key]);
+    const currentValue = scoreValue(metricValues(current)[key]);
+    const priorValue = scoreValue(metricValues(prior)[key]);
+    if (currentValue !== null) {
+      resolved[key] = currentValue;
+      sources[key] = metricSource(current, key) || "VERIFIED";
+    } else if (direct !== null) {
+      resolved[key] = direct;
+      sources[key] = metricSource(raw, key) || (options.preseasonPriorMode ? "PRIOR" : "VERIFIED");
+    } else if (priorValue !== null) {
+      resolved[key] = priorValue;
+      sources[key] = "PRIOR";
+    } else {
+      resolved[key] = 50;
+      sources[key] = "NEUTRAL_FALLBACK";
+    }
+  });
+
+  return { ...resolved, metricSources: sources };
+}
+
+function dataConfidence(metrics = {}, critical = {}) {
+  const sources = metrics.metricSources || {};
+  const verified = NFL_OPTIONAL_METRICS.filter((key) => ["VERIFIED", "MARKET_DERIVED"].includes(String(sources[key]).toUpperCase())).length;
+  const prior = NFL_OPTIONAL_METRICS.filter((key) => String(sources[key]).toUpperCase() === "PRIOR").length;
+  const optionalScore = (verified + prior * 0.7) / NFL_OPTIONAL_METRICS.length;
+  const criticalScore = critical.valid ? 1 : 0;
+  const score = Math.round((criticalScore * 0.35 + optionalScore * 0.65) * 100);
+  return {
+    score,
+    level: score >= 75 ? "HIGH" : score >= 50 ? "MODERATE" : "LOW",
+    verifiedMetrics: verified,
+    priorMetrics: prior,
+    neutralMetrics: NFL_OPTIONAL_METRICS.length - verified - prior
   };
 }
 
@@ -185,10 +295,10 @@ function dataCompleteness(metrics = {}) {
 }
 
 function modelProbability(teamScore, opponentScore, marketProbability) {
-  if (teamScore !== null && opponentScore !== null) {
-    return clamp(0.5 + (teamScore - opponentScore) * 0.004, 0.05, 0.95);
-  }
-  return marketProbability ?? null;
+  if (marketProbability === null || marketProbability === undefined) return null;
+  if (teamScore === null || opponentScore === null) return marketProbability;
+  const footballAdjustment = (teamScore - opponentScore) * 0.002;
+  return clamp(marketProbability + footballAdjustment, 0.05, 0.95);
 }
 
 function gradeScore(score) {
@@ -197,6 +307,7 @@ function gradeScore(score) {
   if (score >= 76) return "B+";
   if (score >= 70) return "B";
   if (score >= 64) return "B-";
+  if (score >= 58) return "C+";
   return "C";
 }
 
@@ -230,13 +341,18 @@ function winnerQualityScore({ probability, marketProbability, metrics = {} }) {
 function killCriticWinner(pick, opponent = {}) {
   const reasons = [];
   const metrics = metricValues(pick.metrics || {});
-  if (pick.dataCompleteness < 0.55) reasons.push("Several football inputs are missing.");
+  if (pick.dataConfidence?.level === "LOW") reasons.push("Most football intelligence is unavailable; this is a low-data prior.");
+  if (pick.dataConfidence?.neutralMetrics) reasons.push(`${pick.dataConfidence.neutralMetrics} optional metrics use neutral fallback values.`);
   if (scoreValue(metrics.quarterback) !== null && scoreValue(metricValues(opponent).quarterback) !== null && metrics.quarterback < metricValues(opponent).quarterback) {
     reasons.push("The opponent may have the quarterback edge.");
   }
   if (metrics.injuries !== null && metrics.injuries < 55) reasons.push("Injury or depth-chart risk lowers confidence.");
   if (pick.edge !== null && pick.edge < 0) reasons.push("The market price is stronger than the model edge.");
-  return { hardVeto: pick.dataCompleteness < 0.25, scorePenalty: reasons.length * 3, reasons };
+  return {
+    hardVeto: pick.criticalData?.valid === false || pick.status === "cancelled" || pick.status === "postponed" || pick.status === "suspended" || pick.qbStatus === "confirmed_scratch",
+    scorePenalty: reasons.length * 3,
+    reasons
+  };
 }
 
 function buildNflWinnerBoard(games = [], options = {}) {
@@ -254,15 +370,20 @@ function buildNflWinnerBoard(games = [], options = {}) {
       { side: "away", data: away, odds: awayOdds, opponent: home, opponentOdds: homeOdds }
     ];
     sides.forEach(({ side, data, odds, opponent, opponentOdds }) => {
-      const marketProbability = noVigProbability(odds, opponentOdds) ?? americanOddsToProbability(odds);
-      const metrics = { ...(data.metrics || data), marketProbability };
-      const opponentMetrics = { ...(opponent.metrics || opponent), marketProbability: americanOddsToProbability(opponentOdds) };
+      const market = marketBaseline(game, side);
+      const opponentMarket = marketBaseline(game, side === "home" ? "away" : "home");
+      const preseasonPriorMode = options.preseasonPriorMode ?? week <= 1;
+      const metrics = { ...resolveTeamMetrics(data, { preseasonPriorMode }), marketProbability: market.probability };
+      const opponentMetrics = { ...resolveTeamMetrics(opponent, { preseasonPriorMode }), marketProbability: opponentMarket.probability };
       const teamScore = calculateTeamScore(metrics, { week });
       const opponentScore = calculateTeamScore(opponentMetrics, { week });
+      const marketProbability = market.probability;
       const probability = data.modelWinProbability ?? modelProbability(teamScore, opponentScore, marketProbability);
       const edge = probability === null || marketProbability === null ? null : probability - marketProbability;
+      const footballAdjustment = probability === null || marketProbability === null ? null : probability - marketProbability;
       const quality = winnerQualityScore({ probability, marketProbability, metrics });
-      const completeness = dataCompleteness(metrics);
+      const criticalData = criticalDataStatus(game, side);
+      const completeness = dataCompleteness(data.metrics || data);
       const pick = {
         id: `${game.id || `${sideName(game, "away")}-${sideName(game, "home")}`}-${side}`,
         gameId: game.id || null,
@@ -278,10 +399,19 @@ function buildNflWinnerBoard(games = [], options = {}) {
         grade: quality === null ? "C" : gradeScore(quality),
         dataCompleteness: completeness,
         metrics,
+        marketBaselineProbability: marketProbability,
+        footballAdjustment,
+        marketBaselineSource: market.source,
+        preseasonPriorMode,
+        criticalData,
         reasons: data.reasons || [],
         riskFlags: data.riskFlags || [],
-        commenceTime: game.commenceTime || game.commence_time || ""
+        commenceTime: game.commenceTime || game.commence_time || "",
+        status: game.status || game.gameStatus || "scheduled",
+        qbStatus: data.qbStatus || "uncertain"
       };
+      pick.metrics.metricSources.marketProbability = market.source;
+      pick.dataConfidence = dataConfidence(metrics, criticalData);
       const critic = killCriticWinner(pick, opponentMetrics);
       pick.killCritic = critic;
       pick.betQualityScore = quality === null ? null : Math.max(0, Math.round((quality - critic.scorePenalty) * 100) / 100);
@@ -291,22 +421,26 @@ function buildNflWinnerBoard(games = [], options = {}) {
     });
   });
 
-  const ranked = picks.sort((a, b) => (b.modelWinProbability || 0) - (a.modelWinProbability || 0) || (b.betQualityScore || 0) - (a.betQualityScore || 0));
-  const qualified = ranked.filter((pick) => pick.qualified);
-  const selected = [];
+  const ranked = picks
+    .sort((a, b) => (b.modelWinProbability || 0) - (a.modelWinProbability || 0) || (b.betQualityScore || 0) - (a.betQualityScore || 0));
+  const eligible = ranked.filter((pick) => !pick.killCritic.hardVeto);
+  const bestByGame = [];
   const gamesSeen = new Set();
-  for (const pick of qualified) {
-    if (gamesSeen.has(pick.gameId)) continue;
-    selected.push(pick);
+  eligible.forEach((pick) => {
+    if (gamesSeen.has(pick.gameId)) return;
+    bestByGame.push(pick);
     gamesSeen.add(pick.gameId);
-    if (selected.length === 3) break;
-  }
-  if (selected.length < 3) {
-    qualified.forEach((pick) => {
-      if (selected.length < 3 && !selected.some((item) => item.id === pick.id)) selected.push(pick);
-    });
-  }
-  return { all: ranked, qualified, picks: selected, complete: selected.length >= Math.min(3, selectedGames.length) };
+  });
+  const qualified = eligible.filter((pick) => pick.qualified);
+  const selectedLimit = normalizeNflMode(options.mode) === "standalone" ? 1 : Math.min(3, bestByGame.length);
+  const selected = bestByGame.slice(0, selectedLimit);
+  return {
+    all: ranked,
+    qualified,
+    picks: selected,
+    eligible: bestByGame,
+    complete: selected.length >= Math.min(selectedLimit, selectedGames.length)
+  };
 }
 
 function classifyPropVariance(market = "") {
@@ -427,6 +561,7 @@ function buildNflBoard({ games = [], candidates = [], mode = "standalone", week 
   return {
     mode: normalizeNflMode(mode),
     week,
+    preseasonPriorMode: week <= 1,
     games: nflWindowFilter(games, mode),
     winners: winnerBoard,
     props,

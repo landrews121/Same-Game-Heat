@@ -21,6 +21,23 @@ function teamName(competitor) {
   return competitor?.team?.displayName || competitor?.team?.shortDisplayName || competitor?.team?.name || "";
 }
 
+function teamSpread(competitor, competitionOdds, team) {
+  const odds = Array.isArray(competitor?.odds) ? competitor.odds[0] : competitor?.odds;
+  const marketSpread = competitionOdds?.spread;
+  const direct = firstNumber(
+    competitor?.spread,
+    competitor?.pointSpread,
+    odds?.spread,
+    odds?.point,
+    typeof marketSpread === "object" ? marketSpread?.[team] : null
+  );
+  if (direct !== null) return direct;
+  const details = String(competitionOdds?.details || "");
+  const escapedTeam = String(team || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = escapedTeam ? details.match(new RegExp(`${escapedTeam}\\s+([+-]?\\d+(?:\\.\\d+)?)`, "i")) : null;
+  return firstNumber(match?.[1]);
+}
+
 function competitorMoneyline(competitor, competitionOdds) {
   const odds = Array.isArray(competitor?.odds) ? competitor.odds[0] : competitor?.odds;
   const marketMoneyline = competitionOdds?.moneyline;
@@ -48,6 +65,10 @@ function parseEspnNflScoreboard(payload) {
     const awayTeam = teamName(awayCompetitor);
     const homeMoneyline = competitorMoneyline(homeCompetitor, odds);
     const awayMoneyline = competitorMoneyline(awayCompetitor, odds);
+    let homeSpread = teamSpread(homeCompetitor, odds, homeTeam);
+    let awaySpread = teamSpread(awayCompetitor, odds, awayTeam);
+    if (homeSpread === null && awaySpread !== null) homeSpread = -awaySpread;
+    if (awaySpread === null && homeSpread !== null) awaySpread = -homeSpread;
 
     return {
       id: `espn-${event.id}`,
@@ -61,14 +82,19 @@ function parseEspnNflScoreboard(payload) {
       home: {
         name: homeTeam,
         abbreviation: homeCompetitor.team?.abbreviation || "",
-        moneyline: homeMoneyline
+        moneyline: homeMoneyline,
+        spread: homeSpread
       },
       away: {
         name: awayTeam,
         abbreviation: awayCompetitor.team?.abbreviation || "",
-        moneyline: awayMoneyline
+        moneyline: awayMoneyline,
+        spread: awaySpread
       },
-      spread: odds.details || odds.spread || null,
+      spread: [
+        ...(homeSpread === null ? [] : [{ name: homeTeam, point: homeSpread }]),
+        ...(awaySpread === null ? [] : [{ name: awayTeam, point: awaySpread }])
+      ],
       total: firstNumber(odds.overUnder, odds.total),
       status: event.status?.type?.name || competition.status?.type?.name || "scheduled",
       candidates: [],

@@ -21,6 +21,7 @@ const {
   espnNflScoreboardUrl,
   parseEspnNflScoreboard
 } = require("../nfl-public-source");
+const fs = require("node:fs");
 
 function team(name, overrides = {}) {
   return {
@@ -78,14 +79,96 @@ test("team scoring skips unavailable inputs instead of inventing certainty", () 
 
 test("winner board compares both sides, ranks games, and does not force missing data", () => {
   const games = [
-    { id: "game-1", homeTeam: "Home Team", awayTeam: "Away Team", home: { ...team("Home Team"), modelWinProbability: 0.64 }, away: team("Away Team", { quarterback: 65 }) },
-    { id: "game-2", homeTeam: "Unknown Home", awayTeam: "Unknown Away", home: { name: "Unknown Home", moneyline: -140 }, away: { name: "Unknown Away", moneyline: 120 } }
+    { id: "game-1", commenceTime: "2026-09-10T00:00:00Z", homeTeam: "Home Team", awayTeam: "Away Team", home: { ...team("Home Team"), modelWinProbability: 0.64 }, away: team("Away Team", { quarterback: 65 }) },
+    { id: "game-2", commenceTime: "2026-09-11T00:00:00Z", homeTeam: "Unknown Home", awayTeam: "Unknown Away", home: { name: "Unknown Home", moneyline: -140 }, away: { name: "Unknown Away", moneyline: 120 } }
   ];
   const board = buildNflWinnerBoard(games, { week: 1 });
   assert.equal(board.all.length, 4);
   assert.equal(board.picks.length, 1);
   assert.equal(board.picks[0].team, "Home Team");
   assert.equal(board.all.find((pick) => pick.team === "Unknown Home").qualified, false);
+});
+
+test("Week 1 sparse market data still selects one official winner with neutral optional fallbacks", () => {
+  const board = buildNflWinnerBoard([
+    {
+      id: "sparse-game",
+      commenceTime: "2026-09-10T00:00:00Z",
+      homeTeam: "Sparse Home",
+      awayTeam: "Sparse Away",
+      home: { name: "Sparse Home", moneyline: -120 },
+      away: { name: "Sparse Away", moneyline: 100 }
+    }
+  ], { mode: "standalone", week: 1 });
+  const pick = board.picks[0];
+  assert.equal(board.picks.length, 1);
+  assert.equal(pick.team, "Sparse Home");
+  assert.equal(pick.preseasonPriorMode, true);
+  assert.equal(pick.metrics.rosterTalent, 50);
+  assert.equal(pick.metrics.metricSources.rosterTalent, "NEUTRAL_FALLBACK");
+  assert.equal(pick.marketBaselineSource, "MARKET_DERIVED");
+  assert.equal(pick.criticalData.valid, true);
+  assert.equal(pick.killCritic.hardVeto, false);
+});
+
+test("winner ranking uses one best side per game and fills up to three unique games", () => {
+  const games = Array.from({ length: 4 }, (_, index) => ({
+    id: `sunday-game-${index}`,
+    window: "sunday_early",
+    commenceTime: `2026-09-${13 + index}T17:00:00Z`,
+    homeTeam: `Home ${index}`,
+    awayTeam: `Away ${index}`,
+    home: { name: `Home ${index}`, moneyline: -130 - index },
+    away: { name: `Away ${index}`, moneyline: 110 + index }
+  }));
+  const board = buildNflWinnerBoard(games, { mode: "sunday_early", week: 1 });
+  assert.equal(board.picks.length, 3);
+  assert.equal(new Set(board.picks.map((pick) => pick.gameId)).size, 3);
+  assert.equal(new Set(board.picks.map((pick) => pick.team)).size, 3);
+});
+
+test("Sunday late mode returns every available unique game up to the daily limit", () => {
+  const games = [0, 1].map((index) => ({
+    id: `late-game-${index}`,
+    window: "sunday_late",
+    commenceTime: `2026-09-${13 + index}T21:00:00Z`,
+    homeTeam: `Late Home ${index}`,
+    awayTeam: `Late Away ${index}`,
+    home: { name: `Late Home ${index}`, moneyline: -115 },
+    away: { name: `Late Away ${index}`, moneyline: 105 }
+  }));
+  const board = buildNflWinnerBoard(games, { mode: "sunday_late", week: 1 });
+  assert.equal(board.picks.length, 2);
+  assert.deepEqual(board.picks.map((pick) => pick.gameId).sort(), ["late-game-0", "late-game-1"]);
+});
+
+test("spread-only markets produce a conservative market-derived baseline", () => {
+  const board = buildNflWinnerBoard([{
+    id: "spread-game",
+    commenceTime: "2026-09-10T00:00:00Z",
+    homeTeam: "Spread Home",
+    awayTeam: "Spread Away",
+    home: { name: "Spread Home", spread: -3.5 },
+    away: { name: "Spread Away", spread: 3.5 }
+  }], { mode: "standalone", week: 1 });
+  assert.equal(board.picks[0].marketBaselineSource, "MARKET_DERIVED");
+  assert.equal(board.picks[0].criticalData.market, "MARKET_DERIVED");
+  assert.ok(Math.abs(board.picks[0].modelWinProbability - 0.5875) < 0.001);
+});
+
+test("critical data failures hard-veto recommendations but remain visible for inspection", () => {
+  const board = buildNflWinnerBoard([{
+    id: "missing-market-game",
+    commenceTime: "2026-09-10T00:00:00Z",
+    homeTeam: "Missing Home",
+    awayTeam: "Missing Away",
+    home: { name: "Missing Home" },
+    away: { name: "Missing Away" }
+  }], { mode: "standalone", week: 1 });
+  assert.equal(board.picks.length, 0);
+  assert.equal(board.all.length, 2);
+  assert.equal(board.all.every((pick) => pick.killCritic.hardVeto), true);
+  assert.equal(board.all[0].criticalData.market, "MISSING");
 });
 
 test("prop scoring classifies variance and KILLCRITIC keeps touchdown legs out of Safe 6", () => {
@@ -124,7 +207,7 @@ test("rollover protects only the selected share of early profit", () => {
 
 test("combined NFL board exposes the four requested board components", () => {
   const board = buildNflBoard({
-    games: [{ id: "game-1", homeTeam: "Home Team", awayTeam: "Away Team", home: team("Home Team"), away: team("Away Team") }],
+    games: [{ id: "game-1", commenceTime: "2026-09-10T00:00:00Z", homeTeam: "Home Team", awayTeam: "Away Team", home: team("Home Team"), away: team("Away Team") }],
     candidates: [prop(1)],
     mode: "standalone",
     week: 1,
@@ -156,6 +239,8 @@ test("public ESPN fallback normalizes games without inventing missing moneylines
   assert.equal(games[0].homeTeam, "Home Team");
   assert.equal(games[0].total, 44.5);
   assert.equal(games[0].home.moneyline, null);
+  assert.equal(games[0].home.spread, -3.5);
+  assert.equal(games[0].away.spread, 3.5);
   assert.equal(Object.keys(games[0].moneylines).length, 0);
   assert.match(espnNflScoreboardUrl("2026-09-04"), /dates=20260904/);
 });
@@ -174,4 +259,10 @@ test("public ESPN fallback preserves moneylines when exposed by the payload", ()
   });
   assert.equal(games[0].home.moneyline, -135);
   assert.equal(games[0].away.moneyline, 115);
+});
+
+test("NFL page uses the current asset cache version", () => {
+  const html = fs.readFileSync(require.resolve("../nfl.html"), "utf8");
+  assert.match(html, /styles\.css\?v=nfl-v2/);
+  assert.match(html, /nfl\.js\?v=nfl-v2/);
 });
