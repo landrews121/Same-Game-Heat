@@ -10,6 +10,10 @@ const {
   buildNflBoard,
   normalizeNflMode
 } = require("./nfl-engine");
+const {
+  espnNflScoreboardUrl,
+  parseEspnNflScoreboard
+} = require("./nfl-public-source");
 
 const root = __dirname;
 const execFileAsync = promisify(execFile);
@@ -712,19 +716,48 @@ function parseNflOddsPayload(event, odds) {
 }
 
 async function fetchNflBoard({ date, region, mode, week, rollover }) {
-  const eventPayloads = await fetchOddsSlate({
-    sport: "americanfootball_nfl",
-    date,
-    region,
-    markets: NFL_MARKETS
-  });
+  let eventPayloads = [];
+  let source = "The Odds API";
+  let fallbackReason = "";
+
+  try {
+    eventPayloads = await fetchOddsSlate({
+      sport: "americanfootball_nfl",
+      date,
+      region,
+      markets: NFL_MARKETS
+    });
+  } catch (error) {
+    source = "ESPN public scoreboard";
+    fallbackReason = String(error.message || "The Odds API was unavailable").split(";")[0];
+    const publicPayload = await fetchJson(espnNflScoreboardUrl(date));
+    const games = parseEspnNflScoreboard(publicPayload);
+    const board = buildNflBoard({
+      games,
+      candidates: [],
+      mode: normalizeNflMode(mode),
+      week,
+      rollover
+    });
+    return {
+      ...board,
+      source,
+      dataNotes: [
+        "Temporary fallback: games and any publicly exposed market context came from ESPN's public scoreboard.",
+        `The Odds API was unavailable (${fallbackReason}).`,
+        "ESPN does not provide the complete verified NFL team, injury, lineup, role, and player-prop inputs needed for model-qualified picks here.",
+        "No team or prop recommendation was forced from incomplete public data."
+      ]
+    };
+  }
+
   const games = eventPayloads.map(({ event, odds }) => {
     const parsed = parseNflOddsPayload(event, odds);
     return {
       ...parsed,
       home: { name: parsed.homeTeam, moneyline: parsed.moneylines[parsed.homeTeam] },
       away: { name: parsed.awayTeam, moneyline: parsed.moneylines[parsed.awayTeam] },
-      source: "The Odds API"
+      source
     };
   });
   const board = buildNflBoard({
@@ -736,7 +769,7 @@ async function fetchNflBoard({ date, region, mode, week, rollover }) {
   });
   return {
     ...board,
-    source: "The Odds API",
+    source,
     dataNotes: [
       "Sportsbook markets are connected.",
       "Add verified NFL team, injury, lineup, and player-role feeds before treating a pick as model-qualified.",

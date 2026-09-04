@@ -17,6 +17,10 @@ const {
   calculateRollover,
   buildNflBoard
 } = require("../nfl-engine");
+const {
+  espnNflScoreboardUrl,
+  parseEspnNflScoreboard
+} = require("../nfl-public-source");
 
 function team(name, overrides = {}) {
   return {
@@ -131,4 +135,43 @@ test("combined NFL board exposes the four requested board components", () => {
   assert.ok(board.safe6);
   assert.ok(board.heat6);
   assert.equal(board.rollover.lateRolloverBankroll, 20);
+});
+
+test("public ESPN fallback normalizes games without inventing missing moneylines", () => {
+  const games = parseEspnNflScoreboard({
+    events: [{
+      id: "100",
+      date: "2026-09-04T23:00:00Z",
+      competitions: [{
+        competitors: [
+          { homeAway: "home", team: { displayName: "Home Team", abbreviation: "HOM" } },
+          { homeAway: "away", team: { displayName: "Away Team", abbreviation: "AWY" } }
+        ],
+        odds: [{ details: "Home Team -3.5", overUnder: 44.5 }]
+      }]
+    }]
+  });
+  assert.equal(games.length, 1);
+  assert.equal(games[0].source, "ESPN public scoreboard");
+  assert.equal(games[0].homeTeam, "Home Team");
+  assert.equal(games[0].total, 44.5);
+  assert.equal(games[0].home.moneyline, null);
+  assert.equal(Object.keys(games[0].moneylines).length, 0);
+  assert.match(espnNflScoreboardUrl("2026-09-04"), /dates=20260904/);
+});
+
+test("public ESPN fallback preserves moneylines when exposed by the payload", () => {
+  const games = parseEspnNflScoreboard({
+    events: [{
+      id: "101",
+      competitions: [{
+        competitors: [
+          { homeAway: "home", team: { displayName: "Home Team" }, moneyline: -135 },
+          { homeAway: "away", team: { displayName: "Away Team" }, moneyLine: 115 }
+        ]
+      }]
+    }]
+  });
+  assert.equal(games[0].home.moneyline, -135);
+  assert.equal(games[0].away.moneyline, 115);
 });
