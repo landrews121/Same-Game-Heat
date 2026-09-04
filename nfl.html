@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Same Game Heat · NFL</title>
+    <meta name="description" content="Same Game Heat NFL winner, player prop, and rollover research board." />
+    <link rel="stylesheet" href="styles.css?v=nfl-v1" />
+  </head>
+  <body>
+    <main class="nfl-shell">
+      <header class="nfl-header">
+        <div>
+          <p class="eyebrow">Same Game Heat</p>
+          <h1>NFL Betting Intelligence</h1>
+          <p class="muted">Winner probabilities, role-based props, and Sunday session planning.</p>
+        </div>
+        <a class="secondary-button" href="index.html">MLB Home</a>
+      </header>
+
+      <section class="panel nfl-controls">
+        <label>
+          Slate date
+          <input id="nflDate" type="date" />
+        </label>
+        <label>
+          Board mode
+          <select id="nflMode">
+            <option value="standalone">Standalone game</option>
+            <option value="sunday_early">Sunday early window</option>
+            <option value="sunday_late">Sunday late window</option>
+            <option value="rollover">Sunday rollover</option>
+          </select>
+        </label>
+        <label>
+          NFL week
+          <input id="nflWeek" type="number" min="1" max="22" value="1" />
+        </label>
+        <button id="loadNflBoard" class="primary-button" type="button">Load NFL board</button>
+      </section>
+
+      <p id="nflStatus" class="status">Choose a date and load the NFL board.</p>
+
+      <section class="nfl-summary-grid">
+        <article class="panel nfl-summary-card">
+          <p class="eyebrow">Mode</p>
+          <h2 id="nflModeLabel">Standalone game</h2>
+          <p id="nflSource" class="muted">Waiting for sportsbook markets.</p>
+        </article>
+        <article class="panel nfl-summary-card">
+          <p class="eyebrow">Games</p>
+          <strong id="nflGameCount">0</strong>
+          <p class="muted">in selected window</p>
+        </article>
+        <article class="panel nfl-summary-card">
+          <p class="eyebrow">Model status</p>
+          <strong id="nflQualifiedCount">0</strong>
+          <p class="muted">qualified winner picks</p>
+        </article>
+      </section>
+
+      <section class="nfl-board-grid">
+        <article class="panel nfl-board-section">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Winner model</p>
+              <h2>Top teams</h2>
+            </div>
+            <span class="pill">No forced picks</span>
+          </div>
+          <div id="nflWinners" class="nfl-stack"></div>
+        </article>
+
+        <article class="panel nfl-board-section">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Player prop model</p>
+              <h2>Prop board</h2>
+            </div>
+            <span class="pill">Opportunity first</span>
+          </div>
+          <div id="nflProps" class="nfl-stack"></div>
+        </article>
+      </section>
+
+      <section class="nfl-board-grid">
+        <article class="panel nfl-board-section">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Low variance</p>
+              <h2>Safe 6</h2>
+            </div>
+            <span id="nflSafeState" class="pill">Awaiting data</span>
+          </div>
+          <div id="nflSafe6" class="nfl-stack"></div>
+        </article>
+        <article class="panel nfl-board-section">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Edge plus payout</p>
+              <h2>Heat 6</h2>
+            </div>
+            <span id="nflHeatState" class="pill">Awaiting data</span>
+          </div>
+          <div id="nflHeat6" class="nfl-stack"></div>
+        </article>
+      </section>
+
+      <section class="panel nfl-rollover" id="rolloverPanel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Sunday session planning</p>
+            <h2>Rollover calculator</h2>
+          </div>
+          <span class="pill">Protect profit</span>
+        </div>
+        <div class="nfl-rollover-grid">
+          <label>Starting bankroll<input id="rolloverStarting" type="number" min="0" step="0.01" value="100" /></label>
+          <label>Early wager<input id="rolloverWager" type="number" min="0" step="0.01" value="50" /></label>
+          <label>Early return<input id="rolloverReturn" type="number" min="0" step="0.01" value="90" /></label>
+          <label>Allocation<select id="rolloverMode"><option value="conservative">Conservative · 25%</option><option value="standard" selected>Standard · 50%</option><option value="aggressive">Aggressive · 75%</option></select></label>
+        </div>
+        <div id="rolloverResult" class="nfl-rollover-result">Enter session numbers to calculate protected profit.</div>
+      </section>
+
+      <section class="panel nfl-notes">
+        <h2>Model guardrails</h2>
+        <div id="nflNotes" class="nfl-note-list"></div>
+      </section>
+    </main>
+    <script src="nfl.js?v=nfl-v1"></script>
+  </body>
+</html>

@@ -5,6 +5,11 @@ const { URL } = require("node:url");
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const { createSocialManager } = require("./social-manager");
+const {
+  NFL_MARKETS,
+  buildNflBoard,
+  normalizeNflMode
+} = require("./nfl-engine");
 
 const root = __dirname;
 const execFileAsync = promisify(execFile);
@@ -616,7 +621,8 @@ async function fetchOddsSlate({ sport, date, region, markets }) {
     const detail = events?.message || events?.error || JSON.stringify(events).slice(0, 120);
     throw new Error(`Odds API returned an error: ${detail}`);
   }
-  const eventList = events.slice(0, 12);
+  // MLB historically uses a compact cap; NFL needs the complete scheduled slate.
+  const eventList = sport === "americanfootball_nfl" ? events : events.slice(0, 12);
   const concurrency = 3;
   const eventPayloads = [];
 
@@ -639,6 +645,104 @@ async function fetchOddsSlate({ sport, date, region, markets }) {
   }
 
   return eventPayloads;
+}
+
+const nflMarketLabels = {
+  player_pass_yds: "Passing Yards",
+  player_pass_tds: "Passing Touchdowns",
+  player_pass_attempts: "Pass Attempts",
+  player_rush_yds: "Rushing Yards",
+  player_rush_attempts: "Rush Attempts",
+  player_reception_yds: "Receiving Yards",
+  player_receptions: "Receptions",
+  player_anytime_td: "Anytime Touchdown"
+};
+
+function parseNflOddsPayload(event, odds) {
+  const homeTeam = event.home_team || "";
+  const awayTeam = event.away_team || "";
+  const moneylines = {};
+  const propMap = new Map();
+  let spread = null;
+  let total = null;
+
+  (odds?.bookmakers || []).forEach((bookmaker) => {
+    (bookmaker.markets || []).forEach((market) => {
+      if (market.key === "h2h") {
+        (market.outcomes || []).forEach((outcome) => {
+          if (outcome.name && moneylines[outcome.name] === undefined) moneylines[outcome.name] = outcome.price;
+        });
+        return;
+      }
+      if (market.key === "spreads" && !spread) spread = market.outcomes || [];
+      if (market.key === "totals" && !total) total = market.outcomes || [];
+      if (!Object.prototype.hasOwnProperty.call(nflMarketLabels, market.key)) return;
+
+      (market.outcomes || []).forEach((outcome) => {
+        if (!outcome.description) return;
+        const key = [outcome.description, market.key, outcome.point ?? ""].join("|");
+        const current = propMap.get(key) || {
+          id: `${event.id}-${market.key}-${outcome.description}-${outcome.point ?? ""}`.replace(/[^a-z0-9-]/gi, "-"),
+          gameId: event.id,
+          player: outcome.description,
+          market: nflMarketLabels[market.key],
+          marketKey: market.key,
+          line: outcome.point ?? null,
+          books: [],
+          source: "The Odds API"
+        };
+        current.books.push({ bookmaker: bookmaker.title || bookmaker.key, side: outcome.name, odds: outcome.price });
+        if (outcome.name === "Over" || outcome.name === "Yes") current.overOdds = outcome.price;
+        if (outcome.name === "Under" || outcome.name === "No") current.underOdds = outcome.price;
+        propMap.set(key, current);
+      });
+    });
+  });
+
+  return {
+    id: event.id,
+    commenceTime: event.commence_time,
+    homeTeam,
+    awayTeam,
+    moneylines,
+    spread,
+    total,
+    candidates: Array.from(propMap.values())
+  };
+}
+
+async function fetchNflBoard({ date, region, mode, week, rollover }) {
+  const eventPayloads = await fetchOddsSlate({
+    sport: "americanfootball_nfl",
+    date,
+    region,
+    markets: NFL_MARKETS
+  });
+  const games = eventPayloads.map(({ event, odds }) => {
+    const parsed = parseNflOddsPayload(event, odds);
+    return {
+      ...parsed,
+      home: { name: parsed.homeTeam, moneyline: parsed.moneylines[parsed.homeTeam] },
+      away: { name: parsed.awayTeam, moneyline: parsed.moneylines[parsed.awayTeam] },
+      source: "The Odds API"
+    };
+  });
+  const board = buildNflBoard({
+    games,
+    candidates: games.flatMap((game) => game.candidates || []),
+    mode: normalizeNflMode(mode),
+    week,
+    rollover
+  });
+  return {
+    ...board,
+    source: "The Odds API",
+    dataNotes: [
+      "Sportsbook markets are connected.",
+      "Add verified NFL team, injury, lineup, and player-role feeds before treating a pick as model-qualified.",
+      "No team or prop is forced when the supporting football data is incomplete."
+    ]
+  };
 }
 
 async function fetchBallDontLieInjuries() {
@@ -851,6 +955,28 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (url.pathname === "/api/nfl/board") {
+    const date = url.searchParams.get("date") || new Date().toISOString().slice(0, 10);
+    const region = url.searchParams.get("region") || "us";
+    const mode = normalizeNflMode(url.searchParams.get("mode") || "standalone");
+    const week = Number(url.searchParams.get("week") || 1);
+    try {
+      json(res, 200, await fetchNflBoard({ date, region, mode, week }));
+    } catch (error) {
+      json(res, oddsApiKey ? 502 : 400, {
+        error: error.message,
+        configured: Boolean(oddsApiKey),
+        sport: "americanfootball_nfl",
+        games: [],
+        winners: { all: [], qualified: [], picks: [] },
+        props: [],
+        safe6: { legs: [], complete: false },
+        heat6: { legs: [], complete: false }
+      });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/supabase-health") {
     try {
       const health = await supabaseHealth();
@@ -1047,7 +1173,7 @@ function readRequestBody(req) {
 }
 
 function cleanAppState(payload = {}) {
-  const allowedSports = new Set(["baseball_mlb"]);
+  const allowedSports = new Set(["baseball_mlb", "americanfootball_nfl"]);
   const allowedRegions = new Set(["us", "us2", "uk", "eu"]);
   const allowedBooks = new Set(["fanatics", "draftkings", "fanduel", "betmgm", "caesars"]);
   const today = new Date().toISOString().slice(0, 10);

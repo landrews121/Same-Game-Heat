@@ -2951,3 +2951,39 @@ select:focus {
   font-style: italic;
   padding: 8px 0;
 }
+
+/* NFL Home uses the same board language without sharing MLB rendering state. */
+.nfl-shell { width: min(1400px, calc(100% - 32px)); margin: 0 auto; padding: 32px 0 64px; }
+.nfl-header, .nfl-controls, .nfl-summary-card, .nfl-board-section, .nfl-rollover, .nfl-notes { border: 1px solid var(--line, #cbd8ec); border-radius: 8px; background: rgba(255, 255, 255, 0.94); box-shadow: 0 12px 28px rgba(20, 55, 104, 0.08); }
+.nfl-header { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 28px; margin-bottom: 18px; }
+.nfl-header h1 { margin: 4px 0 8px; }
+.nfl-controls { display: grid; grid-template-columns: 1.3fr 1.3fr 0.6fr auto; gap: 14px; align-items: end; padding: 18px; }
+.nfl-controls label, .nfl-rollover-grid label { display: grid; gap: 6px; font-weight: 700; }
+.nfl-controls input, .nfl-controls select, .nfl-rollover-grid input, .nfl-rollover-grid select { width: 100%; box-sizing: border-box; }
+.nfl-summary-grid, .nfl-board-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 18px; }
+.nfl-summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.nfl-summary-card { padding: 20px; }
+.nfl-summary-card h2 { margin: 0; }
+.nfl-summary-card strong { display: block; font-size: 32px; color: #174a8e; }
+.nfl-board-section { padding: 22px; }
+.nfl-stack { display: grid; gap: 10px; }
+.nfl-pick-card { display: grid; grid-template-columns: 36px 1fr auto; gap: 12px; align-items: start; padding: 14px; border: 1px solid #c9d8ed; border-left: 4px solid #1e579b; border-radius: 8px; }
+.nfl-rank { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: #1e579b; color: white; font-weight: 800; }
+.nfl-pick-main { display: grid; gap: 4px; }
+.nfl-pick-main span { color: #66758d; font-size: 13px; }
+.nfl-pick-score { font-size: 22px; font-weight: 800; color: #174a8e; text-align: right; }
+.nfl-pick-score small { display: block; font-size: 12px; color: #be2838; }
+.nfl-risk { grid-column: 2 / -1; margin: 0; color: #66758d; font-size: 13px; }
+.nfl-market-row { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 10px; padding: 11px 0; border-bottom: 1px solid #e1e8f2; font-size: 14px; }
+.nfl-empty { margin: 0; padding: 14px; border-radius: 8px; background: #f2f6fb; color: #5e6c82; line-height: 1.5; }
+.nfl-rollover, .nfl-notes { margin-top: 18px; padding: 22px; }
+.nfl-rollover-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.nfl-rollover-result { display: flex; gap: 22px; flex-wrap: wrap; margin-top: 16px; padding: 14px; border-radius: 8px; background: #edf5ff; color: #173f76; }
+.nfl-note-list { display: grid; gap: 6px; color: #5e6c82; }
+.nfl-note-list p { margin: 0; }
+
+@media (max-width: 850px) {
+  .nfl-controls, .nfl-summary-grid, .nfl-board-grid, .nfl-rollover-grid { grid-template-columns: 1fr; }
+  .nfl-header { align-items: flex-start; flex-direction: column; }
+  .nfl-market-row { grid-template-columns: 1fr; gap: 3px; }
+}
